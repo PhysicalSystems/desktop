@@ -4,6 +4,7 @@ import type { ChildProcess } from "node:child_process"
 import { constants, createReadStream } from "node:fs"
 import { chmod, copyFile, lstat, readFile, readdir } from "node:fs/promises"
 import { basename, join, relative, resolve } from "node:path"
+import { desktopIdentity } from "./identity"
 
 export type QualificationStatus = "PASS" | "FAIL" | "BLOCKED" | "NOT_TESTED"
 export type QualificationCheck = {
@@ -29,6 +30,8 @@ export const qualificationFailureCodes = [
   "LINUX_QUALIFICATION_PROFILE_RETAINED",
   "LINUX_QUALIFICATION_INSTALLED_PAYLOAD_MISMATCH",
   "OWNED_UNINSTALL_NOT_COMPLETE",
+  "PACKAGED_ARCHIVE_DEPENDENCY_UNAVAILABLE",
+  "PACKAGED_ARCHIVE_MEMBER_INVALID",
   "PACKAGED_APPROVAL_GATE_BYPASSED",
   "PACKAGED_APPROVAL_NOT_READY",
   "PACKAGED_APP_SHUTDOWN_UNCONFIRMED",
@@ -50,6 +53,8 @@ export const qualificationFailureCodes = [
   "PACKAGED_EXECUTABLE_NOT_UNIQUE",
   "PACKAGED_PROFILE_NOT_ISOLATED",
   "PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED",
+  "PACKAGED_MAIN_PROCESS_EXCEPTION",
+  "PACKAGED_MODULE_INITIALIZATION_FAILED",
   "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
   "PACKAGED_PROJECT_NOT_CREATED",
   "PACKAGED_PROPOSAL_UNAVAILABLE",
@@ -58,6 +63,8 @@ export const qualificationFailureCodes = [
   "PACKAGED_RENDERER_EVALUATION_FAILED",
   "PACKAGED_RENDERER_UNAVAILABLE",
   "PACKAGED_RUNTIME_FILE_EMPTY",
+  "PACKAGED_RUNTIME_JSON_INVALID",
+  "PACKAGED_RUNTIME_READ_FAILED",
   "PACKAGED_SANDBOX_INITIALIZATION_FAILED",
   "PACKAGED_SHARED_LIBRARY_UNAVAILABLE",
   "PACKAGED_SKILL_HASH_MISMATCH",
@@ -97,24 +104,38 @@ export function qualificationFailureCode(error: unknown): QualificationFailureCo
 /** Observe only the owned process's startup; no raw stderr leaves this closure. */
 export function observePackagedStartup(child: ChildProcess) {
   let tail = ""
+  let port: number | undefined
   let failure: QualificationFailureCode | undefined
   const collect = (chunk: Buffer | string) => {
     tail = (tail + chunk.toString()).slice(-16384)
+    // Electron can start CDP before application code selects userData. Read only
+    // the owned process's exact loopback announcement; never return its raw URL.
+    const matches = tail.matchAll(
+      /^DevTools listening on ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/devtools\/browser\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\r?$/gm,
+    )
+    for (const match of matches) if (Number(match[1]) <= 65535) port = Number(match[1])
   }
+  const diagnostic = (): QualificationFailureCode | undefined =>
+    /The SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!|Failed to move to new namespace|Failed to unshare namespace|Running as root without --no-sandbox is not supported/.test(
+      tail,
+    )
+      ? "PACKAGED_SANDBOX_INITIALIZATION_FAILED"
+      : /error while loading shared libraries:/.test(tail)
+        ? "PACKAGED_SHARED_LIBRARY_UNAVAILABLE"
+        : /Missing X server or \$DISPLAY|The platform failed to initialize/.test(tail)
+          ? "PACKAGED_DISPLAY_UNAVAILABLE"
+          : /\b(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ERR_PACKAGE_PATH_NOT_EXPORTED|ERR_DLOPEN_FAILED)\b|Module did not self-register/.test(
+                tail,
+              )
+            ? "PACKAGED_MODULE_INITIALIZATION_FAILED"
+            : /A JavaScript error occurred in the main process|Uncaught Exception:/.test(tail)
+              ? "PACKAGED_MAIN_PROCESS_EXCEPTION"
+              : undefined
   const spawnFailed = () => {
     failure = "PACKAGED_APP_SPAWN_FAILED"
   }
   const closed = () => {
-    failure ||=
-      /The SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!|Failed to move to new namespace|Failed to unshare namespace|Running as root without --no-sandbox is not supported/.test(
-        tail,
-      )
-        ? "PACKAGED_SANDBOX_INITIALIZATION_FAILED"
-        : /error while loading shared libraries:/.test(tail)
-          ? "PACKAGED_SHARED_LIBRARY_UNAVAILABLE"
-          : /Missing X server or \$DISPLAY|The platform failed to initialize/.test(tail)
-            ? "PACKAGED_DISPLAY_UNAVAILABLE"
-            : "PACKAGED_APP_EXITED_BEFORE_READY"
+    failure ||= diagnostic() || "PACKAGED_APP_EXITED_BEFORE_READY"
     tail = ""
   }
   child.stderr?.on("data", collect)
@@ -125,11 +146,20 @@ export function observePackagedStartup(child: ChildProcess) {
     assertRunning() {
       if (failure) throw new Error(failure)
     },
+    debugPort() {
+      return port
+    },
+    timeoutCode(fallback: QualificationFailureCode) {
+      // A native error dialog can keep the process alive. Classify its stderr
+      // only after readiness expires; a warning cannot abort a healthy startup.
+      return failure || diagnostic() || fallback
+    },
     dispose() {
       child.stderr?.off("data", collect)
       child.off("error", spawnFailed)
       child.off("close", closed)
       tail = ""
+      port = undefined
     },
   }
 }
@@ -169,14 +199,20 @@ export async function sha256File(file: string) {
 }
 
 /** Inspect the final package's entry point without executing it. */
-export async function verifyAppImageLauncher(folder: string, reviewedSource: string) {
+export async function verifyAppImageLauncher(
+  folder: string,
+  reviewedSource: string,
+  kind: "candidate" | "public" = "candidate",
+) {
+  const identity = desktopIdentity(kind)
+  if (basename(reviewedSource) !== identity.launcherSource) throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
   const launcher = join(folder, "AppRun")
   const stat = await lstat(launcher)
   if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111))
     throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
   const [expected, actual] = await Promise.all([sha256File(reviewedSource), sha256File(launcher)])
   if (expected !== actual) throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
-  const desktop = join(folder, "physical-systems-candidate.desktop")
+  const desktop = join(folder, identity.desktopEntry)
   const entry = await lstat(desktop)
   if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID")
   const text = await readFile(desktop, "utf8")

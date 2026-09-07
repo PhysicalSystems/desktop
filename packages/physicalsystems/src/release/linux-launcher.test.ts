@@ -2,26 +2,57 @@
 import { afterEach, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { chmod, copyFile, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { verifyAppImageLauncher, sha256File } from "./qualification"
+import { desktopIdentity } from "./identity"
 
 const reviewed = fileURLToPath(new URL("../../../desktop/resources/AppRun", import.meta.url))
 const roots: string[] = []
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
-async function fixture() {
+async function fixture(kind: "candidate" | "public" = "candidate") {
+  const identity = desktopIdentity(kind)
   const root = await mkdtemp(join(tmpdir(), "ps-appimage-launcher-"))
   roots.push(root)
   const launcher = join(root, "AppRun")
-  await copyFile(reviewed, launcher)
+  await copyFile(join(dirname(reviewed), identity.launcherSource), launcher)
   await chmod(launcher, 0o755)
-  const desktop = join(root, "physical-systems-candidate.desktop")
+  const desktop = join(root, identity.desktopEntry)
   await writeFile(desktop, "[Desktop Entry]\nName=Physical Systems Candidate\nExec=AppRun %U\nType=Application\n")
   return { root, launcher, desktop }
 }
+
+test.skipIf(process.platform === "win32")(
+  "public launcher verifies and executes only the distinct public application identity",
+  async () => {
+    const data = await fixture("public")
+    const publicSource = join(dirname(reviewed), "AppRun.public")
+    expect((await verifyAppImageLauncher(data.root, publicSource, "public")).sha256).toBe(
+      await sha256File(publicSource),
+    )
+    await expect(verifyAppImageLauncher(data.root, publicSource)).rejects.toThrow("LAUNCHER_INVALID")
+    await writeFile(
+      join(data.root, "physical-systems-desktop"),
+      '#!/bin/sh\nprintf \'%s\\n\' "public fixture" "$@"\n',
+      { mode: 0o755 },
+    )
+    const result = spawnSync(data.launcher, ["literal argument"], {
+      env: { PATH: "/nonexistent-qualification-path" },
+      timeout: 3000,
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout.toString()).toBe("public fixture\nliteral argument\n")
+    const rejected = spawnSync(data.launcher, ["--no-sandbox"], {
+      env: { PATH: "/nonexistent-qualification-path" },
+      timeout: 3000,
+    })
+    expect(rejected.status).toBe(78)
+    expect(rejected.stdout.toString()).toBe("")
+  },
+)
 
 test.skipIf(process.platform === "win32")(
   "final AppImage launcher must match the reviewed executable bytes",

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import {
   appImageSandboxProfile,
   debianCandidatePlan,
+  debianProfileIsLoaded,
   profileIsLoaded,
   requireAbsentDebianCandidate,
   requireDisposableLinuxRunner,
@@ -62,6 +63,27 @@ test("Debian qualification accepts only the exact package identity and preserves
       requireAbsentDebianCandidate(`Package: physical-systems-desktop-candidate\nStatus: ${status}\n`),
     ).toThrow("ALREADY_PRESENT")
   expect(() => requireAbsentDebianCandidate("invalid status database")).toThrow("STATUS_INVALID")
+})
+
+test("public Linux qualification uses only its fixed separate installation identity", () => {
+  const metadata = "physical-systems-desktop\n0.1.0~beta.1-0\namd64\n"
+  const plan = debianCandidatePlan("0.1.0-beta.1", metadata, "public")
+  expect(plan.executable).toBe("/opt/Physical Systems/physical-systems-desktop")
+  expect(plan.paths).not.toContain("/opt/Physical Systems Candidate")
+  expect(() => debianCandidatePlan("0.1.0-beta.1", metadata)).toThrow("IDENTITY_INVALID")
+  expect(() =>
+    requireAbsentDebianCandidate(
+      "Package: physical-systems-desktop-candidate\nStatus: install ok installed\n",
+      "public",
+    ),
+  ).not.toThrow()
+  expect(() =>
+    requireAbsentDebianCandidate("Package: physical-systems-desktop\nStatus: install ok installed\n", "public"),
+  ).toThrow("ALREADY_PRESENT")
+  expect(debianProfileIsLoaded("physical-systems-candidate (unconfined)\n")).toBe(true)
+  expect(debianProfileIsLoaded("physical-systems-candidate (unconfined)\n", "public")).toBe(false)
+  expect(debianProfileIsLoaded("physical-systems-desktop (unconfined)\n", "public")).toBe(true)
+  expect(debianProfileIsLoaded("physical-systems-candidate-other (unconfined)\n")).toBe(false)
 })
 test.skipIf(process.platform === "win32")(
   "AppImage sandbox permission names one exact owned executable without wildcard or policy injection",

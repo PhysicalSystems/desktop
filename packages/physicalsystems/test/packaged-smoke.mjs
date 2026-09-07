@@ -5,10 +5,10 @@ import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath } from "n
 import { createWriteStream } from "node:fs"
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
-import { createRequire } from "node:module"
 import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { startFixtureProvider } from "./fixture-provider.mjs"
+import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import {
   authenticodeResult,
   executableArtifactCopy,
@@ -24,6 +24,7 @@ import {
 import {
   appImageSandboxProfile,
   debianCandidatePlan,
+  debianProfileIsLoaded,
   profileIsLoaded,
   requireAbsentDebianCandidate,
   requireDisposableLinuxRunner,
@@ -74,6 +75,7 @@ let installed
 let linuxInstallation
 let linuxSandboxProfile
 let applicationStarted = false
+let systemMutationUnconfirmed = false
 let failed
 let stage = "artifact-integrity"
 check(stage, "PASS", "SHA-256 recorded for the exact package supplied to this test.")
@@ -100,7 +102,7 @@ async function command(executable, args, options = {}) {
       clearTimeout(timer)
       reject(new Error("QUALIFICATION_COMMAND_UNAVAILABLE"))
     })
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       clearTimeout(timer)
       if (truncated) return reject(new Error("QUALIFICATION_COMMAND_OUTPUT_LIMIT"))
       code === 0 ? resolve(output) : reject(new Error("QUALIFICATION_COMMAND_FAILED"))
@@ -206,12 +208,11 @@ try {
         signature = { status: "BLOCKED", trust: "INSTALLER_VALID_PAYLOAD_UNSIGNED" }
     }
     stage = "bundled-runtime"
-    const desktopRequire = createRequire(join(repo, "packages/desktop/package.json"))
-    const builderRequire = createRequire(desktopRequire.resolve("electron-builder/package.json"))
-    const appBuilderRequire = createRequire(builderRequire.resolve("app-builder-lib/package.json"))
-    const asar = appBuilderRequire("@electron/asar")
-    const archive = join(dirname(executable), "resources", "app.asar")
-    const read = (file) => asar.extractFile(archive, file)
+    const archive = openPackagedArchive(
+      join(repo, "packages/desktop/package.json"),
+      join(dirname(executable), "resources", "app.asar"),
+    )
+    const read = archive.read
     for (const file of [
       "out/main/index.js",
       "out/main/physical-worker.js",
@@ -224,7 +225,7 @@ try {
       "out/legal/PhysicalSystems-NOTICE",
     ])
       if (!read(file).length) throw new Error("PACKAGED_RUNTIME_FILE_EMPTY")
-    const manifest = JSON.parse(read("out/legal/PhysicalSystems-manifest.json"))
+    const manifest = archive.json("out/legal/PhysicalSystems-manifest.json")
     for (const skill of ["inspect-workcell", "transfer-container"])
       for (const name of ["SKILL.md", "physicalsystems.binding.json"]) {
         const file = `skills/${skill}/${name}`
@@ -233,8 +234,8 @@ try {
       }
     check(stage, "PASS", "Bundled agent server, operator worker, renderer, licenses and hash-pinned skills inspected.")
     stage = "desktop-version"
-    const metadata = JSON.parse(read("package.json"))
-    const release = JSON.parse(read("out/legal/desktop-release-inputs.json"))
+    const metadata = archive.json("package.json")
+    const release = archive.json("out/legal/desktop-release-inputs.json")
     if (
       metadata.name !== "physical-systems-desktop-candidate" ||
       metadata.version !== options.version ||
@@ -271,11 +272,16 @@ try {
           ])
           const plan = debianCandidatePlan(options.version, metadata)
           requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"))
+          if (debianProfileIsLoaded(await loadedProfiles()))
+            throw new Error("LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT")
           for (const path of plan.paths)
             if (await exists(path)) throw new Error("LINUX_QUALIFICATION_PACKAGE_ALREADY_PRESENT")
           if ((await sha256File(options.artifact)) !== artifactSha256) throw new Error("QUALIFICATION_ARTIFACT_CHANGED")
           linuxInstallation = plan
-          await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--install", options.artifact])
+          await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--install", options.artifact]).catch(
+            retainUnconfirmedMutation,
+          )
+          if (!debianProfileIsLoaded(await loadedProfiles())) throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
           if ((await payloadFingerprint(plan.executable)).sha256 !== payload.sha256)
             throw new Error("LINUX_QUALIFICATION_INSTALLED_PAYLOAD_MISMATCH")
           entrypoint = plan.executable
@@ -291,7 +297,13 @@ try {
           if (profileIsLoaded(await loadedProfiles(), profile.name))
             throw new Error("LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT")
           linuxSandboxProfile = profile
-          await command("/usr/bin/sudo", ["-n", "/usr/sbin/apparmor_parser", "--add", "--skip-cache", profile.file])
+          await command("/usr/bin/sudo", [
+            "-n",
+            "/usr/sbin/apparmor_parser",
+            "--add",
+            "--skip-cache",
+            profile.file,
+          ]).catch(retainUnconfirmedMutation)
           if (!profileIsLoaded(await loadedProfiles(), profile.name))
             throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
           entrypoint = join(dirname(executable), "AppRun")
@@ -316,12 +328,15 @@ try {
   )
   await writeFile(join(root, "diagnostic.txt"), String(error?.stack || error), { mode: 0o600 })
 } finally {
-  const safeToRemove = !applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS"
+  const safeToRemove =
+    !systemMutationUnconfirmed &&
+    (!applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS")
   if (linuxInstallation) {
     if (safeToRemove) {
       try {
         await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--purge", linuxInstallation.packageName])
         requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"))
+        if (debianProfileIsLoaded(await loadedProfiles())) throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
         for (const path of linuxInstallation.paths)
           if (await exists(path)) throw new Error("OWNED_UNINSTALL_NOT_COMPLETE")
         check(
@@ -370,7 +385,7 @@ try {
       )
   }
   if (installed) {
-    if (checks.find((item) => item.id === "cleanup")?.status === "PASS") {
+    if (safeToRemove) {
       const uninstallers = (await readdir(installed)).filter((name) => /^Uninstall .*\.exe$/i.test(name))
       if (uninstallers.length === 1) {
         try {
@@ -384,7 +399,11 @@ try {
             "OWNED_UNINSTALL_NOT_COMPLETE",
             30000,
           )
-          check("uninstall", "PASS", "Owned per-user candidate uninstalled after confirmed application shutdown.")
+          check(
+            "uninstall",
+            "PASS",
+            "Owned per-user candidate uninstalled after confirming that no application was started or application shutdown completed.",
+          )
         } catch (error) {
           check(
             "uninstall",
@@ -464,6 +483,7 @@ async function launch(executable) {
     [
       "--remote-debugging-port=0",
       "--remote-debugging-address=127.0.0.1",
+      `--user-data-dir=${join(profile, "desktop")}`,
       "--disable-gpu",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
@@ -490,13 +510,18 @@ async function launch(executable) {
       },
       label,
       limit,
-    )
+    ).catch((error) => {
+      if (error instanceof Error && error.message === label) throw new Error(startup.timeoutCode(label))
+      throw error
+    })
   let socket
   let evaluate
   let api
   let owned = []
   try {
     const port = await untilStarted(async () => {
+      const announced = startup.debugPort()
+      if (announced) return announced
       for (const folder of ["session", "desktop"]) {
         const value = await readFile(join(profile, folder, "DevToolsActivePort"), "utf8").catch(() => "")
         if (value && /^[0-9]+$/.test(value.split("\n")[0])) return Number(value.split("\n")[0])
@@ -782,6 +807,13 @@ async function exists(path) {
 
 async function loadedProfiles() {
   return command("/usr/bin/sudo", ["-n", "/bin/cat", "/sys/kernel/security/apparmor/profiles"])
+}
+
+function retainUnconfirmedMutation(error) {
+  // A timed-out sudo wrapper may leave a child completing installation/policy
+  // work. Never race it with an inverse mutation; the disposable job fails.
+  if (error?.message === "QUALIFICATION_COMMAND_TIMEOUT") systemMutationUnconfirmed = true
+  throw error
 }
 
 async function descendants(pid) {

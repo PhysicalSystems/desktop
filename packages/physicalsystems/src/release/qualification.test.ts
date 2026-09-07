@@ -3,7 +3,9 @@ import { afterEach, expect, test } from "bun:test"
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, chmod, lstat } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
+import { EventEmitter } from "node:events"
+import { PassThrough } from "node:stream"
 import { fileURLToPath } from "node:url"
 import {
   authenticodeResult,
@@ -73,6 +75,53 @@ test("startup observation handles spawn failure and stops after readiness", asyn
   await new Promise((resolve) => ready.once("close", resolve))
   expect(() => observed.assertRunning()).not.toThrow()
   expect(ready.stderr.listenerCount("data")).toBe(0)
+})
+
+test("packaged CDP discovery accepts only the owned exact loopback announcement across stderr chunks", () => {
+  const child = new EventEmitter() as ChildProcess
+  child.stderr = new PassThrough()
+  const startup = observePackagedStartup(child)
+  const uuid = "aabbccdd-1122-3344-5566-778899aabbcc"
+  for (const endpoint of [
+    `ws://192.0.2.1:1234/devtools/browser/${uuid}`,
+    `ws://127.0.0.1:1234@evil.example/devtools/browser/${uuid}`,
+    `ws://127.0.0.1:65536/devtools/browser/${uuid}`,
+    `ws://127.0.0.1:0/devtools/browser/${uuid}`,
+    `ws://127.0.0.1:1234/devtools/page/${uuid}`,
+    `ws://127.0.0.1:1234/devtools/browser/${uuid}?credential=private-trap`,
+  ]) {
+    child.stderr.emit("data", `DevTools listening on ${endpoint}\n`)
+    expect(startup.debugPort()).toBeUndefined()
+  }
+  child.stderr.emit("data", "DevTools listening on ws://127.0.")
+  expect(startup.debugPort()).toBeUndefined()
+  child.stderr.emit("data", `0.1:43210/devtools/browser/${uuid}\r\n`)
+  expect(startup.debugPort()).toBe(43210)
+  child.stderr.emit("data", "private-trap".repeat(2000))
+  expect(startup.debugPort()).toBe(43210)
+  startup.dispose()
+  expect(startup.debugPort()).toBeUndefined()
+  expect(child.stderr.listenerCount("data")).toBe(0)
+})
+
+test("startup timeout classifies a retained native error dialog without exposing private output", () => {
+  for (const [stderr, expected] of [
+    ["Error [ERR_MODULE_NOT_FOUND]: private-trap", "PACKAGED_MODULE_INITIALIZATION_FAILED"],
+    ["Error: Module did not self-register. private-trap", "PACKAGED_MODULE_INITIALIZATION_FAILED"],
+    ["A JavaScript error occurred in the main process private-trap", "PACKAGED_MAIN_PROCESS_EXCEPTION"],
+    ["some warning /private/profile private-trap", "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE"],
+  ] as const) {
+    const child = new EventEmitter() as ChildProcess
+    child.stderr = new PassThrough()
+    const startup = observePackagedStartup(child)
+    child.stderr.emit("data", stderr)
+    expect(() => startup.assertRunning()).not.toThrow()
+    const code = startup.timeoutCode("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
+    expect(code).toBe(expected)
+    expect(qualificationFailureCode(new Error(code))).toBe(expected)
+    expect(code).not.toContain("private-trap")
+    startup.dispose()
+  }
 })
 
 test("failure diagnostics preserve only exact authored codes and never private error text", () => {

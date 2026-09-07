@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto"
 import { realpath } from "node:fs/promises"
 import { isAbsolute, join, resolve, sep } from "node:path"
+import { desktopIdentity } from "./identity"
 
 /** Privileged qualification is confined to a fresh GitHub-hosted Linux runner. */
 export async function requireDisposableLinuxRunner(env: NodeJS.ProcessEnv, root: string, platform = process.platform) {
@@ -22,39 +23,40 @@ export async function requireDisposableLinuxRunner(env: NodeJS.ProcessEnv, root:
   return owned
 }
 
-export function debianCandidatePlan(version: string, metadata: string) {
+export function debianCandidatePlan(version: string, metadata: string, kind: "candidate" | "public" = "candidate") {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/.test(version))
     throw new Error("LINUX_QUALIFICATION_DEBIAN_IDENTITY_INVALID")
-  const packageName = "physical-systems-desktop-candidate"
+  const identity = desktopIdentity(kind)
+  const packageName = identity.packageName
   const packageVersion = version.replace("-beta.", "~beta.") + "-0"
   if (metadata.trim() !== `${packageName}\n${packageVersion}\namd64`)
     throw new Error("LINUX_QUALIFICATION_DEBIAN_IDENTITY_INVALID")
   return {
     packageName,
     packageVersion,
-    executable: "/opt/Physical Systems Candidate/physical-systems-candidate",
+    executable: `/opt/${identity.productName}/${identity.executableName}`,
     paths: [
-      "/opt/Physical Systems Candidate",
-      "/usr/bin/physical-systems-candidate",
-      "/etc/apparmor.d/physical-systems-candidate",
-      "/var/lib/dpkg/alternatives/physical-systems-candidate",
+      `/opt/${identity.productName}`,
+      `/usr/bin/${identity.executableName}`,
+      `/etc/apparmor.d/${identity.executableName}`,
+      `/var/lib/dpkg/alternatives/${identity.executableName}`,
     ],
   }
 }
 
-export function requireAbsentDebianCandidate(status: string) {
+export function requireAbsentDebianCandidate(status: string, kind: "candidate" | "public" = "candidate") {
   if (!/^Package: /m.test(status) || !/^Status: /m.test(status))
     throw new Error("LINUX_QUALIFICATION_PACKAGE_STATUS_INVALID")
-  if (/^Package: physical-systems-desktop-candidate\s*$/m.test(status))
+  if (status.split("\n").some((line) => line.trim() === `Package: ${desktopIdentity(kind).packageName}`))
     throw new Error("LINUX_QUALIFICATION_PACKAGE_ALREADY_PRESENT")
 }
 
 /** Same narrowly scoped userns permission as the Debian package, for a temp path. */
-export function appImageSandboxProfile(executable: string, root: string) {
+export function appImageSandboxProfile(executable: string, root: string, kind: "candidate" | "public" = "candidate") {
   if (
     !isAbsolute(root) ||
     resolve(root) !== root ||
-    executable !== join(root, "payload", "squashfs-root", "physical-systems-candidate") ||
+    executable !== join(root, "payload", "squashfs-root", desktopIdentity(kind).executableName) ||
     !/^[A-Za-z0-9_./ -]+$/.test(executable)
   )
     throw new Error("LINUX_QUALIFICATION_PROFILE_PATH_INVALID")
@@ -69,6 +71,10 @@ export function appImageSandboxProfile(executable: string, root: string) {
 export function profileIsLoaded(profiles: string, name: string) {
   if (!/^ps-desktop-qualification-[a-f0-9]{24}$/.test(name)) throw new Error("LINUX_QUALIFICATION_PROFILE_PATH_INVALID")
   return profiles.split("\n").some((line) => line.startsWith(name + " ("))
+}
+
+export function debianProfileIsLoaded(profiles: string, kind: "candidate" | "public" = "candidate") {
+  return profiles.split("\n").some((line) => line.startsWith(desktopIdentity(kind).executableName + " ("))
 }
 
 /** Native /proc observations, not a claim based only on BrowserWindow options. */
