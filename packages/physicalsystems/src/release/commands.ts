@@ -77,7 +77,9 @@ export function buildEnvironment(input: NodeJS.ProcessEnv, inputs: ReleaseInputs
       /^(OPENCODE_|PHYSICALSYSTEMS_|SENTRY_|VITE_SENTRY_|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CSC_|WIN_CSC_|WIN_SIGNING_|APPLE_)/.test(
         key,
       ) ||
-      /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(key)
+      /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(key) ||
+      key === "USE_HARD_LINKS" ||
+      key === "VITEST"
     )
       delete env[key]
   return Object.assign(env, {

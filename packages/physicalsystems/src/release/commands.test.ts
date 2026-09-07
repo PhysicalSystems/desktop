@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { buildEnvironment, emptyOutput, releaseArguments, stageCandidateSource } from "./commands"
@@ -129,6 +129,8 @@ describe("candidate build environment", () => {
         MODELS_DEV_API_JSON: "/mutable-models.json",
         CSC_IDENTITY_AUTO_DISCOVERY: "true",
         NODE_OPTIONS: "--require /ambient-hook.js",
+        USE_HARD_LINKS: "true",
+        VITEST: "true",
       },
       { version: "0.1.0-beta.3" } as ReleaseInputs,
       "/verified/inputs.json",
@@ -141,6 +143,8 @@ describe("candidate build environment", () => {
     expect(result.MODELS_DEV_API_JSON).toBe("/verified/models.json")
     expect(result.CSC_IDENTITY_AUTO_DISCOVERY).toBe("false")
     expect(result.NODE_OPTIONS).toBe("--max-old-space-size=3072")
+    expect(result.USE_HARD_LINKS).toBeUndefined()
+    expect(result.VITEST).toBeUndefined()
   })
 })
 
@@ -148,9 +152,9 @@ describe("isolated candidate output directories", () => {
   test("creates only a new external directory, allowing an existing empty directory", async () => {
     const data = await workspace()
     const target = path.join(data.folder, "candidate")
-    expect(await emptyOutput(target, data.root)).toBe(target)
+    expect(await emptyOutput(target, data.root)).toBe(await realpath(target))
     expect((await lstat(target)).isDirectory()).toBe(true)
-    expect(await emptyOutput(target, data.root)).toBe(target)
+    expect(await emptyOutput(target, data.root)).toBe(await realpath(target))
     if (process.platform !== "win32") expect((await lstat(target)).mode & 0o777).toBe(0o700)
   })
 

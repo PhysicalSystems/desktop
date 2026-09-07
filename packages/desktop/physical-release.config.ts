@@ -49,6 +49,9 @@ const config: Configuration = {
     uninstallDisplayName: "Physical Systems Candidate",
   },
   linux: {
+    // Pinned builder copies appOutDir over its generated AppRun before creating
+    // the final AppImage. Qualification checks the resulting launcher bytes.
+    extraFiles: [{ from: "resources/AppRun", to: "AppRun" }],
     target: [
       { target: "deb", arch: ["x64"] },
       { target: "AppImage", arch: ["x64"] },
@@ -57,6 +60,7 @@ const config: Configuration = {
     executableName: "physical-systems-candidate",
     category: "Development",
   },
+  appImage: { executableArgs: [] },
   deb: { maintainer: "Physical Systems", packageName: "physical-systems-desktop-candidate" },
 }
 

@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto"
 import type { ChildProcess } from "node:child_process"
 import { constants, createReadStream } from "node:fs"
-import { chmod, copyFile, lstat, readdir } from "node:fs/promises"
+import { chmod, copyFile, lstat, readFile, readdir } from "node:fs/promises"
 import { basename, join, relative, resolve } from "node:path"
 
 export type QualificationStatus = "PASS" | "FAIL" | "BLOCKED" | "NOT_TESTED"
@@ -18,12 +18,24 @@ export type SignatureResult = { status: QualificationStatus; trust: string; sign
 export const qualificationFailureCodes = [
   "INSTALLER_SIGNATURE_INVALID",
   "LINUX_QUALIFICATION_REQUIRES_LINUX",
+  "LINUX_QUALIFICATION_REQUIRES_DISPOSABLE_RUNNER",
+  "LINUX_QUALIFICATION_PATH_OUTSIDE_RUNNER",
+  "LINUX_QUALIFICATION_DEBIAN_IDENTITY_INVALID",
+  "LINUX_QUALIFICATION_PACKAGE_STATUS_INVALID",
+  "LINUX_QUALIFICATION_PACKAGE_ALREADY_PRESENT",
+  "LINUX_QUALIFICATION_PROFILE_PATH_INVALID",
+  "LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT",
+  "LINUX_QUALIFICATION_PROFILE_NOT_LOADED",
+  "LINUX_QUALIFICATION_PROFILE_RETAINED",
+  "LINUX_QUALIFICATION_INSTALLED_PAYLOAD_MISMATCH",
   "OWNED_UNINSTALL_NOT_COMPLETE",
   "PACKAGED_APPROVAL_GATE_BYPASSED",
   "PACKAGED_APPROVAL_NOT_READY",
   "PACKAGED_APP_SHUTDOWN_UNCONFIRMED",
   "PACKAGED_APP_EXITED_BEFORE_READY",
   "PACKAGED_APP_SPAWN_FAILED",
+  "PACKAGED_APPIMAGE_LAUNCHER_INVALID",
+  "PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID",
   "PACKAGED_ATTACHMENT_OWNER_INVALID",
   "PACKAGED_ATTACHMENT_RETAINED",
   "PACKAGED_CDP_CONNECTION_FAILED",
@@ -37,6 +49,7 @@ export const qualificationFailureCodes = [
   "PACKAGED_DESCENDANT_RETAINED",
   "PACKAGED_EXECUTABLE_NOT_UNIQUE",
   "PACKAGED_PROFILE_NOT_ISOLATED",
+  "PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED",
   "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
   "PACKAGED_PROJECT_NOT_CREATED",
   "PACKAGED_PROPOSAL_UNAVAILABLE",
@@ -56,6 +69,7 @@ export const qualificationFailureCodes = [
   "QUALIFICATION_ARTIFACT_CHANGED",
   "QUALIFICATION_ARTIFACT_COPY_MISMATCH",
   "QUALIFICATION_COMMAND_FAILED",
+  "QUALIFICATION_COMMAND_OUTPUT_LIMIT",
   "QUALIFICATION_COMMAND_TIMEOUT",
   "QUALIFICATION_COMMAND_UNAVAILABLE",
   "QUALIFICATION_PAYLOAD_SYMLINK",
@@ -152,6 +166,24 @@ export async function sha256File(file: string) {
   const hash = createHash("sha256")
   for await (const chunk of createReadStream(file)) hash.update(chunk)
   return hash.digest("hex")
+}
+
+/** Inspect the final package's entry point without executing it. */
+export async function verifyAppImageLauncher(folder: string, reviewedSource: string) {
+  const launcher = join(folder, "AppRun")
+  const stat = await lstat(launcher)
+  if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111))
+    throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
+  const [expected, actual] = await Promise.all([sha256File(reviewedSource), sha256File(launcher)])
+  if (expected !== actual) throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
+  const desktop = join(folder, "physical-systems-candidate.desktop")
+  const entry = await lstat(desktop)
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID")
+  const text = await readFile(desktop, "utf8")
+  const commands = text.split(/\r?\n/).filter((line) => /^\s*(?:Exec|TryExec)\s*=/.test(line))
+  if (commands.length !== 1 || commands[0] !== "Exec=AppRun %U")
+    throw new Error("PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID")
+  return { launcher, sha256: actual }
 }
 
 /** Download artifacts may lose mode bits. Never chmod the immutable input itself. */

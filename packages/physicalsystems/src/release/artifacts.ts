@@ -173,7 +173,16 @@ export function verifyQualification(artifact: CandidateArtifact, inventory: Cand
     report.result !== "PASS" ||
     report.checks.some((check) => !["PASS", "NOT_TESTED"].includes(check.status)) ||
     requiredQualificationChecks.some((id) => report.checks.find((check) => check.id === id)?.status !== "PASS") ||
-    (artifact.format === "nsis" && report.checks.find((check) => check.id === "uninstall")?.status !== "PASS")
+    (["nsis", "deb"].includes(artifact.format) &&
+      report.checks.find((check) => check.id === "uninstall")?.status !== "PASS") ||
+    (artifact.format !== "nsis" &&
+      ["linux-sandbox-setup", "linux-renderer-sandbox"].some(
+        (id) => report.checks.find((check) => check.id === id)?.status !== "PASS",
+      )) ||
+    (artifact.format === "AppImage" &&
+      ["appimage-launcher", "linux-sandbox-cleanup"].some(
+        (id) => report.checks.find((check) => check.id === id)?.status !== "PASS",
+      ))
   )
     throw new Error("Candidate packaged qualification is incomplete")
   return report

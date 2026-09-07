@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Tests the executable extracted from the named installer, never a separate build.
 // Profiles, raw logs and private attachment files stay outside repository/artifacts.
-import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath } from "node:fs/promises"
 import { createWriteStream } from "node:fs"
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -18,8 +18,17 @@ import {
   qualificationFailureCode,
   qualificationReport,
   sha256File,
+  verifyAppImageLauncher,
   verifyWindowsVersionInfo,
 } from "../src/release/qualification.ts"
+import {
+  appImageSandboxProfile,
+  debianCandidatePlan,
+  profileIsLoaded,
+  requireAbsentDebianCandidate,
+  requireDisposableLinuxRunner,
+  verifyLinuxRendererSandbox,
+} from "../src/release/linux-qualification.ts"
 
 const options = {}
 for (let index = 2; index < process.argv.length; index++) {
@@ -62,6 +71,9 @@ let payload
 let embeddedInputs
 let windowsVersion
 let installed
+let linuxInstallation
+let linuxSandboxProfile
+let applicationStarted = false
 let failed
 let stage = "artifact-integrity"
 check(stage, "PASS", "SHA-256 recorded for the exact package supplied to this test.")
@@ -70,9 +82,13 @@ async function command(executable, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, { stdio: ["ignore", "pipe", "pipe"], ...options })
     let output = ""
+    let truncated = false
     const collect = (chunk) => {
       output += chunk
-      if (output.length > 1024 * 1024) output = output.slice(-1024 * 1024)
+      if (output.length > 1024 * 1024) {
+        truncated = true
+        output = output.slice(-1024 * 1024)
+      }
     }
     child.stdout.on("data", collect)
     child.stderr.on("data", collect)
@@ -86,6 +102,7 @@ async function command(executable, args, options = {}) {
     })
     child.once("exit", (code) => {
       clearTimeout(timer)
+      if (truncated) return reject(new Error("QUALIFICATION_COMMAND_OUTPUT_LIMIT"))
       code === 0 ? resolve(output) : reject(new Error("QUALIFICATION_COMMAND_FAILED"))
     })
   })
@@ -173,6 +190,15 @@ try {
     const executable = executables[0]
     payload = await payloadFingerprint(executable)
     check(stage, "PASS", "Executable and every bundled resource fingerprinted from the named package payload.")
+    if (extension === ".appimage") {
+      stage = "appimage-launcher"
+      await verifyAppImageLauncher(dirname(executable), join(repo, "packages/desktop/resources/AppRun"))
+      check(
+        stage,
+        "PASS",
+        "Final AppImage contains the exact reviewed launcher and a desktop entry with no sandbox-disabling arguments.",
+      )
+    }
     if (process.platform === "win32") {
       const executableSignature = await signatureFor(executable)
       if (executableSignature.status === "FAIL") throw new Error("PAYLOAD_SIGNATURE_INVALID")
@@ -232,7 +258,52 @@ try {
       windowsVersion = verifyWindowsVersionInfo(JSON.parse(pe.trim()), options.version)
     }
     check(stage, "PASS", "Packaged app metadata and embedded release input match the requested candidate version.")
-    if (!options.inspectionOnly) await launch(executable)
+    if (!options.inspectionOnly) {
+      let entrypoint = executable
+      if (process.platform === "linux") {
+        stage = "linux-sandbox-setup"
+        await requireDisposableLinuxRunner(process.env, root)
+        if (extension === ".deb") {
+          const metadata = await command("dpkg-deb", [
+            "--show",
+            "--showformat=${Package}\n${Version}\n${Architecture}\n",
+            options.artifact,
+          ])
+          const plan = debianCandidatePlan(options.version, metadata)
+          requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"))
+          for (const path of plan.paths)
+            if (await exists(path)) throw new Error("LINUX_QUALIFICATION_PACKAGE_ALREADY_PRESENT")
+          if ((await sha256File(options.artifact)) !== artifactSha256) throw new Error("QUALIFICATION_ARTIFACT_CHANGED")
+          linuxInstallation = plan
+          await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--install", options.artifact])
+          if ((await payloadFingerprint(plan.executable)).sha256 !== payload.sha256)
+            throw new Error("LINUX_QUALIFICATION_INSTALLED_PAYLOAD_MISMATCH")
+          entrypoint = plan.executable
+          check(
+            stage,
+            "PASS",
+            "Exact Debian package installed on the disposable runner; its own maintainer scripts configured its application-specific sandbox policy. Installed payload matches the extracted artifact.",
+          )
+        } else {
+          if ((await realpath(executable)) !== executable) throw new Error("LINUX_QUALIFICATION_PROFILE_PATH_INVALID")
+          const profile = appImageSandboxProfile(executable, root)
+          await writeFile(profile.file, profile.text, { flag: "wx", mode: 0o600 })
+          if (profileIsLoaded(await loadedProfiles(), profile.name))
+            throw new Error("LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT")
+          linuxSandboxProfile = profile
+          await command("/usr/bin/sudo", ["-n", "/usr/sbin/apparmor_parser", "--add", "--skip-cache", profile.file])
+          if (!profileIsLoaded(await loadedProfiles(), profile.name))
+            throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
+          entrypoint = join(dirname(executable), "AppRun")
+          check(
+            stage,
+            "PASS",
+            "Disposable-runner setup grants user namespaces only to this extracted AppImage executable. This tests the owned AppRun with Chromium sandboxing; default Ubuntu AppImage startup without this prerequisite is not qualified.",
+          )
+        }
+      }
+      await launch(entrypoint)
+    }
   }
 } catch (error) {
   failed = error
@@ -245,6 +316,59 @@ try {
   )
   await writeFile(join(root, "diagnostic.txt"), String(error?.stack || error), { mode: 0o600 })
 } finally {
+  const safeToRemove = !applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS"
+  if (linuxInstallation) {
+    if (safeToRemove) {
+      try {
+        await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--purge", linuxInstallation.packageName])
+        requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"))
+        for (const path of linuxInstallation.paths)
+          if (await exists(path)) throw new Error("OWNED_UNINSTALL_NOT_COMPLETE")
+        check(
+          "uninstall",
+          "PASS",
+          "Owned Debian candidate purged after confirmed application shutdown; package, installation paths and its AppArmor profile were removed.",
+        )
+      } catch (error) {
+        failed ||= error
+        check("uninstall", "FAIL", "Debian candidate uninstallation is unconfirmed.", qualificationFailureCode(error))
+      }
+    } else check("uninstall", "BLOCKED", "Application cleanup is unconfirmed; its installed package was retained.")
+  }
+  if (linuxSandboxProfile) {
+    if (safeToRemove) {
+      try {
+        if (profileIsLoaded(await loadedProfiles(), linuxSandboxProfile.name))
+          await command("/usr/bin/sudo", [
+            "-n",
+            "/usr/sbin/apparmor_parser",
+            "--remove",
+            "--skip-cache",
+            linuxSandboxProfile.file,
+          ])
+        if (profileIsLoaded(await loadedProfiles(), linuxSandboxProfile.name))
+          throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
+        check(
+          "linux-sandbox-cleanup",
+          "PASS",
+          "The exact temporary AppImage sandbox profile was removed after confirmed application shutdown.",
+        )
+      } catch (error) {
+        failed ||= error
+        check(
+          "linux-sandbox-cleanup",
+          "FAIL",
+          "Temporary AppImage sandbox profile removal is unconfirmed.",
+          qualificationFailureCode(error),
+        )
+      }
+    } else
+      check(
+        "linux-sandbox-cleanup",
+        "BLOCKED",
+        "Application cleanup is unconfirmed; its scoped sandbox profile was retained.",
+      )
+  }
   if (installed) {
     if (checks.find((item) => item.id === "cleanup")?.status === "PASS") {
       const uninstallers = (await readdir(installed)).filter((name) => /^Uninstall .*\.exe$/i.test(name))
@@ -347,6 +471,7 @@ async function launch(executable) {
     ],
     { cwd: profile, env: qualificationEnvironment(process.env, profile), stdio: ["ignore", "pipe", "pipe"] },
   )
+  applicationStarted = true
   const log = createWriteStream(join(root, "application.log"), { mode: 0o600 })
   child.stdout.pipe(log, { end: false })
   child.stderr.pipe(log, { end: false })
@@ -452,6 +577,21 @@ async function launch(executable) {
       "PACKAGED_WORKSPACE_UNAVAILABLE",
     )
     startup.dispose()
+    if (process.platform === "linux") {
+      verifyLinuxRendererSandbox(
+        await Promise.all(
+          (await descendants(child.pid)).map(async (pid) => ({
+            commandLine: await readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => ""),
+            status: await readFile(`/proc/${pid}/status`, "utf8").catch(() => ""),
+          })),
+        ),
+      )
+      check(
+        "linux-renderer-sandbox",
+        "PASS",
+        "Observed renderer processes retain seccomp filtering and no-new-privileges, with no sandbox-disabling arguments.",
+      )
+    }
     check(
       stage,
       "PASS",
@@ -628,6 +768,20 @@ async function launch(executable) {
     log.end()
     stage = previous
   }
+}
+
+async function exists(path) {
+  return lstat(path).then(
+    () => true,
+    (error) => {
+      if (error.code === "ENOENT") return false
+      throw error
+    },
+  )
+}
+
+async function loadedProfiles() {
+  return command("/usr/bin/sudo", ["-n", "/bin/cat", "/sys/kernel/security/apparmor/profiles"])
 }
 
 async function descendants(pid) {

@@ -66,12 +66,52 @@ function receipt(artifact: CandidateArtifact, inventory: CandidateInventory): Qu
         : { status: "NOT_TESTED", trust: "NOT_APPLICABLE_TO_LINUX_PACKAGE" },
     publicDistribution: { status: "BLOCKED", reason: "Internal simulation candidate" },
     result: "PASS",
-    checks: [...requiredQualificationChecks, ...(artifact.format === "nsis" ? ["uninstall"] : [])].map((id) => ({
+    checks: [
+      ...requiredQualificationChecks,
+      ...(["nsis", "deb"].includes(artifact.format) ? ["uninstall"] : []),
+      ...(artifact.format !== "nsis" ? ["linux-sandbox-setup", "linux-renderer-sandbox"] : []),
+      ...(artifact.format === "AppImage" ? ["appimage-launcher", "linux-sandbox-cleanup"] : []),
+    ].map((id) => ({
       id,
       status: "PASS",
     })),
   }
 }
+
+test("AppImage cannot qualify without final launcher inspection", async () => {
+  const { inventory } = await fixture()
+  const artifact = inventory.files.find((entry) => entry.format === "AppImage")!
+  const report = receipt(artifact, inventory)
+  expect(verifyQualification(artifact, inventory, report)).toBe(report)
+  report.checks = report.checks.filter((check) => check.id !== "appimage-launcher")
+  expect(() => verifyQualification(artifact, inventory, report)).toThrow("incomplete")
+})
+
+test("Linux qualification cannot omit sandbox observations or format cleanup", async () => {
+  const { inventory } = await fixture()
+  for (const artifact of inventory.files) {
+    const report = receipt(artifact, inventory)
+    const required = [
+      "linux-sandbox-setup",
+      "linux-renderer-sandbox",
+      artifact.format === "deb" ? "uninstall" : "linux-sandbox-cleanup",
+    ]
+    for (const id of required) {
+      expect(() =>
+        verifyQualification(artifact, inventory, {
+          ...report,
+          checks: report.checks.filter((check) => check.id !== id),
+        }),
+      ).toThrow("incomplete")
+      expect(() =>
+        verifyQualification(artifact, inventory, {
+          ...report,
+          checks: report.checks.map((check) => (check.id === id ? { ...check, status: "NOT_TESTED" } : check)),
+        }),
+      ).toThrow("incomplete")
+    }
+  }
+})
 
 function platformReport(inventory: CandidateInventory): PlatformReport {
   return {

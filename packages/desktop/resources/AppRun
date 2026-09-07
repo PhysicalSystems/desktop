@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+# Keep Chromium's sandbox required. Unsupported hosts fail during initialization;
+# this launcher never substitutes an unsandboxed process.
+set -eu
+
+for argument do
+  case "$argument" in
+    --no-sandbox|--no-sandbox=*|-no-sandbox|-no-sandbox=*|\
+    --disable-setuid-sandbox|--disable-setuid-sandbox=*|-disable-setuid-sandbox|-disable-setuid-sandbox=*|\
+    --disable-namespace-sandbox|--disable-namespace-sandbox=*|-disable-namespace-sandbox|-disable-namespace-sandbox=*|\
+    --disable-seccomp-filter-sandbox|--disable-seccomp-filter-sandbox=*|-disable-seccomp-filter-sandbox|-disable-seccomp-filter-sandbox=*|\
+    --disable-gpu-sandbox|--disable-gpu-sandbox=*|-disable-gpu-sandbox|-disable-gpu-sandbox=*|\
+    --no-zygote|--no-zygote=*|-no-zygote|-no-zygote=*|--single-process|--single-process=*|-single-process|-single-process=*)
+      printf '%s\n' 'PHYSICALSYSTEMS_SANDBOX_REQUIRED' >&2
+      exit 78
+      ;;
+  esac
+done
+
+# Resolve from this file, not a caller-provided APPDIR. Shell builtins keep the
+# launcher independent of Node, Bun and external commands on PATH.
+case "$0" in
+  */*) APPDIR=$(CDPATH= cd -- "${0%/*}" && pwd -P) ;;
+  *) printf '%s\n' 'PHYSICALSYSTEMS_APPDIR_UNAVAILABLE' >&2; exit 78 ;;
+esac
+export APPDIR
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$APPDIR/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}:/usr/local/share:/usr/share"
+unset ELECTRON_DISABLE_SANDBOX
+exec "$APPDIR/physical-systems-candidate" "$@"
