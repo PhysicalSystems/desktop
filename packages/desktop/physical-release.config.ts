@@ -53,7 +53,7 @@ const config: Configuration = {
       { target: "deb", arch: ["x64"] },
       { target: "AppImage", arch: ["x64"] },
     ],
-    artifactName: "physical-systems-desktop-${version}-linux-${arch}.${ext}",
+    artifactName: "physical-systems-desktop-${version}-linux-x64.${ext}",
     executableName: "physical-systems-candidate",
     category: "Development",
   },
