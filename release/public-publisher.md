@@ -60,7 +60,7 @@ Tests use synthetic byte payloads and fake GitHub responses. They verify orderin
 
 ## Public build identity and signing configuration
 
-`packages/desktop/physical-public.config.ts` and the pure `public-build.ts` helpers are implemented separately from the candidate packager. This is build preparation infrastructure; the signed producer workflow and complete native public qualification are **not yet implemented or qualified**.
+The [public build driver](public-build.md), `packages/desktop/physical-public.config.ts` and the pure `public-build.ts` helpers are implemented separately from the candidate packager. The driver builds from independently anchored input snapshots and scopes signing credentials to packaging. Its output remains unqualified; the signed producer workflow and complete native public qualification are **not yet implemented or qualified**.
 
 Public preview and stable use one fixed installation identity: `systems.physical.desktop`, product `Physical Systems`, package/executable `physical-systems-desktop`, and the default `physicalsystems-desktop` data directory. A preview-to-stable change must pass the same upgrade/configuration-preservation checks. Candidate/development identity and default data remain unchanged. This policy does not automatically migrate existing candidate data.
 

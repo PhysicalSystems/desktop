@@ -102,6 +102,8 @@ The public installer destination is **PhysicalSystems/physicalsystems**, matchin
 
 The website integration is reviewed in [platform PR #287](https://github.com/PhysicalSystems/platform/pull/287). Its controlled `public/desktop-selection.json` starts with `release: null`. The page offers only installers matching that selection and live GitHub metadata, with bounded requests and explicit recovery. It does not claim to check binary bytes or Windows signatures inside the browser. A successful empty selection withdraws downloads.
 
+The [public build driver](public-build.md) can prepare installers under the public identity from independently anchored inputs, with signing credentials scoped to packaging. It emits an unqualified build record; the complete native producer and actual signing setup remain prerequisites.
+
 The [public publisher](public-publisher.md) is implemented, with publication disabled until the signed producer, native evidence and protected credentials are available:
 
 1. Consume a successful signed qualification run on the exact reviewed source, verify the anchored bundle, reserve a draft and upload the exact installers.

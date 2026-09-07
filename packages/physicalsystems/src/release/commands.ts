@@ -94,7 +94,7 @@ export function buildEnvironment(input: NodeJS.ProcessEnv, inputs: ReleaseInputs
   })
 }
 
-async function run(executable: string, args: string[], cwd: string, env = process.env, timeoutMs = 600_000) {
+export async function run(executable: string, args: string[], cwd: string, env = process.env, timeoutMs = 600_000) {
   const child = spawn(executable, args, { cwd, env, stdio: "inherit", shell: false })
   const timer = setTimeout(() => child.kill(), timeoutMs)
   const code = await new Promise<number | null>((accept, reject) => {
