@@ -9,6 +9,7 @@ import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { qualificationPrompt, startFixtureProvider } from "./fixture-provider.mjs"
 import { composerReadiness } from "../src/release/composer-readiness.ts"
+import { allocateLinuxQualificationTemporary } from "../src/release/linux-temporary.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
@@ -78,6 +79,7 @@ let publicCompiledIdentity
 let installed
 let linuxInstallation
 let linuxSandboxProfile
+let linuxTemporary
 let applicationStarted = false
 let systemMutationUnconfirmed = false
 let diagnosticLogStatus = "NOT_STARTED"
@@ -380,6 +382,26 @@ try {
   const safeToRemove =
     !systemMutationUnconfirmed &&
     (!applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS")
+  if (linuxTemporary) {
+    try {
+      const status = await linuxTemporary.cleanup({ applicationExited: safeToRemove, descendantsExited: safeToRemove })
+      check(
+        "linux-temporary-cleanup",
+        status === "REMOVED" ? "PASS" : "BLOCKED",
+        status === "REMOVED"
+          ? "Owned short temporary directory removed after confirming no application was started or the owned application and descendants exited."
+          : "Application cleanup is unconfirmed; its private temporary directory was retained.",
+      )
+    } catch (error) {
+      failed ||= error
+      check(
+        "linux-temporary-cleanup",
+        "FAIL",
+        "Owned temporary directory cleanup is unconfirmed.",
+        qualificationFailureCode(error),
+      )
+    }
+  }
   if (linuxInstallation) {
     if (safeToRemove) {
       try {
@@ -539,6 +561,7 @@ try {
 async function launch(executable) {
   stage = "launch"
   const profile = join(root, "profile")
+  if (process.platform === "linux") linuxTemporary = await allocateLinuxQualificationTemporary(process.env, root)
   for (const folder of ["config/opencode", "tmp", "empty-path", "appdata", "localappdata"])
     await mkdir(join(profile, folder), { recursive: true, mode: 0o700 })
   const provider = await startFixtureProvider()
@@ -571,7 +594,11 @@ async function launch(executable) {
       "--disable-renderer-backgrounding",
       ...(process.platform === "linux" ? ["--ozone-platform=x11"] : []),
     ],
-    { cwd: profile, env: qualificationEnvironment(process.env, profile), stdio: ["ignore", "pipe", "pipe"] },
+    {
+      cwd: profile,
+      env: { ...qualificationEnvironment(process.env, profile), ...linuxTemporary?.environment },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
   )
   applicationStarted = true
   const log = createWriteStream(join(root, "application.log"), { mode: 0o600 })
