@@ -14,8 +14,9 @@ test("delayed project binding, route, provider model and agent selection admit o
     },
     routeKeys: ["opencode.desktop.window.fixture.last-active-url"],
     route: "/server/c2lkZWNhcg/session/session-fixture",
-    model: "Synthetic workflow fixture",
-    agent: "physical-systems",
+    modelId: "fixture",
+    providerId: "fixture",
+    agentId: "physical-systems",
   }
   const read: typeof composerReadiness = Function(`return (${composerReadiness.toString()})`)()
   expect(read(input)).toBe("READY")
@@ -31,13 +32,15 @@ test("delayed project binding, route, provider model and agent selection admit o
   ])
     expect(read(pending)).toBe("CONVERSATION_NOT_READY")
   for (const pending of [
-    { ...input, model: null },
-    { ...input, model: "Loading" },
-    { ...input, agent: null },
-    { ...input, agent: "build" },
+    { ...input, modelId: null },
+    { ...input, modelId: "Loading" },
+    { ...input, providerId: null },
+    { ...input, providerId: "another-provider" },
+    { ...input, agentId: null },
+    { ...input, agentId: "build" },
+    { ...input, agentId: " physical-systems " },
   ])
     expect(read(pending)).toBe("MODEL_NOT_READY")
-  expect(read({ ...input, model: " Synthetic workflow fixture " })).toBe("READY")
 })
 
 test("inert provider confirms only a tool-enabled request containing the exact known synthetic prompt", async () => {

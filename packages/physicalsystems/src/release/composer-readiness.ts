@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 type Conversation = { id: string; serverId: string; sessionId: string }
 
+/** Read semantic IDs from the real controls, independent of translated labels. */
+export function composerSelection(root: {
+  querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null }>
+}) {
+  const models = root.querySelectorAll('[data-action="prompt-model"]')
+  const agents = root.querySelectorAll('[data-action="prompt-agent"]')
+  return {
+    modelId: models.length === 1 ? models[0]!.getAttribute("data-model-id") : null,
+    providerId: models.length === 1 ? models[0]!.getAttribute("data-provider-id") : null,
+    agentId: agents.length === 1 ? agents[0]!.getAttribute("data-agent-id") : null,
+  }
+}
+
 /** Self-contained so qualification evaluates this same predicate in the renderer. */
 export function composerReadiness(input: {
   expectedProjectId: string
@@ -13,8 +26,9 @@ export function composerReadiness(input: {
   }
   routeKeys: string[]
   route: string | null
-  model: string | null
-  agent: string | null
+  modelId: string | null
+  providerId: string | null
+  agentId: string | null
 }): "READY" | "CONVERSATION_NOT_READY" | "MODEL_NOT_READY" {
   const s = input.snapshot
   const c = s.conversation
@@ -36,7 +50,7 @@ export function composerReadiness(input: {
     input.route !== "/server/c2lkZWNhcg/session/" + c.sessionId
   )
     return "CONVERSATION_NOT_READY"
-  if (input.model?.trim() !== "Synthetic workflow fixture" || input.agent?.trim() !== "physical-systems")
+  if (input.modelId !== "fixture" || input.providerId !== "fixture" || input.agentId !== "physical-systems")
     return "MODEL_NOT_READY"
   return "READY"
 }

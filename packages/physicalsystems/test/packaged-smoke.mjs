@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { qualificationPrompt, startFixtureProvider } from "./fixture-provider.mjs"
-import { composerReadiness } from "../src/release/composer-readiness.ts"
+import { composerReadiness, composerSelection } from "../src/release/composer-readiness.ts"
 import { probePackagedRenderer } from "../src/release/cdp-discovery.ts"
 import { allocateLinuxQualificationTemporary } from "../src/release/linux-temporary.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
@@ -766,8 +766,7 @@ async function launch(executable) {
           const routeKeys = Object.keys(localStorage).filter(key => /^opencode\\.desktop\\.window\\..+\\.last-active-url$/.test(key));
           return (${composerReadiness.toString()})({ expectedProjectId: ${JSON.stringify(expectedProjectId)}, snapshot, routeKeys,
             route: routeKeys.length === 1 ? localStorage.getItem(routeKeys[0]) : null,
-            model: document.querySelector('[data-action="prompt-model"] .truncate')?.textContent ?? null,
-            agent: document.querySelector('[data-action="prompt-agent"] [data-slot="select-select-trigger-value"]')?.textContent ?? null });
+            ...(${composerSelection.toString()})(document) });
         })()`)
         return readiness === "READY"
       }, "PACKAGED_CONVERSATION_NOT_READY").catch((error) => {
