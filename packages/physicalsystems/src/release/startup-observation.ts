@@ -2,6 +2,7 @@
 import { lstat } from "node:fs/promises"
 import { join } from "node:path"
 import type { Writable } from "node:stream"
+import { linuxProcessArguments } from "./linux-qualification"
 
 /** Private logging must never prevent a qualification receipt from finishing. */
 export function observePrivateLog(log: Writable) {
@@ -80,7 +81,7 @@ export async function startupCheckpointDetail(profile: string, commandLines: str
   )
   const kinds = new Set<string>()
   for (const line of commandLines) {
-    const args = line.split("\0")
+    const args = linuxProcessArguments(line)
     const type = args.find((arg) => arg.startsWith("--type="))?.slice(7)
     kinds.add(type && ["renderer", "utility", "gpu-process", "zygote"].includes(type) ? type : "other")
   }

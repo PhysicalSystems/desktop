@@ -57,6 +57,13 @@ test("startup observations distinguish early main, logger, operator and attachme
     const later = await startupCheckpointDetail(root)
     expect(later).toContain("operator=present, attachment=present")
     expect(later).not.toContain("private-")
+    const rewritten = await startupCheckpointDetail(root, [
+      "/opt/Physical Systems Candidate/private-argv --type=renderer --token=private-trap\0\0",
+      "private-argv --type=gpu-process --token=private-trap\0",
+      "private-argv\0--title=word --type=utility\0",
+    ])
+    expect(rewritten).toContain("owned process kinds=gpu-process,other,renderer")
+    expect(rewritten).not.toContain("private-")
   } finally {
     await rm(root, { recursive: true, force: true })
   }

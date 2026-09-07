@@ -77,20 +77,28 @@ export function debianProfileIsLoaded(profiles: string, kind: "candidate" | "pub
   return profiles.split("\n").some((line) => line.startsWith(desktopIdentity(kind).executableName + " ("))
 }
 
+/** Chromium replaces argv with one space-separated title after a Linux zygote fork. */
+export function linuxProcessArguments(commandLine: string) {
+  const args = commandLine.split("\0").filter((value) => value.length > 0)
+  // Preserve real argv boundaries, including spaces inside a single argument.
+  // A rewritten title has one nonempty field followed by optional NUL padding.
+  return args.length === 1 ? args[0].split(/[ \t]+/).filter((value) => value.length > 0) : args
+}
+
 /** Native /proc observations, not a claim based only on BrowserWindow options. */
 export function verifyLinuxRendererSandbox(processes: { commandLine: string; status: string }[]) {
-  const renderers = processes.filter((entry) => entry.commandLine.split("\0").includes("--type=renderer"))
+  const renderers = processes
+    .map((entry) => ({ ...entry, args: linuxProcessArguments(entry.commandLine) }))
+    .filter((entry) => entry.args.includes("--type=renderer"))
   if (
     !renderers.length ||
     renderers.some(
       (entry) =>
         !/^Seccomp:\s+2\s*$/m.test(entry.status) ||
         !/^NoNewPrivs:\s+1\s*$/m.test(entry.status) ||
-        entry.commandLine
-          .split("\0")
-          .some((argument) =>
-            /^--?(?:no-sandbox|disable-(?:setuid|namespace|seccomp-filter|gpu)-sandbox)(?:=|$)/.test(argument),
-          ),
+        entry.args.some((argument) =>
+          /^--?(?:no-sandbox|disable-(?:setuid|namespace|seccomp-filter|gpu)-sandbox)(?:=|$)/.test(argument),
+        ),
     )
   )
     throw new Error("PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED")

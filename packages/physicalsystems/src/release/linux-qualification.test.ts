@@ -7,6 +7,7 @@ import {
   appImageSandboxProfile,
   debianCandidatePlan,
   debianProfileIsLoaded,
+  linuxProcessArguments,
   profileIsLoaded,
   requireAbsentDebianCandidate,
   requireDisposableLinuxRunner,
@@ -116,4 +117,47 @@ test("sandbox qualification requires every observed renderer to retain seccomp a
     [good, { ...good, status: "private status credential trap" }],
   ])
     expect(() => verifyLinuxRendererSandbox(bad)).toThrow("PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED")
+})
+
+test("native renderer checks recognize Chromium's rewritten title without weakening sandbox observations", () => {
+  const executable = "/opt/Physical Systems Candidate/physical-systems-candidate"
+  const rewritten = `${executable} --type=renderer --user-data-dir=/owned/profile desktop\0\0`
+  const argv = `${executable}\0--type=renderer\0--user-data-dir=/owned/profile desktop\0`
+  const status = "Name:\tphysical-system\nSeccomp:\t2\nNoNewPrivs:\t1\n"
+  for (const commandLine of [rewritten, rewritten.replaceAll("\0", ""), argv]) {
+    expect(() => verifyLinuxRendererSandbox([{ commandLine, status }])).not.toThrow()
+    for (const invalid of ["Seccomp:\t0\nNoNewPrivs:\t1\n", "Seccomp:\t2\nNoNewPrivs:\t0\n", ""])
+      expect(() => verifyLinuxRendererSandbox([{ commandLine, status: invalid }])).toThrow("SANDBOX_UNCONFIRMED")
+  }
+  expect(linuxProcessArguments(argv)).toEqual([executable, "--type=renderer", "--user-data-dir=/owned/profile desktop"])
+  for (const flag of [
+    "--no-sandbox",
+    "--no-sandbox=false",
+    "-no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-namespace-sandbox",
+    "--disable-seccomp-filter-sandbox",
+    "--disable-gpu-sandbox",
+  ])
+    for (const commandLine of [`${argv}${flag}\0`, `${rewritten.replaceAll("\0", "")} ${flag}\0`])
+      expect(() => verifyLinuxRendererSandbox([{ commandLine, status }])).toThrow("SANDBOX_UNCONFIRMED")
+})
+
+test("process argument boundaries reject renderer substrings and preserve NUL-delimited values", () => {
+  const executable = "/opt/Physical Systems Candidate/physical-systems-candidate"
+  const status = "Seccomp:\t2\nNoNewPrivs:\t1\n"
+  for (const commandLine of [
+    `${executable} --type=renderer-extra\0`,
+    `${executable} --url=oc://renderer/?--type=renderer\0`,
+    `${executable}\0--title=word --type=renderer\0`,
+    `${executable}\0--type=renderer extra\0`,
+    `${executable}\0--type=utility\0`,
+    "",
+  ])
+    expect(() => verifyLinuxRendererSandbox([{ commandLine, status }])).toThrow("SANDBOX_UNCONFIRMED")
+  for (const commandLine of [
+    `${executable}\0--type=renderer\0--label=word --no-sandbox\0`,
+    `${executable} --type=renderer --no-sandbox-debugging\0`,
+  ])
+    expect(() => verifyLinuxRendererSandbox([{ commandLine, status }])).not.toThrow()
 })
