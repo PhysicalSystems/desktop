@@ -43,6 +43,7 @@ import { physicalEnvironment } from "../../../physicalsystems/src/environment"
 import { createPhysicalHost } from "./physical"
 import type { PhysicalHost } from "./physical"
 import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycle"
+import { desktopIdentity } from "../../../physicalsystems/src/release/identity"
 const TEST_ONBOARDING = process.env.OPENCODE_TEST_ONBOARDING === "1"
 // Physical Systems' reviewed tool adapter currently targets the bundled v1 server.
 const SIDECAR_VERSION = "v1"
@@ -101,7 +102,8 @@ function ensureLoopbackNoProxy() {
 }
 
 const main = Effect.gen(function* () {
-  const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), "physicalsystems-opencode-development")
+  const identity = desktopIdentity(import.meta.env.PHYSICALSYSTEMS_BUILD_IDENTITY)
+  const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), identity.profileDirectory)
   const scoped = physicalEnvironment(process.env, physicalRoot)
   for (const key of Object.keys(process.env)) if (!(key in scoped)) delete process.env[key]
   Object.assign(process.env, scoped)
@@ -120,7 +122,7 @@ const main = Effect.gen(function* () {
 
   process.env.OPENCODE_DISABLE_EMBEDDED_WEB_UI = "true"
 
-  const appId = "systems.physical.desktop.development"
+  const appId = identity.appId
   const onboardingTestRoot = ((): string | undefined => {
     if (!TEST_ONBOARDING) return
 
@@ -136,7 +138,7 @@ const main = Effect.gen(function* () {
     process.env.XDG_STATE_HOME = join(root, "state")
     return root
   })()
-  app.setName("Physical Systems Development")
+  app.setName(identity.runtimeName)
   app.setAppUserModelId(appId)
   app.setPath(
     "userData",

@@ -125,57 +125,7 @@ export async function proposeWebsiteSelection(input: {
     throw new Error("Website promotion requires its separately scoped GitHub credential")
   const next = parseSelection(input.bytes) as { release: { version: string } }
   selectionTransition({ schemaVersion: 1, repository: "PhysicalSystems/physicalsystems", release: null }, next)
-  const request = input.fetch ?? fetch
-  const api = async (suffix: string, method = "GET", body?: unknown, missing = false) => {
-    const response = await Promise.resolve()
-      .then(() =>
-        request(`https://api.github.com/repos/${repository}/${suffix}`, {
-          method,
-          redirect: "error",
-          signal: AbortSignal.timeout(30_000),
-          headers: {
-            Accept: "application/vnd.github+json",
-            Authorization: `Bearer ${input.token}`,
-            "Content-Type": "application/json",
-            "X-GitHub-Api-Version": "2022-11-28",
-          },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        }),
-      )
-      .catch(() => {
-        throw new Error(
-          "Website promotion request outcome is uncertain; inspect the existing branch/PR before retrying",
-        )
-      })
-    if (missing && response.status === 404) {
-      await response.body?.cancel().catch(() => {})
-      return null
-    }
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {})
-      throw new Error(
-        `Website promotion API failed (${response.status}); inspect the existing branch/PR before retrying`,
-      )
-    }
-    if (!response.body) throw new Error("Website promotion API returned an empty response")
-    const reader = response.body.getReader()
-    const chunks: Uint8Array[] = []
-    let size = 0
-    try {
-      for (;;) {
-        const chunk = await reader.read()
-        if (chunk.done) break
-        size += chunk.value.byteLength
-        if (size > 4 * 1024 * 1024) throw new Error("Website API response limit exceeded")
-        chunks.push(chunk.value)
-      }
-      return JSON.parse(Buffer.concat(chunks).toString("utf8"))
-    } catch {
-      throw new Error("Website promotion API response is uncertain; inspect the existing branch/PR before retrying")
-    } finally {
-      await reader.cancel().catch(() => {})
-    }
-  }
+  const api = websiteApi(input.token, input.fetch)
   const main = await api("git/ref/heads/main")
   if (!/^[a-f0-9]{40}$/.test(main?.object?.sha)) throw new Error("Website main revision is unavailable")
   const existing = await api(`contents/${path}?ref=${main.object.sha}`)
@@ -183,8 +133,10 @@ export async function proposeWebsiteSelection(input: {
     throw new Error("Website selection is not installed on main")
   if (typeof existing.content !== "string" || existing.content.length > 96 * 1024)
     throw new Error("Website selection content is unavailable")
-  const previous = parseSelection(Buffer.from(existing.content, "base64"))
-  if (selectionTransition(previous, next) === "unchanged") return { status: "unchanged", url: null }
+  const previousBytes = Buffer.from(existing.content, "base64")
+  const previous = parseSelection(previousBytes)
+  if (selectionTransition(previous, next) === "unchanged" && previousBytes.equals(Buffer.from(input.bytes)))
+    return { status: "unchanged", url: null }
   const branch = `desktop-download-${next.release.version.replace("-beta.", "b")}`
   const reference = await api(`git/ref/heads/${branch}`, "GET", undefined, true)
   if (!reference) await api("git/refs", "POST", { ref: `refs/heads/${branch}`, sha: main.object.sha })
@@ -233,7 +185,7 @@ export async function proposeWebsiteSelection(input: {
       title: `chore(download): select desktop ${next.release.version}`,
       head: branch,
       base: "main",
-      body: `Select the approved Physical Systems Desktop ${next.release.version} installers after anonymous public SHA-256 and size verification.\n\nOnly public/desktop-selection.json changes. Selection digest: ${input.expectedSha256}.\n\nRequired website checks and review still apply. Merging main triggers the existing deployment; this job does not merge or deploy.`,
+      body: `Select the approved Physical Systems Desktop ${next.release.version} installers after anonymous public SHA-256 and size verification.\n\nOnly public/desktop-selection.json changes. Selection digest: ${input.expectedSha256}.\n\nThe coordinator merges only this selection change after the website checks pass for its exact commit. Merging main triggers the existing deployment; no additional release approval is requested.`,
     }))
   if (
     typeof pull?.html_url !== "string" ||
@@ -241,4 +193,59 @@ export async function proposeWebsiteSelection(input: {
   )
     throw new Error("Website PR result is uncertain; inspect the existing branch before retrying")
   return { status: "proposed", url: pull.html_url }
+}
+
+export function websiteApi(token: string, fetcher?: Fetcher) {
+  if (!token || /\s/.test(token)) throw new Error("Website promotion requires its separately scoped GitHub credential")
+  const request = fetcher ?? fetch
+  return async (suffix: string, method = "GET", body?: unknown, missing = false) => {
+    const response = await Promise.resolve()
+      .then(() =>
+        request(`https://api.github.com/repos/${repository}/${suffix}`, {
+          method,
+          redirect: "error",
+          signal: AbortSignal.timeout(30_000),
+          headers: {
+            Accept: "application/vnd.github+json",
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+            "X-GitHub-Api-Version": "2022-11-28",
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+      )
+      .catch(() => {
+        throw new Error(
+          "Website promotion request outcome is uncertain; inspect the existing branch/PR before retrying",
+        )
+      })
+    if (missing && response.status === 404) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {})
+      throw new Error(
+        `Website promotion API failed (${response.status}); inspect the existing branch/PR before retrying`,
+      )
+    }
+    if (!response.body) throw new Error("Website promotion API returned an empty response")
+    const reader = response.body.getReader()
+    const chunks: Uint8Array[] = []
+    let size = 0
+    try {
+      for (;;) {
+        const chunk = await reader.read()
+        if (chunk.done) break
+        size += chunk.value.byteLength
+        if (size > 4 * 1024 * 1024) throw new Error("Website API response limit exceeded")
+        chunks.push(chunk.value)
+      }
+      return JSON.parse(Buffer.concat(chunks).toString("utf8"))
+    } catch {
+      throw new Error("Website promotion API response is uncertain; inspect the existing branch/PR before retrying")
+    } finally {
+      await reader.cancel().catch(() => {})
+    }
+  }
 }
