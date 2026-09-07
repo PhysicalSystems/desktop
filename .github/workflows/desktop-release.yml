@@ -18,6 +18,10 @@ on:
         description: Optional preview version; stable requires an explicit version
         type: string
         required: false
+      diagnostic_public_key:
+        description: Optional RSA public PEM (3072+ bits) for encrypted bounded startup logs; never provide a private key
+        type: string
+        required: false
 
 # These jobs cannot publish releases, push tags, attest, sign or change a website.
 permissions:
@@ -152,6 +156,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-desktop-build
+      - name: Verify native source archive staging
+        working-directory: packages/physicalsystems
+        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: desktop-inputs-${{ github.run_id }}-${{ github.run_attempt }}
@@ -161,7 +168,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0
+          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0 dbus gnome-keyring libglib2.0-bin
 
       - name: Verify fixed inputs before building
         run: bun script/desktop-release.ts verify-inputs --inputs "$RUNNER_TEMP/desktop-release/inputs/release-inputs.json"
@@ -172,6 +179,9 @@ jobs:
 
       - name: Qualify the actual packaged applications
         id: qualify
+        env:
+          PS_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
+          PS_DIAGNOSTIC_DIRECTORY: ${{ runner.temp }}/desktop-release/sealed-diagnostics
         run: |
           args=(script/desktop-release.ts qualify --inputs "$RUNNER_TEMP/desktop-release/inputs/release-inputs.json" --artifacts "$RUNNER_TEMP/desktop-release/artifacts" --output "$RUNNER_TEMP/desktop-release/receipts")
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -207,6 +217,17 @@ jobs:
             publication: false,
           }, null, 2) + '\n');
           NODE
+
+      # The optional envelope contains only encrypted bounded startup diagnostics.
+      # Its private key never reaches the runner. It is not release evidence.
+      - name: Retain optional encrypted startup diagnostics
+        if: always() && inputs.diagnostic_public_key != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-sealed-diagnostics-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-release/sealed-diagnostics/*.sealed.json
+          if-no-files-found: warn
+          retention-days: 3
 
       # Only generated public-safe receipts are retained. Never upload temporary
       # profiles, browser logs, credentials, runtime attachment files or screenshots.

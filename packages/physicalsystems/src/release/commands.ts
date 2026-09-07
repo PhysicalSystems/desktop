@@ -77,7 +77,9 @@ export function buildEnvironment(input: NodeJS.ProcessEnv, inputs: ReleaseInputs
       /^(OPENCODE_|PHYSICALSYSTEMS_|SENTRY_|VITE_SENTRY_|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CSC_|WIN_CSC_|WIN_SIGNING_|APPLE_)/.test(
         key,
       ) ||
-      /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(key)
+      /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)/.test(key) ||
+      key === "USE_HARD_LINKS" ||
+      key === "VITEST"
     )
       delete env[key]
   return Object.assign(env, {
@@ -92,7 +94,7 @@ export function buildEnvironment(input: NodeJS.ProcessEnv, inputs: ReleaseInputs
   })
 }
 
-async function run(executable: string, args: string[], cwd: string, env = process.env, timeoutMs = 600_000) {
+export async function run(executable: string, args: string[], cwd: string, env = process.env, timeoutMs = 600_000) {
   const child = spawn(executable, args, { cwd, env, stdio: "inherit", shell: false })
   const timer = setTimeout(() => child.kill(), timeoutMs)
   const code = await new Promise<number | null>((accept, reject) => {
@@ -122,6 +124,16 @@ async function readInputs(file: string) {
   return { inputs: verified, models }
 }
 
+export async function stageCandidateSource(root: string, revision: string, transaction: string, env = process.env) {
+  const stage = join(transaction, "source")
+  await mkdir(stage)
+  await run("git", ["archive", "--format=tar", "--output", join(transaction, "source.tar"), revision], root, env)
+  // Git Bash's GNU tar interprets a Windows drive prefix as a remote host.
+  // Relative operands also work with Windows' native BSD tar and Linux tar.
+  await run("tar", ["-xf", "source.tar", "-C", "source"], transaction, env)
+  return stage
+}
+
 async function buildCandidate(file: string, platform: CandidatePlatform, outputPath: string) {
   const { inputs, models } = await readInputs(file)
   const host = process.platform === "win32" ? "windows-x64" : process.platform === "linux" ? "linux-x64" : "unsupported"
@@ -131,13 +143,9 @@ async function buildCandidate(file: string, platform: CandidatePlatform, outputP
     throw new Error("Candidate Bun version does not match release inputs")
   const output = await emptyOutput(outputPath)
   const transaction = await mkdtemp(join(dirname(output), "desktop-build-"))
-  const stage = join(transaction, "source")
-  const archive = join(transaction, "source.tar")
   const env = buildEnvironment(process.env, inputs, resolve(file), models)
   try {
-    await mkdir(stage)
-    await run("git", ["archive", "--format=tar", "--output", archive, inputs.source.revision], sourceRoot, env)
-    await run("tar", ["-xf", archive, "-C", stage], sourceRoot, env)
+    const stage = await stageCandidateSource(sourceRoot, inputs.source.revision, transaction, env)
     // Installing in the generated tree avoids workspace symlinks resolving back
     // into an actively edited checkout. Only pinned dependency download caches are reused.
     await run(process.execPath, ["install", "--frozen-lockfile", "--ignore-scripts"], stage, env)
@@ -247,7 +255,7 @@ export async function desktopRelease(args: string[]) {
         ],
         sourceRoot,
         process.env,
-        300_000,
+        600_000,
       ).catch(() => {
         failed = true
       })
@@ -287,7 +295,7 @@ export async function desktopRelease(args: string[]) {
     await writeFile(join(output, "report.json"), json(report))
     await writeFile(
       join(output, "report.md"),
-      `# ${inputs.version} · ${inventory.platform}\n\nCandidate qualification: **${report.result}**. Public distribution: **BLOCKED**.\n\n${checks.map((check) => `- ${check.artifact}: ${check.status}`).join("\n")}\n\nSimulation only. Windows signing, native credentials, upgrade/recovery qualification and public release setup remain separate. Optical/display flicker was not measured.\n`,
+      `# ${inputs.version} · ${inventory.platform}\n\nCandidate qualification: **${report.result}**. Public distribution: **BLOCKED**.\n\n${checks.map((check) => `- ${check.artifact}: ${check.status}`).join("\n")}\n\nTask execution used simulation only. Native credential observations are recorded in the per-artifact receipts; candidate results do not qualify signed public installers. Windows signing, provider login, display and upgrade/recovery qualification, and public release setup remain separate. Optical/display flicker was not measured.\n`,
     )
     await writeFile(join(output, "SHA256SUMS"), checksums(inventory.files))
     await writeFile(join(output, "candidate-downloads.json"), json(candidateDownloads(inputs, [inventory])))
@@ -319,7 +327,7 @@ export async function desktopRelease(args: string[]) {
   await writeFile(join(output, "SHA256SUMS"), checksums(reports.flatMap((report) => report.inventory.files)))
   await writeFile(
     join(output, "summary.md"),
-    `# Physical Systems Desktop ${inputs.version}\n\nWindows x64 and Linux x64 candidate checks passed. Publication and website updates remain disabled.\n\nSource: ${inputs.source.revision}\n\nInputs: ${inputs.sha256}\n\nThis is an unsigned simulation candidate, not a qualified hardware release. Native credentials, platform display coverage, signing and upgrade/rollback remain release blockers. Optical/display flicker was not measured.\n`,
+    `# Physical Systems Desktop ${inputs.version}\n\nWindows x64 and Linux x64 candidate checks passed. Publication and website updates remain disabled.\n\nSource: ${inputs.source.revision}\n\nInputs: ${inputs.sha256}\n\nThis is an unsigned candidate with simulated task execution; hardware was not qualified. Native credential observations are recorded in each candidate receipt. Signed public installers still require their own qualification, including provider login, platform display and installation/upgrade recovery. Signing and public release setup remain prerequisites. Optical/display flicker was not measured.\n`,
   )
   console.log(`Candidate ${inputs.version} is ready for review; no release or website was changed`)
 }

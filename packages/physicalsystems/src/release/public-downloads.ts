@@ -97,7 +97,7 @@ function safeText(value: unknown, maximum: number): value is string {
   )
 }
 
-function validateReview(input: unknown, expectedReviewSha256: string): PublicDistributionReview {
+export function validateReview(input: unknown, expectedReviewSha256: string): PublicDistributionReview {
   if (!digest(expectedReviewSha256) || publicReviewDigest(input) !== expectedReviewSha256) {
     throw new Error("Public review does not match the separately trusted approval digest")
   }
@@ -122,6 +122,52 @@ function validateReview(input: unknown, expectedReviewSha256: string): PublicDis
     review.repository !== repository
   )
     throw new Error("A protected public distribution review is required; candidate inputs are ineligible")
+  if (!Number.isSafeInteger(review.releaseId) || Number(review.releaseId) <= 0)
+    throw new Error("Public release source and identity must be immutable")
+  const approval = object(review.approval, ["decision", "protectedRunUrl", "qualificationBundleSha256"])
+  if (
+    approval.decision !== "approved" ||
+    !safeText(approval.protectedRunUrl, 300) ||
+    !/^https:\/\/github\.com\/PhysicalSystems\/[A-Za-z0-9_.-]+\/actions\/runs\/[1-9]\d*$/.test(
+      approval.protectedRunUrl,
+    ) ||
+    !digest(approval.qualificationBundleSha256)
+  )
+    throw new Error("Protected public qualification and approval evidence is required")
+  validateDistributionFacts(Object.fromEntries(distributionFields.map((key) => [key, review[key]])))
+  return review as PublicDistributionReview
+}
+
+export type PublicDistributionFacts = Pick<
+  PublicDistributionReview,
+  | "repository"
+  | "version"
+  | "channel"
+  | "tag"
+  | "sourceRevision"
+  | "inputsSha256"
+  | "identity"
+  | "windowsSigning"
+  | "assets"
+>
+const distributionFields = [
+  "repository",
+  "version",
+  "channel",
+  "tag",
+  "sourceRevision",
+  "inputsSha256",
+  "identity",
+  "windowsSigning",
+  "assets",
+] as const
+
+/** Qualification facts share every public identity, signing and per-format check.
+ * Validation of facts alone grants no publication approval.
+ */
+export function validateDistributionFacts(input: unknown): PublicDistributionFacts {
+  const review = object(input, [...distributionFields])
+  if (review.repository !== repository) throw new Error("Unexpected public download repository")
   if (
     !safeText(review.version, 80) ||
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/.test(review.version)
@@ -133,12 +179,7 @@ function validateReview(input: unknown, expectedReviewSha256: string): PublicDis
     review.tag !== `desktop-v${review.version}`
   )
     throw new Error("Public release tag and channel must identify the reviewed version")
-  if (
-    !Number.isSafeInteger(review.releaseId) ||
-    Number(review.releaseId) <= 0 ||
-    !digest(review.sourceRevision, 40) ||
-    !digest(review.inputsSha256)
-  )
+  if (!digest(review.sourceRevision, 40) || !digest(review.inputsSha256))
     throw new Error("Public release source and identity must be immutable")
   const identity = object(review.identity, ["appId", "productName"])
   if (
@@ -148,16 +189,6 @@ function validateReview(input: unknown, expectedReviewSha256: string): PublicDis
     identity.productName !== "Physical Systems"
   )
     throw new Error("Development and candidate build identities cannot be publicly selected")
-  const approval = object(review.approval, ["decision", "protectedRunUrl", "qualificationBundleSha256"])
-  if (
-    approval.decision !== "approved" ||
-    !safeText(approval.protectedRunUrl, 300) ||
-    !/^https:\/\/github\.com\/PhysicalSystems\/[A-Za-z0-9_.-]+\/actions\/runs\/[1-9]\d*$/.test(
-      approval.protectedRunUrl,
-    ) ||
-    !digest(approval.qualificationBundleSha256)
-  )
-    throw new Error("Protected public qualification and approval evidence is required")
   const signing = object(review.windowsSigning, [
     "status",
     "publisher",
@@ -202,7 +233,7 @@ function validateReview(input: unknown, expectedReviewSha256: string): PublicDis
     if (asset.name.endsWith(".exe") && signing.installerSha256 !== asset.sha256)
       throw new Error("Windows signing evidence belongs to a different installer")
   }
-  return review as PublicDistributionReview
+  return review as PublicDistributionFacts
 }
 
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>

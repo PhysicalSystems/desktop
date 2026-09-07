@@ -276,3 +276,20 @@ describe("selection-only website PR promotion", () => {
     expect(uncertain.calls.filter((call) => call.method === "PUT")).toHaveLength(1)
   })
 })
+
+test("normalizes equivalent selected JSON bytes before claiming the exact deployment is unchanged", async () => {
+  const data = fixture(selection())
+  data.state.current = Buffer.from(JSON.stringify(data.next))
+  const fetcher = async (url: string, init?: RequestInit) => {
+    const response = await data.request(url, init)
+    if (url.includes("/compare/")) return Response.json({ files: [{ filename: selectedPath }] })
+    if (url.endsWith(`contents/${selectedPath}?ref=${data.state.main}`)) {
+      const body = (await response.json()) as Record<string, unknown>
+      return Response.json({ ...body, content: Buffer.from(JSON.stringify(data.next)).toString("base64") })
+    }
+    return response
+  }
+  expect((await proposeWebsiteSelection({ ...data.input, fetch: fetcher })).status).toBe("proposed")
+  expect(data.calls.filter((call) => call.method === "PUT")).toHaveLength(1)
+  expect(data.state.current).toEqual(data.bytes)
+})

@@ -1,0 +1,143 @@
+name: Publish qualified desktop installers
+run-name: Public desktop from qualified run ${{ inputs.qualification_run_id }} attempt ${{ inputs.qualification_run_attempt }}
+
+# The unsigned candidate pipeline is ineligible. This workflow consumes a future
+# owned signing/native-qualification producer; it never fabricates its receipts.
+# One final environment approval covers publication and website selection. No
+# source preparation PR or second website approval is part of this publisher.
+on:
+  workflow_dispatch:
+    inputs:
+      qualification_run_id:
+        description: Successful signed public qualification run from reviewed main
+        type: string
+        required: true
+      qualification_run_attempt:
+        description: Exact current successful qualification attempt
+        type: string
+        required: true
+      expected_qualification_sha256:
+        description: Canonical qualification digest from the trusted producer summary (not the downloaded record)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: desktop-public-release
+  cancel-in-progress: false
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+  QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+  QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
+  EXPECTED_QUALIFICATION_SHA256: ${{ inputs.expected_qualification_sha256 }}
+  QUALIFICATION_DIR: ${{ github.workspace }}/../qualified-public-desktop
+
+jobs:
+  prepare:
+    name: Validate signed qualification and complete the reserved draft
+    if: github.repository == 'PhysicalSystems/desktop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      prepared_sha256: ${{ steps.prepare.outputs.prepared_sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+        with:
+          install-dependencies: "false"
+      - name: Check producer identity and existing final approval protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_PUBLIC_RELEASE_ENABLED: ${{ vars.DESKTOP_PUBLIC_RELEASE_ENABLED }}
+        run: bun script/desktop-public-release.ts preflight
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-public-qualified-${{ inputs.qualification_run_id }}-${{ inputs.qualification_run_attempt }}
+          path: ${{ env.QUALIFICATION_DIR }}
+          run-id: ${{ inputs.qualification_run_id }}
+          github-token: ${{ github.token }}
+      - name: Reserve and verify exact draft bytes without publishing
+        id: prepare
+        env:
+          DESKTOP_RELEASE_TOKEN: ${{ secrets.DESKTOP_DRAFT_TOKEN }}
+          PUBLICATION_OUTPUT: ${{ runner.temp }}/prepared-publication
+        run: bun script/desktop-public-release.ts prepare
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared-publication/prepared-publication.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    name: Approve once, publish the verified bytes and read public downloads back
+    if: github.repository == 'PhysicalSystems/desktop'
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # Must preexist with required reviewers. Keep DESKTOP_RELEASE_TOKEN exclusively
+    # here, scoped to the owned public download repository. No publisher credential
+    # runs downloaded code: all code is checked out from this reviewed main SHA.
+    environment: desktop-public-release
+    outputs:
+      review_sha256: ${{ steps.publish.outputs.review_sha256 }}
+      selection_sha256: ${{ steps.publish.outputs.selection_sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+        with:
+          install-dependencies: "false"
+      - name: Recheck protected producer identities after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_PUBLIC_RELEASE_ENABLED: ${{ vars.DESKTOP_PUBLIC_RELEASE_ENABLED }}
+        run: bun script/desktop-public-release.ts preflight
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-public-qualified-${{ inputs.qualification_run_id }}-${{ inputs.qualification_run_attempt }}
+          path: ${{ env.QUALIFICATION_DIR }}
+          run-id: ${{ inputs.qualification_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-public-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/prepared-publication
+      - name: Confirm ownership and publish without rebuilding or replacing assets
+        id: publish
+        env:
+          DESKTOP_RELEASE_TOKEN: ${{ secrets.DESKTOP_RELEASE_TOKEN }}
+          PUBLICATION_OUTPUT: ${{ runner.temp }}/published-publication
+          PREPARED_PUBLICATION: ${{ runner.temp }}/prepared-publication/prepared-publication.json
+          EXPECTED_PREPARED_SHA256: ${{ needs.prepare.outputs.prepared_sha256 }}
+        run: bun script/desktop-public-release.ts publish
+      - name: Retain the approved public review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/published-publication/public-review.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain the selection after anonymous exact-byte readback
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-download-selection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/published-publication/desktop-selection.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Update the website after checks and verify its live selected downloads
+        env:
+          DESKTOP_WEBSITE_TOKEN: ${{ secrets.DESKTOP_WEBSITE_TOKEN }}
+          EXPECTED_SELECTION_SHA256: ${{ steps.publish.outputs.selection_sha256 }}
+        run: bun script/desktop-promote-website.ts --selection "$RUNNER_TEMP/published-publication/desktop-selection.json" --expected-sha256 "$EXPECTED_SELECTION_SHA256" --merge-after-checks

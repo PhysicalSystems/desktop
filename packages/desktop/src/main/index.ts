@@ -43,6 +43,8 @@ import { physicalEnvironment } from "../../../physicalsystems/src/environment"
 import { createPhysicalHost } from "./physical"
 import type { PhysicalHost } from "./physical"
 import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycle"
+import { desktopIdentity } from "../../../physicalsystems/src/release/identity"
+import { startupTrace } from "./startup-trace"
 const TEST_ONBOARDING = process.env.OPENCODE_TEST_ONBOARDING === "1"
 // Physical Systems' reviewed tool adapter currently targets the bundled v1 server.
 const SIDECAR_VERSION = "v1"
@@ -101,7 +103,9 @@ function ensureLoopbackNoProxy() {
 }
 
 const main = Effect.gen(function* () {
-  const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), "physicalsystems-opencode-development")
+  startupTrace("MAIN_ENTER")
+  const identity = desktopIdentity(import.meta.env.PHYSICALSYSTEMS_BUILD_IDENTITY)
+  const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), identity.profileDirectory)
   const scoped = physicalEnvironment(process.env, physicalRoot)
   for (const key of Object.keys(process.env)) if (!(key in scoped)) delete process.env[key]
   Object.assign(process.env, scoped)
@@ -111,6 +115,7 @@ const main = Effect.gen(function* () {
   process.env.XDG_CONFIG_HOME = join(physicalRoot, "config")
   process.env.XDG_CACHE_HOME = join(physicalRoot, "cache")
   process.env.XDG_STATE_HOME = join(physicalRoot, "state")
+  startupTrace("PROFILE_READY")
   contextMenu({ showSaveImageAs: true, showLookUpSelection: false, showSearchWithGoogle: false })
 
   // on macOS apps run in `/` which can cause issues with ripgrep
@@ -120,7 +125,7 @@ const main = Effect.gen(function* () {
 
   process.env.OPENCODE_DISABLE_EMBEDDED_WEB_UI = "true"
 
-  const appId = "systems.physical.desktop.development"
+  const appId = identity.appId
   const onboardingTestRoot = ((): string | undefined => {
     if (!TEST_ONBOARDING) return
 
@@ -136,7 +141,7 @@ const main = Effect.gen(function* () {
     process.env.XDG_STATE_HOME = join(root, "state")
     return root
   })()
-  app.setName("Physical Systems Development")
+  app.setName(identity.runtimeName)
   app.setAppUserModelId(appId)
   app.setPath(
     "userData",
@@ -145,8 +150,12 @@ const main = Effect.gen(function* () {
   if (onboardingTestRoot) app.setPath("sessionData", join(onboardingTestRoot, "session"))
   else app.setPath("sessionData", join(physicalRoot, "session"))
   initializeOldLayoutEligibility(app.getPath("userData"))
+  startupTrace("LOGGING_BEFORE")
   logger = initLogging()
+  startupTrace("LOGGING_AFTER")
+  startupTrace("CRASH_REPORTER_BEFORE")
   initCrashReporter()
+  startupTrace("CRASH_REPORTER_AFTER")
 
   const wslServers = createWslServersController(
     app.getVersion(),
@@ -184,11 +193,13 @@ const main = Effect.gen(function* () {
   })
   const relaunch = () => { void shutdown.request("relaunch") }
 
+  startupTrace("SYSTEM_CERTIFICATES_BEFORE")
   try {
     setDefaultCACertificates([...new Set([...getCACertificates("default"), ...getCACertificates("system")])])
   } catch (error) {
     logger.warn("failed to load system certificates", error)
   }
+  startupTrace("SYSTEM_CERTIFICATES_AFTER")
 
   logger.log("app starting", {
     version: app.getVersion(),
@@ -203,10 +214,13 @@ const main = Effect.gen(function* () {
   app.commandLine.appendSwitch("enable-features", features ? `${jsCallStackFeature},${features}` : jsCallStackFeature)
   if (!app.isPackaged && process.env.PHYSICALSYSTEMS_DEBUG_PORT) app.commandLine.appendSwitch("remote-debugging-port", process.env.PHYSICALSYSTEMS_DEBUG_PORT)
 
+  startupTrace("INSTANCE_LOCK_BEFORE")
   if (!app.requestSingleInstanceLock()) {
+    startupTrace("INSTANCE_LOCK_DENIED")
     app.quit()
     return
   }
+  startupTrace("INSTANCE_LOCK_ACQUIRED")
 
   // Keep the scoped development environment; do not reload ambient provider/config variables from a login shell.
   process.env.OPENCODE_CLIENT = "desktop"
@@ -263,11 +277,15 @@ const main = Effect.gen(function* () {
 
   const serverReady = Deferred.makeUnsafe<ServerReadyData, unknown>()
 
+  startupTrace("APP_READY_BEFORE")
   yield* Effect.promise(() => app.whenReady())
+  startupTrace("APP_READY_AFTER")
+  startupTrace("OPERATOR_BEFORE")
   physical = yield* Effect.promise(() => {
     physicalReady = createPhysicalHost(join(physicalRoot, "operator"))
     return physicalReady
   })
+  startupTrace("OPERATOR_AFTER")
   app.on("browser-window-created", (_event, window) => {
     window.on("close", (event) => {
       if (!quitAllowed && BrowserWindow.getAllWindows().length <= 1) {

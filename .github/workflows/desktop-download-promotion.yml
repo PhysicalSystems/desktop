@@ -1,12 +1,11 @@
 name: Promote verified desktop downloads (disabled by default)
 run-name: Review desktop downloads from run ${{ inputs.review_run_id }} attempt ${{ inputs.review_run_attempt }}
 
-# This does not publish installers, tags or npm packages. The signed public
-# publisher at desktop-public-release.yml is a future prerequisite, deliberately
-# absent from the candidate pipeline. Enabling the repository variable alone is
-# insufficient: the protected environment and its website token must also exist.
-# Promotion creates a reviewable website PR; merging and normal site deployment
-# remain separate, and the current main-branch download selection is preserved.
+# Recovery entrypoint for a completed, approved public publisher run. Normal
+# publication invokes the same website coordinator inside its single protected
+# publish job. This explicit recovery path retains its own environment approval.
+# It verifies exact public bytes, checks the selection-only website PR, merges
+# the validated commit, and confirms the existing Render deployment.
 on:
   workflow_dispatch:
     inputs:
@@ -175,11 +174,11 @@ jobs:
           retention-days: 30
 
   promote:
-    name: Open a website PR for the verified selection
+    name: Restore the verified website selection and confirm deployment
     if: vars.DESKTOP_DOWNLOAD_PROMOTION_ENABLED == 'true'
     needs: verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 45
     # Required reviewers are checked above. Keep the website token exclusively in
     # this environment, scoped to PhysicalSystems/platform contents and PRs.
     environment: desktop-download-promotion
@@ -218,4 +217,4 @@ jobs:
         env:
           DESKTOP_WEBSITE_TOKEN: ${{ secrets.DESKTOP_WEBSITE_TOKEN }}
           EXPECTED_SELECTION_SHA256: ${{ needs.verify.outputs.selection_sha256 }}
-        run: bun script/desktop-promote-website.ts --selection "$RUNNER_TEMP/desktop-download-selection/desktop-selection.json" --expected-sha256 "$EXPECTED_SELECTION_SHA256"
+        run: bun script/desktop-promote-website.ts --selection "$RUNNER_TEMP/desktop-download-selection/desktop-selection.json" --expected-sha256 "$EXPECTED_SELECTION_SHA256" --merge-after-checks

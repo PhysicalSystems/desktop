@@ -1,12 +1,220 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash } from "node:crypto"
+import type { ChildProcess } from "node:child_process"
 import { constants, createReadStream } from "node:fs"
-import { chmod, copyFile, lstat, readdir } from "node:fs/promises"
+import { chmod, copyFile, lstat, readFile, readdir } from "node:fs/promises"
 import { basename, join, relative, resolve } from "node:path"
+import { desktopIdentity } from "./identity"
+import { startupPhases, type StartupPhase } from "./startup-phases"
 
 export type QualificationStatus = "PASS" | "FAIL" | "BLOCKED" | "NOT_TESTED"
-export type QualificationCheck = { id: string; status: QualificationStatus; detail: string }
+export type QualificationCheck = {
+  id: string
+  status: QualificationStatus
+  detail: string
+  failureCode?: QualificationFailureCode
+}
 export type SignatureResult = { status: QualificationStatus; trust: string; signerThumbprint?: string }
+// Only authored diagnostic literals may leave a disposable runner. Native error
+// messages and stacks can contain private paths, provider output or credentials.
+export const qualificationFailureCodes = [
+  "CREDENTIAL_PROBE_AUTH_UNCONFIRMED",
+  "CREDENTIAL_PROBE_BACKEND_UNCONFIRMED",
+  "CREDENTIAL_PROBE_RESTART_UNCONFIRMED",
+  "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED",
+  "CREDENTIAL_PROBE_STORAGE_UNCONFIRMED",
+  "LINUX_SECRET_SERVICE_TIMEOUT_INVALID",
+  "LINUX_SECRET_SERVICE_CLEANUP_UNCONFIRMED",
+  "LINUX_SECRET_SERVICE_STARTUP_FAILED",
+  "LINUX_SECRET_SERVICE_READINESS_UNCONFIRMED",
+  "LINUX_SECRET_SERVICE_PATH_INVALID",
+  "LINUX_SECRET_SERVICE_BUS_OWNER_MISMATCH",
+  "LINUX_SECRET_SERVICE_EXISTING_SERVICE",
+  "LINUX_SECRET_SERVICE_UNLOCK_UNCONFIRMED",
+  "LINUX_SECRET_SERVICE_SERVICE_OWNER_MISMATCH",
+  "INSTALLER_SIGNATURE_INVALID",
+  "LINUX_QUALIFICATION_REQUIRES_LINUX",
+  "LINUX_QUALIFICATION_REQUIRES_DISPOSABLE_RUNNER",
+  "LINUX_QUALIFICATION_PATH_OUTSIDE_RUNNER",
+  "LINUX_QUALIFICATION_TEMP_PATH_INVALID",
+  "LINUX_QUALIFICATION_TEMP_OWNERSHIP_INVALID",
+  "LINUX_QUALIFICATION_DEBIAN_IDENTITY_INVALID",
+  "LINUX_QUALIFICATION_PACKAGE_STATUS_INVALID",
+  "LINUX_QUALIFICATION_PACKAGE_ALREADY_PRESENT",
+  "LINUX_QUALIFICATION_PROFILE_PATH_INVALID",
+  "LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT",
+  "LINUX_QUALIFICATION_PROFILE_NOT_LOADED",
+  "LINUX_QUALIFICATION_PROFILE_RETAINED",
+  "LINUX_QUALIFICATION_INSTALLED_PAYLOAD_MISMATCH",
+  "OWNED_UNINSTALL_NOT_COMPLETE",
+  "PACKAGED_ARCHIVE_DEPENDENCY_UNAVAILABLE",
+  "PACKAGED_ARCHIVE_MEMBER_INVALID",
+  "PACKAGED_APPROVAL_GATE_BYPASSED",
+  "PACKAGED_APPROVAL_NOT_READY",
+  "PACKAGED_APP_SHUTDOWN_UNCONFIRMED",
+  "PACKAGED_APP_EXITED_BEFORE_READY",
+  "PACKAGED_APP_SPAWN_FAILED",
+  "PACKAGED_APPIMAGE_LAUNCHER_INVALID",
+  "PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID",
+  "PACKAGED_ATTACHMENT_OWNER_INVALID",
+  "PACKAGED_ATTACHMENT_UNCONFIRMED",
+  "PACKAGED_ATTACHMENT_RETAINED",
+  "PACKAGED_CDP_CONNECTION_FAILED",
+  "PACKAGED_CDP_CONNECTION_TIMEOUT",
+  "PACKAGED_CDP_REQUEST_FAILED",
+  "PACKAGED_CDP_TIMEOUT",
+  "PACKAGED_COMPOSER_UNAVAILABLE",
+  "PACKAGED_CONVERSATION_NOT_RESTORED",
+  "PACKAGED_CONVERSATION_NOT_READY",
+  "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE",
+  "PACKAGED_DEBUG_ENDPOINT_INVALID",
+  "PACKAGED_DISPLAY_UNAVAILABLE",
+  "PACKAGED_DESCENDANT_RETAINED",
+  "PACKAGED_EXECUTABLE_NOT_UNIQUE",
+  "PACKAGED_PROFILE_NOT_ISOLATED",
+  "PACKAGED_PROMPT_NOT_ADMITTED",
+  "PACKAGED_PUBLIC_INPUTS_INVALID",
+  "PACKAGED_PUBLIC_IDENTITY_MISMATCH",
+  "PACKAGED_PUBLIC_SIGNATURE_INVALID",
+  "PACKAGED_PUBLIC_SIGNATURE_POLICY_MISMATCH",
+  "PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED",
+  "PACKAGED_MAIN_PROCESS_EXCEPTION",
+  "PACKAGED_MODULE_INITIALIZATION_FAILED",
+  "PACKAGED_MODEL_NOT_READY",
+  "PACKAGED_OPERATOR_STARTUP_FAILED",
+  "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
+  "PACKAGED_PROJECT_NOT_CREATED",
+  "PACKAGED_PROPOSAL_UNAVAILABLE",
+  "PACKAGED_RELOAD_CHANGED_OWNERSHIP",
+  "PACKAGED_RELOAD_UNAVAILABLE",
+  "PACKAGED_REINSTALL_STATE_CHANGED",
+  "PACKAGED_REINSTALL_PATH_INVALID",
+  "PACKAGED_REINSTALL_FORMAT_INVALID",
+  "PACKAGED_REINSTALL_SHUTDOWN_UNCONFIRMED",
+  "PACKAGED_REINSTALL_PAYLOAD_CHANGED",
+  "PACKAGED_RENDERER_EVALUATION_FAILED",
+  "PACKAGED_RENDERER_UNAVAILABLE",
+  "PACKAGED_RUNTIME_FILE_EMPTY",
+  "PACKAGED_RUNTIME_JSON_INVALID",
+  "PACKAGED_RUNTIME_READ_FAILED",
+  "PACKAGED_SANDBOX_INITIALIZATION_FAILED",
+  "PACKAGED_SHARED_LIBRARY_UNAVAILABLE",
+  "PACKAGED_SKILL_HASH_MISMATCH",
+  "PACKAGED_TRIAL_EVIDENCE_INVALID",
+  "PACKAGED_TRIALS_NOT_COMPLETE",
+  "PACKAGED_VERSION_MISMATCH",
+  "PACKAGED_WORKSPACE_UNAVAILABLE",
+  "PAYLOAD_SIGNATURE_INVALID",
+  "QUALIFICATION_ARTIFACT_CHANGED",
+  "QUALIFICATION_ARTIFACT_COPY_MISMATCH",
+  "QUALIFICATION_COMMAND_FAILED",
+  "QUALIFICATION_COMMAND_OUTPUT_LIMIT",
+  "QUALIFICATION_COMMAND_TIMEOUT",
+  "QUALIFICATION_COMMAND_UNAVAILABLE",
+  "QUALIFICATION_PAYLOAD_SYMLINK",
+  "QUALIFICATION_REGULAR_FILE_REQUIRED",
+  "QUALIFICATION_UNEXPECTED_ERROR",
+  "QUALIFICATION_WINDOWS_VERSION_INVALID",
+  "QUALIFICATION_WINDOWS_VERSION_MISMATCH",
+  "PUBLIC_QUALIFICATION_REQUIRES_DISPOSABLE_RUNNER",
+  "PUBLIC_QUALIFICATION_PATH_OUTSIDE_RUNNER",
+  "UNINSTALLER_MISSING",
+  "UNINSTALL_UNCONFIRMED",
+  "UNSUPPORTED_CANDIDATE_PACKAGE",
+  "WINDOWS_QUALIFICATION_REQUIRES_WINDOWS",
+] as const
+export type QualificationFailureCode = (typeof qualificationFailureCodes)[number]
+
+export function isQualificationFailureCode(value: unknown): value is QualificationFailureCode {
+  return qualificationFailureCodes.some((code) => code === value)
+}
+
+export function qualificationFailureCode(error: unknown): QualificationFailureCode {
+  return error instanceof Error && isQualificationFailureCode(error.message)
+    ? error.message
+    : "QUALIFICATION_UNEXPECTED_ERROR"
+}
+
+/** Observe only the owned process's startup; no raw output leaves this closure. */
+export function observePackagedStartup(child: ChildProcess) {
+  let tail = ""
+  let port: number | undefined
+  let phase: StartupPhase | undefined
+  let stderrTail = ""
+  let failure: QualificationFailureCode | undefined
+  const collectOutput = (chunk: Buffer | string) => {
+    tail = (tail + chunk.toString()).slice(-16384)
+  }
+  const collect = (chunk: Buffer | string) => {
+    collectOutput(chunk)
+    stderrTail = (stderrTail + chunk.toString()).slice(-16384)
+    for (const match of stderrTail.matchAll(/^PHYSICALSYSTEMS_STARTUP_([A-Z_]+)\r?\n/gm))
+      if (startupPhases.some((value) => value === match[1])) phase = match[1] as StartupPhase
+    // Electron can start CDP before application code selects userData. Read only
+    // the owned process's exact loopback announcement; never return its raw URL.
+    const matches = tail.matchAll(
+      /^DevTools listening on ws:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/devtools\/browser\/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\r?$/gm,
+    )
+    for (const match of matches) if (Number(match[1]) <= 65535) port = Number(match[1])
+  }
+  const diagnostic = (): QualificationFailureCode | undefined =>
+    /The SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!|Failed to move to new namespace|Failed to unshare namespace|Running as root without --no-sandbox is not supported/.test(
+      tail,
+    )
+      ? "PACKAGED_SANDBOX_INITIALIZATION_FAILED"
+      : /error while loading shared libraries:/.test(tail)
+        ? "PACKAGED_SHARED_LIBRARY_UNAVAILABLE"
+        : /Missing X server or \$DISPLAY|The platform failed to initialize/.test(tail)
+          ? "PACKAGED_DISPLAY_UNAVAILABLE"
+          : /\b(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND|ERR_PACKAGE_PATH_NOT_EXPORTED|ERR_DLOPEN_FAILED)\b|Module did not self-register/.test(
+                tail,
+              )
+            ? "PACKAGED_MODULE_INITIALIZATION_FAILED"
+            : /\b(?:OPERATOR_SERVICE_UNAVAILABLE|OPERATOR_REQUEST_UNCONFIRMED|OPERATOR_PARENT_REQUIRED)\b/.test(tail)
+              ? "PACKAGED_OPERATOR_STARTUP_FAILED"
+              : /A JavaScript error occurred in the main process|Uncaught Exception:|\(FiberFailure\)/.test(tail)
+                ? "PACKAGED_MAIN_PROCESS_EXCEPTION"
+                : undefined
+  const spawnFailed = () => {
+    failure = "PACKAGED_APP_SPAWN_FAILED"
+  }
+  const closed = () => {
+    failure ||= diagnostic() || "PACKAGED_APP_EXITED_BEFORE_READY"
+    tail = ""
+  }
+  child.stderr?.on("data", collect)
+  child.stdout?.on("data", collectOutput)
+  child.once("error", spawnFailed)
+  // close follows the final stderr chunk; exit can precede it.
+  child.once("close", closed)
+  return {
+    assertRunning() {
+      if (failure) throw new Error(failure)
+    },
+    debugPort() {
+      return port
+    },
+    startupPhase() {
+      return phase
+    },
+    timeoutCode(fallback: QualificationFailureCode) {
+      // A native error dialog can keep the process alive. Classify its stderr
+      // only after readiness expires; a warning cannot abort a healthy startup.
+      return failure || diagnostic() || fallback
+    },
+    dispose() {
+      child.stderr?.off("data", collect)
+      child.stdout?.off("data", collectOutput)
+      child.off("error", spawnFailed)
+      child.off("close", closed)
+      tail = ""
+      stderrTail = ""
+      port = undefined
+      phase = undefined
+    },
+  }
+}
+
 export const requiredQualificationChecks = [
   "artifact-integrity",
   "package-format",
@@ -41,6 +249,30 @@ export async function sha256File(file: string) {
   return hash.digest("hex")
 }
 
+/** Inspect the final package's entry point without executing it. */
+export async function verifyAppImageLauncher(
+  folder: string,
+  reviewedSource: string,
+  kind: "candidate" | "public" = "candidate",
+) {
+  const identity = desktopIdentity(kind)
+  if (basename(reviewedSource) !== identity.launcherSource) throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
+  const launcher = join(folder, "AppRun")
+  const stat = await lstat(launcher)
+  if (!stat.isFile() || stat.isSymbolicLink() || !(stat.mode & 0o111))
+    throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
+  const [expected, actual] = await Promise.all([sha256File(reviewedSource), sha256File(launcher)])
+  if (expected !== actual) throw new Error("PACKAGED_APPIMAGE_LAUNCHER_INVALID")
+  const desktop = join(folder, identity.desktopEntry)
+  const entry = await lstat(desktop)
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID")
+  const text = await readFile(desktop, "utf8")
+  const commands = text.split(/\r?\n/).filter((line) => /^\s*(?:Exec|TryExec)\s*=/.test(line))
+  if (commands.length !== 1 || commands[0] !== "Exec=AppRun %U")
+    throw new Error("PACKAGED_APPIMAGE_DESKTOP_ENTRY_INVALID")
+  return { launcher, sha256: actual }
+}
+
 /** Download artifacts may lose mode bits. Never chmod the immutable input itself. */
 export async function executableArtifactCopy(source: string, destination: string, expectedSha256: string) {
   if ((await sha256File(source)) !== expectedSha256) throw new Error("QUALIFICATION_ARTIFACT_CHANGED")
@@ -50,7 +282,7 @@ export async function executableArtifactCopy(source: string, destination: string
   return destination
 }
 
-export function verifyWindowsVersionInfo(input: unknown, version: string) {
+export function verifyWindowsVersionInfo(input: unknown, version: string, kind: "candidate" | "public" = "candidate") {
   if (
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/.test(version) ||
     !input ||
@@ -62,7 +294,7 @@ export function verifyWindowsVersionInfo(input: unknown, version: string) {
   // Pinned electron-builder 26.15.2 preserves FileVersion's prerelease string,
   // while its PE ProductVersion is the numeric core plus the default build 0.
   if (
-    value.ProductName !== "Physical Systems Candidate" ||
+    value.ProductName !== desktopIdentity(kind).productName ||
     value.FileVersion !== version ||
     value.ProductVersion !== `${version.split("-")[0]}.0`
   )
@@ -131,6 +363,7 @@ export function qualificationEnvironment(
     ...(platform === "win32" ? { SystemRoot: windows, WINDIR: windows, COMSPEC: `${windows}\\System32\\cmd.exe` } : {}),
     PHYSICALSYSTEMS_DATA_DIR: root,
     PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
+    PHYSICALSYSTEMS_QUALIFICATION_TRACE: "1",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
   })
@@ -148,6 +381,13 @@ export function qualificationReport(input: {
   sourceRevision?: string
   windowsVersion?: { productName: string; fileVersion: string; productVersion: string }
 }) {
+  if (
+    input.checks.some(
+      (check) =>
+        check.failureCode !== undefined && (check.status !== "FAIL" || !isQualificationFailureCode(check.failureCode)),
+    )
+  )
+    throw new Error("Invalid qualification failure diagnostic")
   const result: QualificationStatus = input.checks.some((check) => check.status === "FAIL")
     ? "FAIL"
     : input.checks.some((check) => check.status === "BLOCKED")

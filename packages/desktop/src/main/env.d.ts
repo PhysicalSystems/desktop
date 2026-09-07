@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
   readonly OPENCODE_CHANNEL: string
+  readonly PHYSICALSYSTEMS_BUILD_IDENTITY: "candidate" | "public"
 }
 
 interface ImportMeta {

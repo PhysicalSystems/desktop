@@ -9,6 +9,7 @@ import { BrowserWindow, safeStorage, utilityProcess } from "electron"
 import type { PhysicalCommand, PhysicalSnapshot } from "@opencode-ai/app/physicalsystems-types"
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { waitForProcessExit, waitForShutdownStep } from "../../../physicalsystems/src/lifecycle"
+import { credentialTrace } from "./credential-trace"
 
 export async function createPhysicalHost(dataDir: string) {
   const spawnWorker = () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), "physical-worker.js"), [], {
@@ -55,7 +56,10 @@ export async function createPhysicalHost(dataDir: string) {
       if (value?.event === "snapshot") { broadcast(value.snapshot); return }
       if (value?.event === "credential") {
         void (value.vault === "operator" ? operatorVault : vault).request(value.operation, value.payload).then(
-          (result) => { if (worker === child && !exited) worker.postMessage({ event: "credential-result", id: value.id, result }) },
+          (result) => {
+            if (value.vault !== "operator" && ["set", "remove"].includes(value.operation)) credentialTrace(safeStorage)
+            if (worker === child && !exited) worker.postMessage({ event: "credential-result", id: value.id, result })
+          },
           () => { if (worker === child && !exited) worker.postMessage({ event: "credential-result", id: value.id, error: "NATIVE_CREDENTIAL_STORE_UNAVAILABLE" }) },
         )
         return

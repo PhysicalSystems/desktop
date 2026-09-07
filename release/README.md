@@ -6,7 +6,7 @@ The desktop has its own version sequence, initially `0.1.0-beta.1`. It bundles t
 
 ## Fork workflow ownership
 
-The inherited OpenCode workflows retain their original conditions and also require `github.repository == 'anomalyco/opencode'` on every job. This prevents upstream maintenance bots, tests and publishing jobs from running in the Physical Systems fork, including jobs using `always()`. The three owned `desktop-*.yml` workflows provide this fork's source checks, internal candidate preparation and disabled public-download promotion. Preserve these guards when updating from upstream; review newly added upstream jobs before enabling them.
+The inherited OpenCode workflows retain their original conditions and also require `github.repository == 'anomalyco/opencode'` on every job. This prevents upstream maintenance bots, tests and publishing jobs from running in the Physical Systems fork, including jobs using `always()`. The owned `desktop-*.yml` workflows provide source checks, internal candidate preparation, protected public publication and an explicit website recovery path. Preserve these guards when updating from upstream; review newly added upstream jobs before enabling them.
 
 ## Maintainer workflow
 
@@ -16,7 +16,7 @@ The inherited OpenCode workflows retain their original conditions and also requi
 4. Required source checks run against that exact SHA. The Windows x64 and Linux x64 package jobs then run in parallel, consuming the same inputs and tracked model catalog. Packaging always uses `--publish never` and the Physical Systems candidate configuration.
 5. Each platform qualifies the exact generated files, then verifies artifact hashes against the sanitized qualification receipts. No replacement build occurs after qualification. Download the candidate assessment and per-platform reports before using the installer artifacts for internal review.
 
-The dispatch is serialized to avoid concurrent version allocation. Because this workflow does not reserve tags or create draft releases, an unpublished version remains provisional and may recur in a later candidate run. Run ID, attempt, source SHA and artifact digest identify a candidate. A future publisher must independently recheck version and tag availability before publication; never relabel an existing binary as a new version.
+The dispatch is serialized to avoid concurrent version allocation. Because this workflow does not reserve tags or create draft releases, an unpublished version remains provisional and may recur in a later candidate run. Run ID, attempt, source SHA and artifact digest identify a candidate. The protected publisher independently rechecks version and tag availability before publication; never relabel an existing binary as a new version.
 
 All jobs check out a fixed SHA. Download caches are keyed by OS, architecture, Node/Bun pins and the lockfile. They contain package, Electron and packaging-tool downloads; they do not contain installed-app profiles, native outputs shared between platforms, credentials or test evidence. Dependencies install with `--frozen-lockfile --ignore-scripts`; the allowlisted preparation step downloads the locked Electron binary explicitly. The workflow does not invoke upstream desktop prebuild or publishing hooks.
 
@@ -59,7 +59,7 @@ bun script/desktop-release.ts verify-artifacts \
   --output "$DESKTOP_WORK/reports"
 ```
 
-For Windows, use `--platform windows-x64` on a disposable Windows runner and omit `xvfb-run`. The NSIS install smoke is CI-only and targets a fresh temporary directory. It must not be redirected to an existing installation. Linux qualification extracts each `.deb` and AppImage and launches its payload; this does not qualify system package-manager installation, FUSE operation or desktop integration.
+For Windows, use `--platform windows-x64` on a disposable Windows runner and omit `xvfb-run`. The NSIS install smoke is CI-only and targets a fresh temporary directory. It must not be redirected to an existing installation. Linux qualification installs the `.deb` with its shipped AppArmor policy on an owned GitHub-hosted runner and removes it only after confirmed shutdown. It extracts the AppImage and loads an exact-path temporary AppArmor profile for its sandboxed launch. That AppImage check does not establish stock Ubuntu double-click or FUSE behavior; the website prefers the `.deb` on Linux. Neither path disables Chromium's sandbox.
 
 The source checks use `bun test` and `bun typecheck` from the affected package directories. Root-level `bun test` is intentionally unsupported in this monorepo. Upstream publishing scripts and the canonical `check:release-packages` command are not part of this desktop workflow.
 
@@ -72,7 +72,7 @@ In GitHub Actions, every consuming CLI command also requires `PHYSICALSYSTEMS_EX
 | Target                        | Files prepared   | Automated qualification boundary                                                                     |
 | ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------- |
 | Windows x64 on `windows-2025` | NSIS `.exe`      | Fresh temporary installation and packaged simulation checks; no signing or real provider credentials |
-| Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Separate extracted-payload launches under Xvfb and packaged simulation checks                        |
+| Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Owned Debian install/uninstall and AppImage extraction with scoped sandbox setup, under Xvfb         |
 
 Each platform retains the exact installer files, `artifacts.json`, `SHA256SUMS`, per-artifact qualification JSON and a verification report. Failure paths retain available sanitized receipts and `workflow-status.json`; a skipped or missing required check cannot become a pass. The final assessment collects both platform reports and retains `summary.json`, `summary.md`, checksums and `candidate-downloads.json`.
 
@@ -80,9 +80,11 @@ Each platform retains the exact installer files, `artifacts.json`, `SHA256SUMS`,
 
 Temporary app profiles, credentials, runtime attachment files, browser logs and screenshots are excluded from workflow uploads. Qualification uses a local inert provider and synthetic experiments, with hardware access disabled. Those results do not verify real provider authentication, cameras or robot behavior. Headless UI blanking checks do not measure optical/display flicker.
 
+For a failing candidate, the optional `diagnostic_public_key` dispatch input accepts an RSA public PEM of at least 3072 bits. Generate and retain its private key outside the repository; never submit a private key to GitHub. The qualifier can encrypt bounded tails of only its own `application.log` and `diagnostic.txt`, authenticating the run, attempt, source and artifact digest. Only ciphertext leaves the runner, in a separate three-day diagnostic artifact; profiles, attachments and imagery are never included. Missing or invalid diagnostic inputs cannot make qualification pass. This envelope is troubleshooting data, not qualification or publication evidence.
+
 ## Public release blockers and follow-up
 
-The candidate identity is deliberately `Physical Systems Candidate`, using the development application identity. The preview/stable application IDs, data directories, migration rules and branding must be settled before public distribution. The workflow does not imply that those decisions have been made.
+The candidate identity is deliberately `Physical Systems Candidate`, using the development application identity. Public preview and stable builds use the fixed `systems.physical.desktop` identity, `Physical Systems` product name and `physicalsystems-desktop` profile directory. The separate public build configuration pins this at compilation; candidate output cannot be relabeled by packaging it again. Profile migration and installation lifecycle still require native qualification.
 
 Public release remains blocked until the applicable evidence and infrastructure exist:
 
@@ -92,7 +94,7 @@ Public release remains blocked until the applicable evidence and infrastructure 
 - Qualify actual supported OS versions, Linux installation/launcher behavior, X11/Xwayland and Wayland display behavior, plus clean-machine operation without developer Node/Bun in the installed application's runtime path.
 - Exercise fresh installation, upgrade from a previously qualified desktop, failed/interrupted upgrade recovery, uninstall/reinstall, preserved history/configuration and unresolved operation ownership in disposable environments.
 - Verify the declared desktop/operator/Node compatibility and canonical operator source/provenance. Declared or unverified compatibility must not be advertised as tested hardware support.
-- Add the signed public publisher described below. It must publish the approved artifact bytes and public review record without rebuilding. The implemented, disabled download-promotion workflow then verifies public bytes and opens a website selection PR; it cannot qualify or publish an unsigned candidate.
+- Complete the signed public build/native-qualification producer and provision its signing and release credentials. The implemented publisher consumes that separately trusted evidence and publishes exact bytes without rebuilding; it cannot qualify or promote an unsigned candidate.
 
 The first public preview should retain manual updates until installation lifecycle checks pass. Any later in-app updater must use owned feeds, verify the expected publisher, prohibit automatic downgrade, and respect confirmed shutdown/operation ownership. A desktop update must never silently restart a hardware session or upgrade its Node service. This candidate workflow neither enables nor qualifies in-app updates.
 
@@ -100,17 +102,22 @@ The first public preview should retain manual updates until installation lifecyc
 
 The public installer destination is **PhysicalSystems/physicalsystems**, matching the existing `PhysicalSystems/platform` download page. Desktop source may live in its separate fork. The existing npm and Node releases remain independent; the website looks up the selected exact `desktop-v${version}` tag, so newer npm releases cannot displace a desktop download.
 
-The companion website change is based on platform `main` at `6d41e1c`. It introduces `public/desktop-selection.json`, initially `release: null`. The page offers only installers matching that controlled selection and live GitHub metadata. It retains the last checked selection within an open page when a refresh fails, with an explicit notice. A successful empty selection withdraws the buttons. It does not verify installer bytes or Windows signatures inside the browser.
+The website integration is reviewed in [platform PR #287](https://github.com/PhysicalSystems/platform/pull/287). Its controlled `public/desktop-selection.json` starts with `release: null`. The page offers only installers matching that selection and live GitHub metadata, with bounded requests and explicit recovery. It does not claim to check binary bytes or Windows signatures inside the browser. A successful empty selection withdraws downloads.
 
-The integration path is implemented locally, but **disabled by default**:
+The [public producer workflow](public-producer.md) freezes the provisioned signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records public-mode packaged smoke. Signing credentials are scoped to packaging. It deliberately fails at incomplete native qualification and emits only unqualified records; actual signing setup, remaining native checks and qualified-bundle production remain prerequisites.
 
-1. A future signed public publisher at `.github/workflows/desktop-public-release.yml` must qualify the actual public build, obtain approval, publish the exact artifacts and retain `public-review.json` as the sole file in `desktop-public-review-${run_id}-${run_attempt}`. That publisher is not implemented by the candidate workflow.
-2. `.github/workflows/desktop-download-promotion.yml` accepts the exact completed publisher run/attempt, source SHA and the **canonical** review digest from its trusted summary. It checks the publisher identity and requires a protected `desktop-download-promotion` environment with reviewers. It can be dispatched separately or called by a coordinator after the publisher run has completed successfully; a publisher cannot call this synchronously inside its own still-running run.
-3. `verify-public` rejects candidate/development identities, unsigned evidence and incomplete public qualification. It anonymously reads the exact public release and streams each of the three installer files, checking size and SHA-256 against the independently anchored review. It produces `desktop-selection.json` only after all downloads match. Timeouts, missing assets, unexpected redirects or changed bytes produce no selection.
-4. The protected promotion job verifies the output digest again and runs `script/desktop-promote-website.ts`. With a separately scoped `DESKTOP_WEBSITE_TOKEN`, it creates or resumes a release-specific branch and one-file PR in `PhysicalSystems/platform`. It does not write `main`, merge the PR or deploy. It refuses downgrades, replacement bytes under an existing version, stable-to-preview switching and unrelated branch changes.
-5. The website's normal checks, review, merge and deployment make the approved selection live. Failed verification or an unmerged PR leaves the current download selection unchanged. This is automatic PR preparation, not unattended production deployment.
+The [public publisher](public-publisher.md) is implemented, with publication disabled until the signed producer, native evidence and protected credentials are available:
 
-The workflow is skipped unless `DESKTOP_DOWNLOAD_PROMOTION_ENABLED` is exactly `true`. No environment, token, signing identity or repository setting was provisioned here. The source snapshot's development identity is intentionally ineligible for this public path. A JSON field saying approved is insufficient: `PublicDistributionReview` must come from the protected public-distribution process, and its expected canonical digest must be obtained independently. The readback helper validates that trusted evidence and byte identity; it does not itself grant approval or perform native signature qualification.
+1. Consume a successful signed qualification run on the exact reviewed source, verify the anchored bundle, reserve a draft and upload the exact installers.
+2. Obtain **one final protected approval**, then publish without rebuilding or replacing assets.
+3. Anonymously stream the published files and verify their sizes and SHA-256 hashes. Only successful readback produces the website selection.
+4. In that same approved job, create or resume a one-file website integration PR. Website CI validates the selection contract and independently reads the public bytes. Selection-only changes do not repeat dependency installation and the full application build.
+5. The coordinator verifies successful CI for the exact PR, head, base and current attempt, rechecks scope and selection bytes, and merges through the normal GitHub API. Repository rules remain effective; the coordinator does not use an administrator override.
+6. Confirm Render serves the exact selection, a healthy API and the download page. An uncertain update can be resumed without replacing installers or duplicating the PR. A failed deployment is not reported as complete.
+
+There is no release-preparation PR or second human website approval in the normal flow. `.github/workflows/desktop-download-promotion.yml` remains an explicit protected recovery path for a completed publisher run. Rerun the full publisher when publication succeeded but its website step failed. See the publisher guide for credentials, immutable evidence and retry prerequisites.
+
+A JSON field saying approved is insufficient: `PublicDistributionReview` must come from the protected process, with an independently anchored canonical digest. The signed build producer and required native qualification are still prerequisites; adding the workflow or setting an enable variable does not satisfy them.
 
 ```sh
 bun script/desktop-release.ts verify-public \

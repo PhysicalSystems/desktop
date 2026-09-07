@@ -4,7 +4,8 @@ import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir } from "node:fs/promises"
 import { basename, join } from "node:path"
 import type { ReleaseInputs } from "./inputs"
-import { requiredQualificationChecks } from "./qualification"
+import { isQualificationFailureCode, requiredQualificationChecks } from "./qualification"
+import type { QualificationFailureCode } from "./qualification"
 
 export type CandidatePlatform = "windows-x64" | "linux-x64"
 export type CandidateArtifact = {
@@ -30,7 +31,12 @@ export type Qualification = {
   platform: CandidatePlatform
   simulationOnly: true
   opticalFlickerMeasured: false
-  checks: { id: string; status: "PASS" | "FAIL" | "NOT_TESTED" | "BLOCKED"; detail?: string }[]
+  checks: {
+    id: string
+    status: "PASS" | "FAIL" | "NOT_TESTED" | "BLOCKED"
+    detail?: string
+    failureCode?: QualificationFailureCode
+  }[]
   result: "PASS" | "FAIL" | "NOT_TESTED" | "BLOCKED"
   inputsSha256?: string
   sourceRevision?: string
@@ -130,6 +136,13 @@ export function verifyQualification(artifact: CandidateArtifact, inventory: Cand
   if (!Array.isArray(report.checks) || new Set(report.checks.map((check) => check.id)).size !== report.checks.length)
     throw new Error("Duplicate or missing qualification checks")
   if (
+    report.checks.some(
+      (check) =>
+        check.failureCode !== undefined && (check.status !== "FAIL" || !isQualificationFailureCode(check.failureCode)),
+    )
+  )
+    throw new Error("Invalid qualification failure diagnostic")
+  if (
     report.inputsSha256 !== inventory.inputsSha256 ||
     report.sourceRevision !== inventory.sourceRevision ||
     report.deviceConnectionsAllowed !== false ||
@@ -160,7 +173,16 @@ export function verifyQualification(artifact: CandidateArtifact, inventory: Cand
     report.result !== "PASS" ||
     report.checks.some((check) => !["PASS", "NOT_TESTED"].includes(check.status)) ||
     requiredQualificationChecks.some((id) => report.checks.find((check) => check.id === id)?.status !== "PASS") ||
-    (artifact.format === "nsis" && report.checks.find((check) => check.id === "uninstall")?.status !== "PASS")
+    (["nsis", "deb"].includes(artifact.format) &&
+      report.checks.find((check) => check.id === "uninstall")?.status !== "PASS") ||
+    (artifact.format !== "nsis" &&
+      ["linux-sandbox-setup", "linux-renderer-sandbox"].some(
+        (id) => report.checks.find((check) => check.id === id)?.status !== "PASS",
+      )) ||
+    (artifact.format === "AppImage" &&
+      ["appimage-launcher", "linux-sandbox-cleanup"].some(
+        (id) => report.checks.find((check) => check.id === id)?.status !== "PASS",
+      ))
   )
     throw new Error("Candidate packaged qualification is incomplete")
   return report

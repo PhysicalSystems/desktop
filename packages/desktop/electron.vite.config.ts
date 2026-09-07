@@ -1,8 +1,10 @@
 import { defineConfig } from "electron-vite"
 import appPlugin from "@opencode-ai/app/vite"
-import { cp, mkdir, readdir, copyFile } from "node:fs/promises"
+import { cp, mkdir, readdir, copyFile, readFile, writeFile } from "node:fs/promises"
+import { compiledDesktopIdentity, compiledIdentityRecord } from "../physicalsystems/src/release/public-build"
 
 const OPENCODE_SERVER_DIST = "../opencode/dist/node"
+const physicalIdentity = compiledDesktopIdentity(process.env)
 
 const channel = (() => {
   const raw = process.env.OPENCODE_CHANNEL
@@ -17,6 +19,7 @@ export default defineConfig({
   main: {
     define: {
       "import.meta.env.OPENCODE_CHANNEL": JSON.stringify(channel),
+      "import.meta.env.PHYSICALSYSTEMS_BUILD_IDENTITY": JSON.stringify(physicalIdentity.kind),
     },
     build: {
       rollupOptions: {
@@ -58,6 +61,9 @@ const require = __cjs_mod__.createRequire(import.meta.url);
         async writeBundle() {
           await cp("../physicalsystems/vendor/skills", "./out/main/skills", { recursive: true })
           await mkdir("./out/legal", { recursive: true })
+          await writeFile("./out/legal/physical-build-identity.json", JSON.stringify(
+            compiledIdentityRecord(process.env, await readFile("./out/main/index.js")), null, 2,
+          ) + "\n")
           await copyFile("../../LICENSE", "./out/legal/OpenCode-LICENSE")
           for (const name of ["LICENSE", "NOTICE", "manifest.json"]) {
             await copyFile(`../physicalsystems/vendor/${name}`, `./out/legal/PhysicalSystems-${name}`)

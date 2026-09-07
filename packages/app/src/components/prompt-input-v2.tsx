@@ -468,7 +468,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
   return controller as PromptInputV2ComposerController
 }
 
-function PromptInputV2ModelControl(props: {
+export function PromptInputV2ModelControl(props: {
   loading: boolean
   paid: boolean
   title: string
@@ -514,6 +514,8 @@ function PromptInputV2ModelControl(props: {
           fallback={
             <ButtonV2
               data-action="prompt-model"
+              data-model-id={props.model.current()?.id}
+              data-provider-id={props.model.current()?.provider.id}
               data-control-type="dialog"
               variant="ghost-muted"
               size="normal"
@@ -537,6 +539,8 @@ function PromptInputV2ModelControl(props: {
                 class="min-w-0 max-w-[220px] justify-start ![font-weight:440] group"
                 classList={{ "animate-in fade-in": shouldAnimate() }}
                 data-action="prompt-model"
+                data-model-id={props.model.current()?.id}
+                data-provider-id={props.model.current()?.provider.id}
                 data-control-type="popover"
               >
                 {content()}

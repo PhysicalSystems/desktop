@@ -222,6 +222,7 @@ export function PromptInputV2(props: PromptInputV2Props) {
                   title={i18n.t("ui.promptInput.chooseAgent")}
                   keybind={["Mod", "."]}
                   control={control}
+                  agent
                 />
               )}
             </Show>
@@ -528,6 +529,7 @@ function PromptInputV2ConfiguredSelect(props: {
   title: string
   keybind?: string[]
   control: PromptInputV2SelectControl
+  agent?: boolean
   model?: boolean
 }) {
   const current = () => props.control.current()
@@ -538,6 +540,7 @@ function PromptInputV2ConfiguredSelect(props: {
       keybind={props.control.keybind?.() ?? props.keybind}
       options={props.control.options()}
       current={current()}
+      agent={props.agent}
       currentIcon={
         <Show when={props.model && providerID()}>
           <ProviderIcon id={providerID()!} class="size-4 shrink-0 opacity-60" />
@@ -553,6 +556,7 @@ export function PromptInputV2Select(props: {
   keybind?: string[]
   options: PromptInputV2Option[]
   current: string
+  agent?: boolean
   currentIcon?: JSX.Element
   class?: string
   onOpenChange?: (open: boolean) => void
@@ -575,6 +579,10 @@ export function PromptInputV2Select(props: {
           size="normal"
           class={`max-w-[220px] justify-start ![font-weight:440] ${props.class ?? ""}`}
           aria-label={props.title}
+          data-action={props.agent ? "prompt-agent" : undefined}
+          data-agent-id={
+            props.agent && props.options.some((option) => option.id === props.current) ? props.current : undefined
+          }
         >
           {props.currentIcon}
           <span class="truncate capitalize leading-5">

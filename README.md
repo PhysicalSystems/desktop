@@ -8,6 +8,8 @@ hardware operation and public installers are not yet qualified.
 - [Development and local review](packages/physicalsystems/README.md)
 - [Qualification evidence and remaining gaps](packages/physicalsystems/QUALIFICATION.md)
 - [Desktop candidate pipeline and publication boundaries](release/README.md)
+- [Protected public publication and website deployment](release/public-publisher.md)
+- [Desktop download availability](https://physicalsystems.ai/download)
 - [Canonical operator service source](https://github.com/PhysicalSystems/physicalsystems)
 
 The OpenCode documentation below is retained for upstream attribution. Its
