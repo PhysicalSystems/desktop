@@ -1,3 +1,20 @@
+# Physical Systems Desktop
+
+Physical Systems' desktop operator workspace, built on the OpenCode agent and
+Electron app. Projects, device status, conversation, and scoped experiment
+approval share one workspace. The current candidate is for simulation review;
+hardware operation and public installers are not yet qualified.
+
+- [Development and local review](packages/physicalsystems/README.md)
+- [Qualification evidence and remaining gaps](packages/physicalsystems/QUALIFICATION.md)
+- [Desktop candidate pipeline and publication boundaries](release/README.md)
+- [Canonical operator service source](https://github.com/PhysicalSystems/physicalsystems)
+
+The OpenCode documentation below is retained for upstream attribution. Its
+installation commands install upstream OpenCode, not Physical Systems Desktop.
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>
