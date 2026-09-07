@@ -149,7 +149,7 @@ export const incompletePublicQualification =
   "PUBLIC_NATIVE_QUALIFICATION_INCOMPLETE: Build and smoke receipts remain unqualified. Verified installer/payload signatures, native credential storage, provider browser sign-in, installation/upgrade/failure recovery, configuration preservation and platform display evidence are required for every exact public artifact. No qualified distribution, release, tag or website selection was produced."
 
 /** Continue to another format only after this exact artifact reports confirmed
- * application and installation cleanup. Missing native qualification is allowed
+ * application, private-service, temporary-directory and installation cleanup. Missing native qualification is allowed
  * here solely to collect more evidence; it never grants release eligibility. */
 export function publicSmokeCanContinue(input: {
   report: unknown
@@ -192,6 +192,8 @@ export function publicSmokeCanContinue(input: {
   return (
     passed("cleanup") &&
     passed(input.artifact.format === "AppImage" ? "linux-sandbox-cleanup" : "uninstall") &&
+    (input.artifact.format === "nsis" ||
+      (passed("native-secret-service-cleanup") && passed("linux-temporary-cleanup"))) &&
     (input.artifact.format !== "nsis" || passed("public-signing")) &&
     !report.checks.some((check) => /signing|signature/.test(String(check.id)) && check.status !== "PASS")
   )

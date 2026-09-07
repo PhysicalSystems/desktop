@@ -237,12 +237,14 @@ export async function collectPublicDistribution(input: {
     const required = [
       ...requiredQualificationChecks,
       "public-compiled-identity",
+      "native-credential-probe",
       ...(platform === "windows-x64"
         ? ["public-signing", "uninstall"]
         : [
             "linux-sandbox-setup",
             "linux-renderer-sandbox",
             "linux-temporary-cleanup",
+            "native-secret-service-cleanup",
             ...(artifact.name.endsWith(".deb") ? ["uninstall"] : ["appimage-launcher", "linux-sandbox-cleanup"]),
           ]),
     ]
@@ -402,6 +404,9 @@ function checkMap(value: unknown, native: boolean) {
           ...requiredQualificationChecks,
           "public-compiled-identity",
           "public-signing",
+          "native-credential-probe",
+          "native-secret-service",
+          "native-secret-service-cleanup",
           "uninstall",
           "appimage-launcher",
           "linux-sandbox-setup",

@@ -76,6 +76,7 @@ async function fixture() {
           "linux-sandbox-setup",
           "linux-renderer-sandbox",
           "linux-temporary-cleanup",
+          "native-secret-service-cleanup",
           ...(item.format === "deb" ? ["uninstall"] : ["appimage-launcher", "linux-sandbox-cleanup"]),
         ]
     const observed = { Status: "Valid", Publisher: build.windowsSigning.publisher, Thumbprint: "C".repeat(40) }
@@ -93,11 +94,13 @@ async function fixture() {
       artifactBytes: artifact.bytes,
       artifactSha256: artifact.sha256,
       version: build.version,
-      checks: [...requiredQualificationChecks, "public-compiled-identity", ...extra].map((id) => ({
-        id,
-        status: "PASS",
-        detail: "SIMULATED COLLECTOR FIXTURE ONLY",
-      })),
+      checks: [...requiredQualificationChecks, "public-compiled-identity", "native-credential-probe", ...extra].map(
+        (id) => ({
+          id,
+          status: "PASS",
+          detail: "SIMULATED COLLECTOR FIXTURE ONLY",
+        }),
+      ),
       signature: windows
         ? { status: "PASS", trust: "WINDOWS_AUTHENTICODE_VALID", signerThumbprint: "C".repeat(40) }
         : { status: "NOT_TESTED", trust: "NOT_APPLICABLE_TO_LINUX_PACKAGE" },
@@ -225,6 +228,51 @@ test("current unqualified smoke cannot substitute for absent, skipped or duplica
     await expect(collectPublicDistribution(f.input())).rejects.toThrow()
     expect(await readdir(f.root)).not.toContain("collected")
   }
+})
+
+test("the current producer's native probe and every owned Linux cleanup must pass before collection", async () => {
+  for (const index of [0, 1, 2]) {
+    const required = [
+      "native-credential-probe",
+      ...(index === 0 ? [] : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
+    ]
+    for (const id of required) {
+      for (const status of [undefined, "FAIL", "BLOCKED", "NOT_TESTED", "RETAINED"]) {
+        const f = await fixture()
+        await f.edit(
+          "smokeSha256",
+          (record) => {
+            if (status === undefined) record.checks = checks(record).filter((check) => check.id !== id)
+            else checks(record).find((check) => check.id === id)!.status = status
+          },
+          index,
+        )
+        await expect(collectPublicDistribution(f.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+        expect(await readdir(f.root)).not.toContain("collected")
+      }
+    }
+  }
+})
+
+test("passing auxiliary smoke probes cannot replace any of the eight separate public native checks", async () => {
+  for (const id of unimplementedPublicChecks) {
+    const f = await fixture()
+    // The fixture's current-producer auxiliary probe and cleanup checks all PASS.
+    // Removing any separately anchored native requirement must still reject it.
+    await f.edit("nativeSha256", (record) => {
+      record.checks = checks(record).filter((check) => check.id !== id)
+    })
+    await expect(collectPublicDistribution(f.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+    expect(await readdir(f.root)).not.toContain("collected")
+  }
+  const substituted = await fixture()
+  await substituted.edit("nativeSha256", (record) => {
+    record.checks = [
+      { id: "native-credential-probe", status: "PASS" },
+      { id: "native-secret-service-cleanup", status: "PASS" },
+    ]
+  })
+  await expect(collectPublicDistribution(substituted.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
 })
 
 test("independent anchors, all formats and native run/source/input/identity bindings are mandatory", async () => {

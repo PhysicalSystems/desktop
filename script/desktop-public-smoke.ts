@@ -68,6 +68,8 @@ try {
         inputs.sha256,
       ],
       root,
+      process.env,
+      600_000,
     ).catch(() => {
       // A public smoke returns nonzero even when its implemented checks pass.
       // Only its exact receipt may authorize continuing to another format.

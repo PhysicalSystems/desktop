@@ -1,11 +1,13 @@
-# Packaged native credential probe: integration proposal
+# Packaged native credential probe
 
 `createNativeCredentialProbe()` in
 [`native-credentials.ts`](../packages/physicalsystems/src/release/native-credentials.ts)
-implements only the reusable observations for a native credential test. Its unit
-tests use a deliberate test cipher and fake HTTP callbacks. **No native credential
-qualification has passed because these helper tests pass.** The packaged-smoke
-and workflow integration described below has not been applied or run.
+provides reusable observations for the packaged native credential test. Its unit
+tests use a deliberate test cipher, fake HTTP callbacks and a local inert HTTP
+fixture. **Passing those helper tests is not native qualification.** The packaged
+smoke now runs the three real process phases below on disposable CI runners; its
+`native-credential-probe` check passes only after all phases and shutdowns finish.
+No local Electron application or live keyring is used to validate the helper code.
 
 The production boundary remains unchanged. The current v1 compatibility adapter
 uses `PUT /auth/:providerID` and `DELETE /auth/:providerID`. The sidecar's Auth
@@ -18,7 +20,9 @@ or debug endpoint. The existing vault refuses unavailable encryption and Linux
 
 Use one fresh owned profile and the exact already-hashed package. Keep device
 connections disabled throughout. The controller owns the canary probe, inert
-provider and app processes; the public receipt receives booleans and hashes only.
+provider and app processes; receipts receive booleans, hashes and a fixed backend
+label only. Each stdout/stderr stream is filtered for the canary across chunk
+boundaries before it reaches the appended private application log.
 
 1. Give the inert provider a dedicated chat-completions route for
    `probe.providerID`. Configure that provider with its loopback URL and fixture
@@ -67,50 +71,44 @@ provider and app processes; the public receipt receives booleans and hashes only
 Actual integration should emit a native credential PASS only when all those real
 observations succeed. The helper deliberately has no PASS field, no application
 launch method and no mechanism for the caller to assert that a restart happened.
-Its nonce observations can also test the missing-keyring error path: a refused
-save must leave no new vault or plaintext fallback; that negative-path result does
-not satisfy the positive native credential requirement.
+A fixed optional main-process trace records the selected backend only after a
+successful provider-vault write. Windows requires `windows_dpapi`; the controlled
+Linux session requires `gnome_libsecret`. Missing, mixed or other backend evidence
+fails this probe. The first successful synthetic journey remains unchanged; the
+next two launches reuse its profile and conversation without additional trials.
 
-## Disposable Linux session proposal
+This auxiliary smoke check does not replace the public native receipt. The
+collector still requires all eight public native checks from trusted reviewed
+job evidence. Public smoke remains UNQUALIFIED; no candidate observation can be
+copied into a public native PASS.
 
-The existing workflow installs `libsecret-1-0`, which supplies a client library,
-not an unlocked Secret Service. The native probe needs a real isolated service.
-Proposed workflow additions, on the disposable hosted Linux runner only:
+## Disposable Linux session
 
-1. Add `dbus`, `gnome-keyring` and `libglib2.0-bin` to the existing apt dependency
-   list, retaining `libsecret-1-0` and Xvfb. No system or laptop settings change.
-2. Wrap the qualification controller in
-   `dbus-run-session -- xvfb-run -a bun <qualification-controller>`.
-   The private session bus lasts for the controller and is terminated when it
-   exits; this wrapper is explicitly intended for isolated regression tests.
-   [D-Bus documentation](https://dbus.freedesktop.org/doc/dbus-run-session.1.html)
-3. Inside that controller, create private runtime, keyring-data and control
-   directories below `RUNNER_TEMP`. Spawn the owned daemon directly with
-   `/usr/bin/gnome-keyring-daemon --foreground --components=secrets --unlock --control-directory=<owned-control>`.
-   Set its child `XDG_DATA_HOME` to the owned keyring-data directory; discard
-   inherited `GNOME_KEYRING_CONTROL`/PID values. Send a generated nonempty test
-   password over stdin and close stdin. Do not use `--replace`, `--start` together
-   with `--unlock`, an ambient keyring, SSH components or plaintext storage.
-   `--unlock` creates/unlocks the login keyring from stdin; foreground mode keeps
-   process ownership explicit. [GNOME source](https://gnome.pages.gitlab.gnome.org/gnome-keyring/coverage/daemon/gkd-main.c.gcov.html),
-   [distribution manual](https://manpages.debian.org/unstable/gnome-keyring/gnome-keyring-daemon.1.en.html)
-4. Bound readiness and verify the private bus owns `org.freedesktop.secrets`, for
-   example through `gdbus call --session --dest org.freedesktop.DBus --object-path
-/org/freedesktop/DBus --method org.freedesktop.DBus.GetNameOwner org.freedesktop.secrets`.
-   This reads service ownership, not credentials. Keep the same bus, keyring and
-   generated password across both app launches.
-5. Pass that bus and owned runtime directory through the existing isolated
-   qualification environment. Provide a fixed disposable GNOME desktop context
-   (`XDG_CURRENT_DESKTOP=GNOME`) if required for backend detection; do not inherit
-   arbitrary ambient desktop/provider settings. Verify the packaged app selects
-   the real `gnome_libsecret` backend after readiness. An unavailable, `unknown`
-   or `basic_text` result remains BLOCKED. This controlled keyring setup does not
-   qualify a default desktop/compositor or physical display.
-6. After confirmed app shutdown, terminate only the owned daemon, bound its exit,
-   and let the private D-Bus wrapper exit. Capture only authored error codes and
-   safe backend/process observations. Never upload daemon output or keyring files.
+The candidate workflow installs `dbus`, `gnome-keyring` and `libglib2.0-bin` beside
+its existing `libsecret-1-0` and Xvfb dependencies. A client library alone does not
+provide an unlocked Secret Service.
 
-These are concrete integration steps, **not executed native evidence**. The initial
-probe can be developed against unsigned candidate bytes without any provider
-account or signing credential. Public qualification must run it again on every
-exact public installer; candidate/helper evidence cannot be copied to public PASS.
+The controller starts one owned private D-Bus daemon and one owned foreground
+GNOME keyring daemon for all three application launches. Private runtime, keyring
+and control directories live under the disposable runner's temporary directory.
+A generated nonempty test password travels over the daemon's stdin only. The
+helper verifies the private bus and Secret Service process ownership before
+returning the fixed GNOME environment. It does not reuse an ambient bus/keyring,
+start SSH components, use plaintext storage, or replace another service.
+
+The packaged process receives only the owned bus/runtime and fixed GNOME desktop
+context in addition to its existing isolated environment. The service does not
+change the app's separately owned native TMPDIR. After confirmed application and
+descendant shutdown, the controller closes only its owned keyring and bus with
+bounded exit checks. Unconfirmed cleanup fails qualification; service output,
+passwords, keyring files, provider keys and profiles are never uploaded.
+
+The daemon modes and stdin unlock protocol are defined by the
+[GNOME implementation](https://gnome.pages.gitlab.gnome.org/gnome-keyring/coverage/daemon/gkd-main.c.gcov.html)
+and [distribution manual](https://manpages.debian.org/unstable/gnome-keyring/gnome-keyring-daemon.1.en.html).
+This controlled native credential check does not qualify a default desktop,
+compositor, provider browser login, user logout/login, or physical display.
+
+The smoke child has a ten-minute overall deadline for three bounded launches;
+auth writes remain bounded to 6.5 seconds and each nonce request to 30 seconds.
+Public qualification must rerun the real probe for each exact public installer.

@@ -84,16 +84,19 @@ remains `UNQUALIFIED` and each missing native check stays `NOT_TESTED`.
 Public native qualification still needs real native credential storage, provider
 browser sign-in, fresh installation, upgrades, failed-upgrade recovery,
 uninstall/reinstall, configuration preservation and platform-display evidence.
-The exact-byte, exact-signer collector and final qualified bundle production are
-not implemented. Candidate fixture results cannot substitute for these checks.
+The [strict evidence collector](public-collector.md) is implemented and validates
+the exact bytes, signer and independently anchored native receipts. Complete native
+receipt production and the final workflow handoff to that collector are not yet
+implemented. Candidate fixture results cannot substitute for these checks.
 
 Upgrade checks also require an approved previous **public-identity** baseline.
 The first-public-release policy for that baseline is unresolved; the current
 public validator has no `NOT_APPLICABLE` exception. Do not claim a candidate
 installation is an equivalent public upgrade baseline or weaken the gate here.
 
-After those checks are implemented, a strict collector can produce the signed
-qualification bundle required by [the public publisher](public-publisher.md).
+After those checks and their trusted receipt producers are implemented, the
+collector can produce the qualification bundle for the signed installers required
+by [the public publisher](public-publisher.md).
 That publisher currently requires a separate dispatch, verifies its producer
 run/source identity, completes an exact-byte draft, obtains one final protected
 approval and updates the website after public readback. Automatic producer-to-

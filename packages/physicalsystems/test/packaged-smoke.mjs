@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Tests the executable extracted from the named installer, never a separate build.
 // Profiles, raw logs and private attachment files stay outside repository/artifacts.
-import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath, unlink } from "node:fs/promises"
 import { createWriteStream } from "node:fs"
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,6 +16,9 @@ import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
 import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { desktopIdentity } from "../src/release/identity.ts"
+import { createNativeCredentialProbe, waitForCredentialAttachment } from "../src/release/native-credentials.ts"
+import { observeCredentialBackend } from "../src/release/credential-backend.ts"
+import { startLinuxSecretService } from "../src/release/linux-secret-service.ts"
 import {
   packagedQualificationArguments,
   loadPublicQualification,
@@ -81,6 +84,16 @@ let installed
 let linuxInstallation
 let linuxSandboxProfile
 let linuxTemporary
+let secretService
+const credentialProbe = createNativeCredentialProbe()
+const credentialState = {
+  pids: [],
+  saved: undefined,
+  removed: undefined,
+  backend: undefined,
+  sessionId: undefined,
+  experimentId: undefined,
+}
 let applicationStarted = false
 let systemMutationUnconfirmed = false
 let diagnosticLogStatus = "NOT_STARTED"
@@ -366,7 +379,32 @@ try {
           )
         }
       }
-      await launch(entrypoint)
+      if (process.platform === "linux") {
+        stage = "native-secret-service"
+        secretService = await startLinuxSecretService(process.env, root).catch((error) => {
+          if (error?.message === "LINUX_SECRET_SERVICE_CLEANUP_UNCONFIRMED") systemMutationUnconfirmed = true
+          throw error
+        })
+        linuxTemporary = await allocateLinuxQualificationTemporary(process.env, root)
+      }
+      for (const phase of ["save", "retrieve-remove", "absent"]) {
+        await launch(entrypoint, phase)
+        if (failed || checks.find((item) => item.id === "cleanup")?.status !== "PASS")
+          throw failed || new Error("PACKAGED_APP_SHUTDOWN_UNCONFIRMED")
+      }
+      check(
+        "native-credential-probe",
+        "PASS",
+        JSON.stringify({
+          backend: credentialState.backend,
+          confirmedAppShutdowns: 3,
+          freshProcesses: new Set(credentialState.pids).size === 3,
+          afterRestartAuthorizationMatched: true,
+          afterRemovalRestartAuthorizationAbsent: true,
+          savedVault: credentialState.saved,
+          removedVault: credentialState.removed,
+        }),
+      )
     }
   }
 } catch (error) {
@@ -383,6 +421,25 @@ try {
   const safeToRemove =
     !systemMutationUnconfirmed &&
     (!applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS")
+  if (secretService) {
+    try {
+      const status = await secretService.close({ applicationExited: safeToRemove, descendantsExited: safeToRemove })
+      if (status.status !== "STOPPED") throw new Error("LINUX_SECRET_SERVICE_CLEANUP_UNCONFIRMED")
+      check(
+        "native-secret-service-cleanup",
+        "PASS",
+        "Owned Secret Service and private D-Bus exited after confirmed app and descendant shutdown.",
+      )
+    } catch (error) {
+      failed ||= error
+      check(
+        "native-secret-service-cleanup",
+        "FAIL",
+        "Owned Secret Service cleanup is unconfirmed; no ambient service was changed.",
+        qualificationFailureCode(error),
+      )
+    }
+  }
   if (linuxTemporary) {
     try {
       const status = await linuxTemporary.cleanup({ applicationExited: safeToRemove, descendantsExited: safeToRemove })
@@ -559,20 +616,39 @@ try {
   if (failed || publicMode) process.exitCode = 1
 }
 
-async function launch(executable) {
+async function launch(executable, credentialPhase) {
   stage = "launch"
   const profile = join(root, "profile")
-  if (process.platform === "linux") linuxTemporary = await allocateLinuxQualificationTemporary(process.env, root)
   for (const folder of ["config/opencode", "tmp", "empty-path", "appdata", "localappdata"])
     await mkdir(join(profile, folder), { recursive: true, mode: 0o700 })
-  const provider = await startFixtureProvider()
+  if (credentialPhase !== "save") {
+    // Prior shutdown is already confirmed. An old port file must not bind this
+    // new process's CDP discovery to the previous instance's closed endpoint.
+    for (const folder of ["session", "desktop"]) {
+      const file = join(profile, folder, "DevToolsActivePort")
+      const stat = await lstat(file).catch((error) => {
+        if (error.code !== "ENOENT") throw error
+      })
+      if (!stat) continue
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      await unlink(file)
+    }
+  }
+  const provider = await startFixtureProvider({ credentialProbe })
   await writeFile(
     join(profile, "config", "opencode", "opencode.json"),
     JSON.stringify({
       model: "fixture/fixture",
       small_model: "fixture/fixture",
-      enabled_providers: ["fixture"],
+      enabled_providers: ["fixture", credentialProbe.providerID],
       provider: {
+        [credentialProbe.providerID]: {
+          name: "Inert native credential probe",
+          npm: "@ai-sdk/openai-compatible",
+          api: provider.credentialURL,
+          options: { baseURL: provider.credentialURL },
+          models: { fixture: { name: "Credential transport fixture", limit: { context: 32000, output: 4096 } } },
+        },
         fixture: {
           name: "Local inert qualification fixture",
           npm: "@ai-sdk/openai-compatible",
@@ -597,17 +673,24 @@ async function launch(executable) {
     ],
     {
       cwd: profile,
-      env: { ...qualificationEnvironment(process.env, profile), ...linuxTemporary?.environment },
+      env: {
+        ...qualificationEnvironment(process.env, profile),
+        ...linuxTemporary?.environment,
+        ...secretService?.environment,
+      },
       stdio: ["ignore", "pipe", "pipe"],
     },
   )
   applicationStarted = true
-  const log = createWriteStream(join(root, "application.log"), { mode: 0o600 })
+  const log = createWriteStream(join(root, "application.log"), { mode: 0o600, flags: "a" })
   const privateLog = observePrivateLog(log)
-  child.stdout.pipe(log, { end: false })
-  child.stderr.pipe(log, { end: false })
+  const stdoutFilter = credentialProbe.logFilter()
+  const stderrFilter = credentialProbe.logFilter()
+  child.stdout.pipe(stdoutFilter).pipe(log, { end: false })
+  child.stderr.pipe(stderrFilter).pipe(log, { end: false })
+  const backend = observeCredentialBackend(child)
   const exited = new Promise((resolve) => {
-    child.once("exit", resolve)
+    child.once("close", resolve)
     child.once("error", resolve)
   })
   const startup = observePackagedStartup(child)
@@ -629,7 +712,41 @@ async function launch(executable) {
   let evaluate
   let api
   let owned = []
+  let attached
+  const attach = async () => {
+    const expected = await evaluate(
+      "window.api.physicalSystems.snapshot().then(s => ({ sessionId: s.conversation?.sessionId, directory: s.projects.find(p => p.id === s.activeProjectId)?.cwd }))",
+    )
+    if (!expected.sessionId || !expected.directory) throw new Error("PACKAGED_ATTACHMENT_OWNER_INVALID")
+    // Snapshot broadcast precedes the queued atomic attachment write. Wait only
+    // for a valid record for this process and exact current conversation; no API
+    // request may run against a missing, malformed or foreign attachment.
+    attached = await waitForCredentialAttachment(join(profile, "desktop", "runtime-attach.json"), {
+      pid: child.pid,
+      ...expected,
+    })
+    api = async (path, body, init = {}) =>
+      fetch(`${attached.url}${path}?directory=${encodeURIComponent(attached.directory)}`, {
+        method: init.method || (body === undefined ? "GET" : "POST"),
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${attached.username}:${attached.password}`).toString("base64")}`,
+          "Content-Type": "application/json",
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: "error",
+        signal: init.signal || AbortSignal.timeout(6000),
+      })
+  }
+  const authRequest = async (path, init) => {
+    const response = await api(path, init.body, init)
+    if (!response.ok) throw new Error("CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+    const text = await response.text()
+    if (text.length > 128) throw new Error("CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+    return JSON.parse(text)
+  }
   try {
+    if (credentialState.pids.includes(child.pid)) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+    credentialState.pids.push(child.pid)
     const port = await untilStarted(async () => {
       const announced = startup.debugPort()
       if (announced) return announced
@@ -731,13 +848,74 @@ async function launch(executable) {
     const safety = await evaluate(
       "window.api.physicalSystems.snapshot().then(s => ({ enabled: s.deviceConnectionsEnabled, projects: s.projects.length, captures: s.activeCaptures.length, runs: s.activeRuns.length }))",
     )
-    if (safety.enabled !== false || safety.projects !== 0 || safety.captures !== 0 || safety.runs !== 0)
+    if (
+      safety.enabled !== false ||
+      safety.projects !== (credentialPhase === "save" ? 0 : 1) ||
+      safety.captures !== 0 ||
+      safety.runs !== 0
+    )
       throw new Error("PACKAGED_PROFILE_NOT_ISOLATED")
     check(
       stage,
       "PASS",
-      "Fresh private profile reports device connections disabled, no projects and no owned hardware operations.",
+      "Owned private profile reports device connections disabled and no owned hardware operations; only the expected synthetic project may persist.",
     )
+    if (credentialPhase !== "save") {
+      stage = "native-credential-probe"
+      await until(
+        () => evaluate("window.api.physicalSystems.snapshot().then(s => Boolean(s.conversation?.sessionId))"),
+        "CREDENTIAL_PROBE_RESTART_UNCONFIRMED",
+      )
+      await attach()
+      if (attached.sessionId !== credentialState.sessionId) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      const stored = await credentialProbe.inspectFiles(profile)
+      const expected = credentialPhase === "retrieve-remove" ? credentialState.saved : credentialState.removed
+      if (stored.vaultSha256 !== expected.vaultSha256) throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
+      const prompt = credentialProbe.beginObservation(credentialPhase === "retrieve-remove" ? "present" : "absent")
+      const response = await api(
+        `/session/${attached.sessionId}/message`,
+        {
+          agent: "physical-systems",
+          model: { providerID: credentialProbe.providerID, modelID: "fixture" },
+          parts: [{ type: "text", text: prompt }],
+        },
+        { signal: AbortSignal.timeout(30000) },
+      ).catch(() => {
+        throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+      })
+      if (!response.ok) throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+      const result = await response.text().catch(() => {
+        throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+      })
+      if (result.length > 2 * 1024 * 1024) throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+      credentialProbe.finishObservation()
+      const experiment = await evaluate("window.api.physicalSystems.snapshot().then(s => s.experiments?.current)")
+      if (
+        experiment?.id !== credentialState.experimentId ||
+        experiment?.trials.length !== 3 ||
+        experiment.phase !== "COMPLETED"
+      )
+        throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      if (credentialPhase === "retrieve-remove") {
+        await credentialProbe.remove(authRequest)
+        credentialState.removed = await credentialProbe.inspectFiles(profile)
+        if (credentialState.removed.vaultSha256 === credentialState.saved.vaultSha256)
+          throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
+        const selected = await until(
+          () => {
+            try {
+              return backend.result()
+            } catch {
+              return undefined
+            }
+          },
+          "CREDENTIAL_PROBE_BACKEND_UNCONFIRMED",
+          2500,
+        )
+        if (selected !== credentialState.backend) throw new Error("CREDENTIAL_PROBE_BACKEND_UNCONFIRMED")
+      }
+      return
+    }
     stage = "synthetic-chat"
     await click('[aria-label="New project"]')
     await until(
@@ -793,19 +971,7 @@ async function launch(executable) {
       "PASS",
       "Real bundled agent loop used the inert local provider to propose exactly a synthetic experiment; no trial ran before approval.",
     )
-    const attached = JSON.parse(await readFile(join(profile, "desktop", "runtime-attach.json"), "utf8"))
-    if (attached.pid !== child.pid || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(attached.url))
-      throw new Error("PACKAGED_ATTACHMENT_OWNER_INVALID")
-    api = async (path, body) =>
-      fetch(`${attached.url}${path}?directory=${encodeURIComponent(attached.directory)}`, {
-        method: body === undefined ? "GET" : "POST",
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${attached.username}:${attached.password}`).toString("base64")}`,
-          "Content-Type": "application/json",
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(6000),
-      })
+    await attach()
     stage = "inline-approval"
     await until(
       () => evaluate('document.querySelector(".ps-experiment input[type=checkbox]")?.disabled === false'),
@@ -852,6 +1018,22 @@ async function launch(executable) {
       stage,
       "PASS",
       "Renderer reload preserved the bound conversation and exactly three recorded trials without replay.",
+    )
+    stage = "native-credential-probe"
+    credentialState.sessionId = attached.sessionId
+    credentialState.experimentId = completed.id
+    await credentialProbe.save(authRequest)
+    credentialState.saved = await credentialProbe.inspectFiles(profile)
+    credentialState.backend = await until(
+      () => {
+        try {
+          return backend.result()
+        } catch {
+          return undefined
+        }
+      },
+      "CREDENTIAL_PROBE_BACKEND_UNCONFIRMED",
+      2500,
     )
   } catch (error) {
     if (stage === "launch") {
@@ -951,12 +1133,15 @@ async function launch(executable) {
         qualificationFailureCode(error),
       )
       failed ||= error
-      child.stdout.unpipe(log)
-      child.stderr.unpipe(log)
+      child.stdout.unpipe(stdoutFilter)
+      child.stderr.unpipe(stderrFilter)
+      stdoutFilter.end()
+      stderrFilter.end()
       child.stdout.destroy()
       child.stderr.destroy()
       child.unref()
     }
+    backend.dispose()
     socket?.close()
     await provider.close()
     diagnosticLogStatus = await privateLog.finish()

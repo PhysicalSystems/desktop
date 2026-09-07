@@ -255,7 +255,7 @@ export async function desktopRelease(args: string[]) {
         ],
         sourceRoot,
         process.env,
-        300_000,
+        600_000,
       ).catch(() => {
         failed = true
       })

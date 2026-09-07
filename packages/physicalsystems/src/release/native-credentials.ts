@@ -3,11 +3,46 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { lstat, open, readdir, realpath } from "node:fs/promises"
 import { constants } from "node:fs"
 import { isAbsolute, join, sep } from "node:path"
+import { Transform } from "node:stream"
+import { readAttachment } from "../attachment"
 
 export type CredentialProbeRequest = (
   route: string,
   init: { method: "PUT" | "DELETE"; body?: { type: "api"; key: string }; signal: AbortSignal },
 ) => Promise<unknown>
+
+/** A snapshot may precede its atomic attachment write. This read-only wait
+ * grants no request authority until the owned process and exact session match. */
+export async function waitForCredentialAttachment(
+  file: string,
+  expected: { pid: number; sessionId: string; directory: string },
+  options: { timeoutMs?: number; pollMs?: number } = {},
+) {
+  const timeoutMs = options.timeoutMs ?? 6500
+  const pollMs = options.pollMs ?? 150
+  if (
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 6500 ||
+    !Number.isInteger(pollMs) ||
+    pollMs < 1 ||
+    pollMs > 150
+  )
+    throw new Error("PACKAGED_ATTACHMENT_UNCONFIRMED")
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const current = await readAttachment(file).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return
+      throw new Error("PACKAGED_ATTACHMENT_OWNER_INVALID")
+    })
+    if (current) {
+      if (current.pid !== expected.pid) throw new Error("PACKAGED_ATTACHMENT_OWNER_INVALID")
+      if (current.sessionId === expected.sessionId && current.directory === expected.directory) return current
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))))
+  }
+  throw new Error("PACKAGED_ATTACHMENT_UNCONFIRMED")
+}
 
 /** Observations only: the caller must independently verify real packaged app
  * shutdown/restart, native backend availability and exact-artifact identity.
@@ -50,6 +85,42 @@ export function createNativeCredentialProbe(options: { timeoutMs?: number } = {}
 
   return {
     providerID,
+    /** Filter each owned stdout/stderr independently before any private log write.
+     * Keep only a bounded overlap so a canary split across chunks is still removed. */
+    logFilter() {
+      let pending = Buffer.alloc(0)
+      const patterns = [Buffer.from(canary), Buffer.from(canary, "utf16le")]
+      const overlap = Math.max(...patterns.map((pattern) => pattern.length)) - 1
+      const replace = () => {
+        for (const pattern of patterns) {
+          let offset = pending.indexOf(pattern)
+          while (offset >= 0) {
+            pending = Buffer.concat([
+              pending.subarray(0, offset),
+              Buffer.from("[credential omitted]"),
+              pending.subarray(offset + pattern.length),
+            ])
+            offset = pending.indexOf(pattern)
+          }
+        }
+      }
+      return new Transform({
+        transform(chunk, _encoding, callback) {
+          pending = Buffer.concat([pending, chunk])
+          replace()
+          const count = Math.max(0, pending.length - overlap)
+          this.push(pending.subarray(0, count))
+          pending = pending.subarray(count)
+          callback()
+        },
+        flush(callback) {
+          replace()
+          this.push(pending)
+          pending = Buffer.alloc(0)
+          callback()
+        },
+      })
+    },
     save: (request: CredentialProbeRequest) => mutate(request, "PUT"),
     remove: (request: CredentialProbeRequest) => mutate(request, "DELETE"),
     beginObservation(expected: "present" | "absent") {

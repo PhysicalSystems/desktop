@@ -6,13 +6,15 @@ import { randomUUID } from 'node:crypto'
 
 export const qualificationPrompt = 'Find a synthetic alignment approach using three trials.'
 
-export async function startFixtureProvider() {
+export async function startFixtureProvider({ credentialProbe } = {}) {
   const calls = []
   const server = createServer(async (request, response) => {
-    if (request.method !== 'POST' || request.url !== '/v1/chat/completions') { response.writeHead(404).end(); return }
+    const credentialRequest = credentialProbe && request.url === '/credential/v1/chat/completions'
+    if (request.method !== 'POST' || (request.url !== '/v1/chat/completions' && !credentialRequest)) { response.writeHead(404).end(); return }
     try {
       const buffers = []
-      for await (const chunk of request) buffers.push(chunk)
+      let bytes = 0
+      for await (const chunk of request) { bytes += chunk.length; if (bytes > 2 * 1024 * 1024) throw new Error('FIXTURE_REQUEST_LIMIT'); buffers.push(chunk) }
       const body = JSON.parse(Buffer.concat(buffers))
       const messages = body.messages || []
       const names = new Map(messages.flatMap((message) => (message.tool_calls || []).map((call) => [call.id, call.function.name])))
@@ -24,7 +26,11 @@ export async function startFixtureProvider() {
       const parsed = tools.map((tool) => { try { return JSON.parse(tool.text) } catch { return undefined } }).filter(Boolean)
       const current = parsed.map((value) => value.current || value.experiment || (value.id && value.planDigest ? value : null)).filter(Boolean).at(-1)
       let name, args, text
-      if (!(body.tools || []).some((tool) => tool.function?.name === 'propose_local_experiment')) text = 'Synthetic alignment investigation'
+      if (credentialRequest) {
+        credentialProbe.observeProviderRequest({ authorization: request.headers.authorization, messages })
+        text = 'Inert credential transport observation recorded.'
+      }
+      else if (!(body.tools || []).some((tool) => tool.function?.name === 'propose_local_experiment')) text = 'Synthetic alignment investigation'
       else if (requestText.includes('Ask the shared fixture question')) {
         if (recent.length === 0) { name = 'question'; args = { questions: [{ header: 'Fixture', question: 'Which synthetic check should be recorded?', options: [{ label: 'Baseline', description: 'Record the baseline choice' }, { label: 'Correction', description: 'Record the correction choice' }] }] } }
         else text = 'Shared fixture answer recorded: **Baseline**.'
@@ -57,5 +63,5 @@ export async function startFixtureProvider() {
     } catch { response.writeHead(400).end() }
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  return { url: `http://127.0.0.1:${server.address().port}/v1`, calls, close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve) }) }
+  return { url: `http://127.0.0.1:${server.address().port}/v1`, credentialURL: `http://127.0.0.1:${server.address().port}/credential/v1`, calls, close: () => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve) }) }
 }

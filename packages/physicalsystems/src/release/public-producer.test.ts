@@ -240,12 +240,14 @@ test("public smoke continues only after exact-artifact confirmed cleanup, never 
     checks: [
       { id: "cleanup", status: "PASS" },
       { id: "uninstall", status: "PASS" },
+      { id: "native-secret-service-cleanup", status: "PASS" },
+      { id: "linux-temporary-cleanup", status: "PASS" },
       { id: "provider-browser-sign-in", status: "NOT_TESTED" },
     ],
   }
   const input = { report, artifact, build: prepared.inputs, publicBuildInputsSha256: prepared.sha256 }
   expect(publicSmokeCanContinue(input)).toBe(true)
-  for (const id of ["cleanup", "uninstall"])
+  for (const id of ["cleanup", "uninstall", "native-secret-service-cleanup", "linux-temporary-cleanup"])
     for (const status of ["NOT_TESTED", "BLOCKED", "FAIL"])
       expect(
         publicSmokeCanContinue({
@@ -253,6 +255,23 @@ test("public smoke continues only after exact-artifact confirmed cleanup, never 
           report: { ...report, checks: report.checks.map((check) => (check.id === id ? { ...check, status } : check)) },
         }),
       ).toBe(false)
+  for (const id of ["native-secret-service-cleanup", "linux-temporary-cleanup"]) {
+    expect(
+      publicSmokeCanContinue({
+        ...input,
+        report: { ...report, checks: report.checks.filter((check) => check.id !== id) },
+      }),
+    ).toBe(false)
+    expect(() =>
+      publicSmokeCanContinue({
+        ...input,
+        report: {
+          ...report,
+          checks: report.checks.map((check) => (check.id === id ? { ...check, status: "RETAINED" } : check)),
+        },
+      }),
+    ).toThrow()
+  }
   expect(publicSmokeCanContinue({ ...input, report: { ...report, checks: report.checks.slice(1) } })).toBe(false)
   expect(
     publicSmokeCanContinue({
