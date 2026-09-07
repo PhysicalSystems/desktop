@@ -4,6 +4,10 @@ This pipeline prepares **internal, unsigned desktop candidates**. It has no publ
 
 The desktop has its own version sequence, initially `0.1.0-beta.1`. It bundles the pinned OpenCode agent server and public Physical Systems operator artifact. Desktop candidate preparation does not rebuild, discover, install or upgrade a hardware-host Physical Systems Node. The existing npm and private Node release processes remain separate.
 
+## Fork workflow ownership
+
+The inherited OpenCode workflows retain their original conditions and also require `github.repository == 'anomalyco/opencode'` on every job. This prevents upstream maintenance bots, tests and publishing jobs from running in the Physical Systems fork, including jobs using `always()`. The three owned `desktop-*.yml` workflows provide this fork's source checks, internal candidate preparation and disabled public-download promotion. Preserve these guards when updating from upstream; review newly added upstream jobs before enabling them.
+
 ## Maintainer workflow
 
 1. Commit and review the desktop source, including the vendor manifest and release policy. Source and bundled artifacts must be clean and their hashes must match. Make this commit available in the desktop repository before requesting a CI candidate.
