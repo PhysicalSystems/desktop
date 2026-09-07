@@ -9,6 +9,7 @@ import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { qualificationPrompt, startFixtureProvider } from "./fixture-provider.mjs"
 import { composerReadiness } from "../src/release/composer-readiness.ts"
+import { probePackagedRenderer } from "../src/release/cdp-discovery.ts"
 import { allocateLinuxQualificationTemporary } from "../src/release/linux-temporary.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
@@ -637,13 +638,7 @@ async function launch(executable) {
         if (value && /^[0-9]+$/.test(value.split("\n")[0])) return Number(value.split("\n")[0])
       }
     }, "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
-    const target = await untilStarted(
-      async () =>
-        (await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json()).find(
-          (target) => target.type === "page" && target.url.startsWith("oc://renderer/"),
-        ),
-      "PACKAGED_RENDERER_UNAVAILABLE",
-    )
+    const target = await untilStarted(() => probePackagedRenderer(port), "PACKAGED_RENDERER_UNAVAILABLE")
     socket = new WebSocket(target.webSocketDebuggerUrl)
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("PACKAGED_CDP_CONNECTION_TIMEOUT")), 8000)
