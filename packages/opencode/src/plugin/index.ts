@@ -33,6 +33,7 @@ import type { WorkspaceAdapter } from "@/control-plane/types"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstallationChannel } from "@opencode-ai/core/installation/version"
+import { PhysicalSystems } from "./physicalsystems"
 
 type State = {
   hooks: Hooks[]
@@ -134,6 +135,7 @@ const layer = Layer.effect(
     const state = yield* InstanceState.make<State>(
       Effect.fn("Plugin.state")(function* (ctx) {
         const hooks: Hooks[] = []
+        if (PhysicalSystems.enabled()) hooks.push(PhysicalSystems.plugin())
         const bridge = yield* EffectBridge.make()
 
         function publishPluginError(message: string) {
@@ -178,7 +180,7 @@ const layer = Layer.effect(
           if (init._tag === "Some") hooks.push(init.value)
         }
 
-        const plugins = flags.pure ? [] : (cfg.plugin_origins ?? [])
+        const plugins = flags.pure || PhysicalSystems.enabled() ? [] : (cfg.plugin_origins ?? [])
         if (flags.pure && cfg.plugin_origins?.length) {
         }
         if (plugins.length) yield* config.waitForDependencies()

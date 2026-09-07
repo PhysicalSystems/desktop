@@ -1,3 +1,7 @@
+import { randomUUID } from "node:crypto"
+import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
+import { previewLegacyImport, commitLegacyImport, listLegacyImports, readLegacyImport } from "../../../physicalsystems/src/migration"
+import type { LegacyImportPreview } from "../../../physicalsystems/src/migration"
 import { execFile } from "node:child_process"
 import { stat } from "node:fs/promises"
 import { basename, join } from "node:path"
@@ -24,6 +28,8 @@ import type { UpdaterController } from "./updater-controller"
 import { createUpdaterSubscriptions } from "./updater-subscriptions"
 import { createDesktopDraftStore } from "./draft-store"
 import { nativeT } from "./native-translations"
+import type { PhysicalHost } from "./physical"
+import type { PhysicalCommand } from "@opencode-ai/app/physicalsystems-types"
 
 const pickerFilters = (ext?: string[]) => {
   if (!ext || ext.length === 0) return undefined
@@ -33,6 +39,7 @@ const pickerFilters = (ext?: string[]) => {
 const pickedFiles = createPickedFileAuthorizations()
 
 type Deps = {
+  physical: PhysicalHost
   killSidecar: () => Promise<void> | void
   relaunch: () => void
   awaitInitialization: () => Promise<ServerReadyData>
@@ -55,6 +62,44 @@ type Deps = {
 }
 
 export function registerIpcHandlers(deps: Deps) {
+  const assertPhysicalSender = (event: IpcMainInvokeEvent) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const url = event.senderFrame?.url
+    if (!trustedRenderer({ windowMatches: Boolean(window && window.webContents === event.sender), mainFrame: event.senderFrame === event.sender.mainFrame, url, developmentURL: process.env.ELECTRON_RENDERER_URL, packaged: app.isPackaged })) throw new Error("INVALID_OPERATOR_SENDER")
+  }
+  ipcMain.handle("physicalsystems:snapshot", (event) => {
+    assertPhysicalSender(event)
+    return deps.physical.snapshot()
+  })
+  ipcMain.handle("physicalsystems:command", (event, request: PhysicalCommand) => {
+    assertPhysicalSender(event)
+    if (!request || typeof request !== "object" || typeof request.type !== "string" || Buffer.byteLength(JSON.stringify(request)) > 1024 * 1024) throw new Error("INVALID_OPERATOR_REQUEST")
+    return deps.physical.command(request)
+  })
+  ipcMain.handle("physicalsystems:recover", (event) => { assertPhysicalSender(event); return deps.physical.recover() })
+  const imports = new Map<string, { preview: LegacyImportPreview; sender: number; expires: number }>()
+  const archiveRoot = join(app.getPath("userData"), "legacy-imports")
+  ipcMain.handle("physicalsystems:import-preview", async (event) => {
+    assertPhysicalSender(event)
+    const window = BrowserWindow.fromWebContents(event.sender)!
+    const choice = await dialog.showOpenDialog(window, { properties: ["openDirectory"] })
+    if (choice.canceled || choice.filePaths.length !== 1) return null
+    const preview = await previewLegacyImport(choice.filePaths[0])
+    for (const [id, item] of imports) if (item.sender === event.sender.id || item.expires < Date.now()) imports.delete(id)
+    const token = randomUUID()
+    imports.set(token, { preview, sender: event.sender.id, expires: Date.now() + 300_000 })
+    return { ...preview.summary, token }
+  })
+  ipcMain.handle("physicalsystems:import-commit", async (event, token: unknown) => {
+    assertPhysicalSender(event)
+    const pending = typeof token === "string" ? imports.get(token) : undefined
+    if (!pending || pending.sender !== event.sender.id || pending.expires < Date.now()) throw new Error("IMPORT_PREVIEW_EXPIRED")
+    const result = await commitLegacyImport(pending.preview, archiveRoot)
+    imports.delete(token as string)
+    return result
+  })
+  ipcMain.handle("physicalsystems:import-list", async (event) => { assertPhysicalSender(event); return listLegacyImports(archiveRoot) })
+  ipcMain.handle("physicalsystems:import-read", async (event, id: unknown) => { assertPhysicalSender(event); if (typeof id !== "string") throw new Error("INVALID_IMPORT_ID"); return readLegacyImport(archiveRoot, id) })
   const drafts = createDesktopDraftStore(join(app.getPath("userData"), "drafts.sqlite"))
   const updaterSubscriptions = createUpdaterSubscriptions()
   app.once("will-quit", updaterSubscriptions.clear)

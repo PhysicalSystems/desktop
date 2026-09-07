@@ -1,0 +1,6 @@
+models.dev provider/model metadata snapshot
+Source: https://models.dev/api.json
+Retrieved: 2026-09-07
+License: models.dev.LICENSE (MIT)
+The catalog is metadata; it does not provide credentials, model weights or free inference.
+Compressed with gzip mtime=0; release inputs record both compressed and decoded SHA-256.

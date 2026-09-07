@@ -11,6 +11,22 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
 }
 
 const api: ElectronAPI = {
+  physicalSystems: {
+    recover: () => ipcRenderer.invoke("physicalsystems:recover"),
+    migration: {
+      preview: () => ipcRenderer.invoke("physicalsystems:import-preview"),
+      commit: (token) => ipcRenderer.invoke("physicalsystems:import-commit", token),
+      list: () => ipcRenderer.invoke("physicalsystems:import-list"),
+      read: (id) => ipcRenderer.invoke("physicalsystems:import-read", id),
+    },
+    snapshot: () => ipcRenderer.invoke("physicalsystems:snapshot"),
+    command: (request) => ipcRenderer.invoke("physicalsystems:command", request),
+    subscribe: (listener) => {
+      const handler = (_: unknown, snapshot: Parameters<typeof listener>[0]) => listener(snapshot)
+      ipcRenderer.on("physicalsystems:snapshot", handler)
+      return () => ipcRenderer.removeListener("physicalsystems:snapshot", handler)
+    },
+  },
   killSidecar: () => ipcRenderer.invoke("kill-sidecar"),
   installCli: () => ipcRenderer.invoke("install-cli"),
   awaitInitialization: () => ipcRenderer.invoke("await-initialization"),

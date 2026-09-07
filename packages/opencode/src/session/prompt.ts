@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { PhysicalSystems } from "@/plugin/physicalsystems"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -155,6 +156,7 @@ const layer = Layer.effect(
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
+      if (PhysicalSystems.enabled()) return [{ type: "text" as const, text: template }]
       const ctx = yield* InstanceState.context
       const parts: Types.DeepMutable<PromptInput["parts"]> = [{ type: "text", text: template }]
       const files = ConfigMarkdown.files(template)
@@ -633,6 +635,11 @@ const layer = Layer.effect(
     })
 
     const createUserMessage = Effect.fn("SessionPrompt.createUserMessage")(function* (input: PromptInput) {
+      if (PhysicalSystems.enabled() && input.parts.some((part) => part.type !== "text")) {
+        throw new Error(
+          "Physical Systems accepts text prompts here. Use its reviewed controls for physical evidence; file, MCP and subagent prompt parts are unavailable.",
+        )
+      }
       const agentName = input.agent
       const ag = agentName ? yield* agents.get(agentName) : yield* agents.defaultInfo()
       if (!ag) {
@@ -1255,10 +1262,10 @@ const layer = Layer.effect(
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
-              sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
-              sys.mcp(agent, session.permission),
+              PhysicalSystems.enabled() ? Effect.succeed(undefined) : sys.skills(agent),
+              PhysicalSystems.enabled() ? Effect.succeed([]) : sys.environment(model),
+              PhysicalSystems.enabled() ? Effect.succeed([]) : instruction.system().pipe(Effect.orDie),
+              PhysicalSystems.enabled() ? Effect.succeed(undefined) : sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [
@@ -1349,11 +1356,13 @@ const layer = Layer.effect(
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
+      PhysicalSystems.requireGeneric("Shell commands")
       const ready = yield* Latch.make()
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
+      PhysicalSystems.requireGeneric("Custom commands")
       yield* Effect.logInfo("command", {
         "session.id": input.sessionID,
         command: input.command,

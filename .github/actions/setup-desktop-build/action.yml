@@ -1,0 +1,65 @@
+name: Setup desktop build
+description: Pinned build tools and download caches, with an explicit dependency lifecycle allowlist
+inputs:
+  install-dependencies:
+    description: Install the frozen workspace and prepare Electron
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Read toolchain pins
+      id: pins
+      shell: bash
+      run: |
+        node --input-type=module <<'NODE'
+        import { readFileSync, appendFileSync } from 'node:fs';
+        const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+        const policy = JSON.parse(readFileSync('release/desktop.json', 'utf8'));
+        const match = /^bun@(\d+\.\d+\.\d+)$/.exec(manifest.packageManager);
+        if (!match || !/^\d+\.\d+\.\d+$/.test(policy.buildNode) || process.env.RUNNER_ARCH !== 'X64') throw new Error('Unsupported desktop build toolchain');
+        const os = { Linux: 'linux', Windows: 'windows' }[process.env.RUNNER_OS];
+        if (!os) throw new Error('Unsupported desktop build platform');
+        appendFileSync(process.env.GITHUB_OUTPUT, `node=${policy.buildNode}\nbun=${match[1]}\nurl=https://github.com/oven-sh/bun/releases/download/bun-v${match[1]}/bun-${os}-x64-baseline.zip\n`);
+        NODE
+
+    - name: Set up Node
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: ${{ steps.pins.outputs.node }}
+
+    - name: Set up pinned Bun baseline
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-download-url: ${{ steps.pins.outputs.url }}
+
+    - name: Check toolchain and configure download caches
+      id: cache
+      shell: bash
+      run: |
+        bun --eval 'if (Bun.version !== process.argv[1]) throw new Error("Bun version mismatch")' '${{ steps.pins.outputs.bun }}'
+        echo "bun=$(bun pm cache)" >> "$GITHUB_OUTPUT"
+        echo "ELECTRON_CACHE=$RUNNER_TEMP/desktop-downloads/electron" >> "$GITHUB_ENV"
+        echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/desktop-downloads/electron-builder" >> "$GITHUB_ENV"
+
+    - name: Restore dependency and packaging downloads
+      if: inputs.install-dependencies == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ steps.cache.outputs.bun }}
+          ${{ runner.temp }}/desktop-downloads
+        key: desktop-downloads-${{ runner.os }}-${{ runner.arch }}-node${{ steps.pins.outputs.node }}-bun${{ steps.pins.outputs.bun }}-${{ hashFiles('bun.lock', '.github/actions/setup-desktop-build/action.yml') }}
+
+    - name: Install frozen dependencies without lifecycle scripts
+      if: inputs.install-dependencies == 'true'
+      shell: bash
+      env:
+        HUSKY: "0"
+      run: bun install --frozen-lockfile --ignore-scripts
+
+    - name: Prepare the pinned Electron binary
+      if: inputs.install-dependencies == 'true'
+      shell: bash
+      run: |
+        node -e 'require(require.resolve("electron/install.js", { paths: [process.cwd() + "/packages/desktop"] }))'

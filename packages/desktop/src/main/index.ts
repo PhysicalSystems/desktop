@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto"
 import { mkdirSync, rmSync } from "node:fs"
 import * as http from "node:http"
 import { createServer } from "node:net"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { getCACertificates, setDefaultCACertificates } from "node:tls"
 import type { Event } from "electron"
@@ -13,7 +13,6 @@ import contextMenu from "electron-context-menu"
 
 import type { ServerReadyData } from "../preload/types"
 import { checkAppExists, resolveAppPath } from "./apps"
-import { CHANNEL } from "./constants"
 import { registerIpcHandlers, sendDeepLinks, sendMenuCommand } from "./ipc"
 import { forwardInitializationFailure } from "./initialization"
 import { exportDebugLogs, initCrashReporter, initLogging, startNetLog, write as writeLog } from "./logging"
@@ -24,13 +23,7 @@ import {
   isFirstLaunchOnboardingPending,
   isOldLayoutEligible,
 } from "./onboarding"
-import {
-  getDefaultServerUrl,
-  preferAppEnv,
-  setDefaultServerUrl,
-  spawnLocalServer,
-  type SidecarListener,
-} from "./server"
+import { spawnLocalServer, type SidecarListener } from "./server"
 import { setupAutoUpdater, showUpdaterDialog } from "./updater"
 import { safeWebContentsURL } from "./window-state"
 import {
@@ -43,29 +36,24 @@ import {
   restoreMainWindows,
 } from "./windows"
 import { createWslServersController } from "./wsl/servers"
-import { registerWslIpcHandlers } from "./wsl/ipc"
 import { spawnWslSidecar } from "./wsl/sidecar"
-import { migrate } from "./migrate"
 import { cleanupStoreFiles } from "./store-cleanup"
-import { startBackgroundCli } from "./background-cli"
 import { setNativeTranslations } from "./native-translations"
-
-const APP_NAMES: Record<string, string> = {
-  dev: "OpenCode Dev",
-  beta: "OpenCode Beta",
-  prod: "OpenCode",
-}
-const APP_IDS: Record<string, string> = {
-  dev: "ai.opencode.desktop.dev",
-  beta: "ai.opencode.desktop.beta",
-  prod: "ai.opencode.desktop",
-}
+import { physicalEnvironment } from "../../../physicalsystems/src/environment"
+import { createPhysicalHost } from "./physical"
+import type { PhysicalHost } from "./physical"
+import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycle"
 const TEST_ONBOARDING = process.env.OPENCODE_TEST_ONBOARDING === "1"
-const SIDECAR_VERSION = process.env.OPENCODE_SIDECAR_V2 === "1" ? "v2" : "v1"
+// Physical Systems' reviewed tool adapter currently targets the bundled v1 server.
+const SIDECAR_VERSION = "v1"
 const jsCallStackFeature = "DocumentPolicyIncludeJSCallStacksInCrashReports"
 
 let logger: ReturnType<typeof initLogging>
 let server: SidecarListener | null = null
+let physical: PhysicalHost | undefined
+let physicalReady: Promise<PhysicalHost> | undefined
+let quitAllowed = false
+let shutdownStarted = false
 
 const pendingDeepLinks: string[] = []
 
@@ -88,8 +76,8 @@ function emitDeepLinks(urls: string[]) {
 async function killSidecar() {
   if (!server) return
   const current = server
-  server = null
   await current.stop()
+  if (server === current) server = null
 }
 
 function ensureLoopbackNoProxy() {
@@ -113,16 +101,26 @@ function ensureLoopbackNoProxy() {
 }
 
 const main = Effect.gen(function* () {
+  const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), "physicalsystems-opencode-development")
+  const scoped = physicalEnvironment(process.env, physicalRoot)
+  for (const key of Object.keys(process.env)) if (!(key in scoped)) delete process.env[key]
+  Object.assign(process.env, scoped)
+  if (app.isPackaged) process.env.PHYSICALSYSTEMS_ALLOW_DEVICES = "0"
+  for (const name of ["data", "config", "cache", "state", "desktop", "session", "workspace"]) mkdirSync(join(physicalRoot, name), { recursive: true, mode: 0o700 })
+  process.env.XDG_DATA_HOME = join(physicalRoot, "data")
+  process.env.XDG_CONFIG_HOME = join(physicalRoot, "config")
+  process.env.XDG_CACHE_HOME = join(physicalRoot, "cache")
+  process.env.XDG_STATE_HOME = join(physicalRoot, "state")
   contextMenu({ showSaveImageAs: true, showLookUpSelection: false, showSearchWithGoogle: false })
 
   // on macOS apps run in `/` which can cause issues with ripgrep
   try {
-    process.chdir(homedir())
+    process.chdir(join(physicalRoot, "workspace"))
   } catch {}
 
   process.env.OPENCODE_DISABLE_EMBEDDED_WEB_UI = "true"
 
-  const appId = app.isPackaged ? APP_IDS[CHANNEL] : "ai.opencode.desktop.dev"
+  const appId = "systems.physical.desktop.development"
   const onboardingTestRoot = ((): string | undefined => {
     if (!TEST_ONBOARDING) return
 
@@ -138,13 +136,14 @@ const main = Effect.gen(function* () {
     process.env.XDG_STATE_HOME = join(root, "state")
     return root
   })()
-  app.setName(app.isPackaged ? APP_NAMES[CHANNEL] : "OpenCode Dev")
+  app.setName("Physical Systems Development")
   app.setAppUserModelId(appId)
   app.setPath(
     "userData",
-    onboardingTestRoot ? join(onboardingTestRoot, "desktop") : join(app.getPath("appData"), appId),
+    onboardingTestRoot ? join(onboardingTestRoot, "desktop") : join(physicalRoot, "desktop"),
   )
   if (onboardingTestRoot) app.setPath("sessionData", join(onboardingTestRoot, "session"))
+  else app.setPath("sessionData", join(physicalRoot, "session"))
   initializeOldLayoutEligibility(app.getPath("userData"))
   logger = initLogging()
   initCrashReporter()
@@ -168,13 +167,22 @@ const main = Effect.gen(function* () {
     await killSidecar()
     wslServers.stopAll()
   }
-  const relaunch = () => {
-    setAppQuitting()
-    void stopSidecars().finally(() => {
-      app.relaunch()
+  const shutdown = createShutdownCoordinator({
+    async closeOperator() {
+      shutdownStarted = true
+      try { await (physical || await physicalReady)?.close() }
+      catch (error) { shutdownStarted = false; throw error }
+    },
+    stopServers: stopSidecars,
+    finish(intent) {
+      quitAllowed = true
+      setAppQuitting()
+      if (intent === "relaunch") app.relaunch()
       app.quit()
-    })
-  }
+    },
+    blocked() { physical?.notify() },
+  })
+  const relaunch = () => { void shutdown.request("relaunch") }
 
   try {
     setDefaultCACertificates([...new Set([...getCACertificates("default"), ...getCACertificates("system")])])
@@ -193,14 +201,15 @@ const main = Effect.gen(function* () {
   app.commandLine.appendSwitch("proxy-bypass-list", "<-loopback>")
   const features = app.commandLine.getSwitchValue("enable-features")
   app.commandLine.appendSwitch("enable-features", features ? `${jsCallStackFeature},${features}` : jsCallStackFeature)
-  if (!app.isPackaged) app.commandLine.appendSwitch("remote-debugging-port", "9222")
+  if (!app.isPackaged && process.env.PHYSICALSYSTEMS_DEBUG_PORT) app.commandLine.appendSwitch("remote-debugging-port", process.env.PHYSICALSYSTEMS_DEBUG_PORT)
 
   if (!app.requestSingleInstanceLock()) {
     app.quit()
     return
   }
 
-  const shellEnv = preferAppEnv(app.getPath("userData"))
+  // Keep the scoped development environment; do not reload ambient provider/config variables from a login shell.
+  process.env.OPENCODE_CLIENT = "desktop"
 
   app.on("second-instance", (_event: Event, argv: string[]) => {
     const urls = argv.filter((arg: string) => arg.startsWith("opencode://"))
@@ -221,14 +230,17 @@ const main = Effect.gen(function* () {
     emitDeepLinks([url])
   })
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
+    if (!quitAllowed) {
+      event.preventDefault()
+      void shutdown.request("quit")
+      return
+    }
     setAppQuitting()
-    void stopSidecars()
   })
 
   app.on("will-quit", () => {
     setAppQuitting()
-    void stopSidecars()
   })
 
   app.on("child-process-gone", (_event, details) => {
@@ -245,16 +257,30 @@ const main = Effect.gen(function* () {
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.on(signal, () => {
-      setAppQuitting()
-      void stopSidecars().finally(() => app.quit())
+      app.quit()
     })
   }
 
   const serverReady = Deferred.makeUnsafe<ServerReadyData, unknown>()
 
   yield* Effect.promise(() => app.whenReady())
+  physical = yield* Effect.promise(() => {
+    physicalReady = createPhysicalHost(join(physicalRoot, "operator"))
+    return physicalReady
+  })
+  app.on("browser-window-created", (_event, window) => {
+    window.on("close", (event) => {
+      if (!quitAllowed && BrowserWindow.getAllWindows().length <= 1) {
+        event.preventDefault()
+        // Keep the recovery controls alive even when a pending request has not
+        // produced an active-operation record yet. The service admits shutdown.
+        void shutdown.request("quit")
+      }
+    })
+  })
 
-  if (!TEST_ONBOARDING) migrate()
+  // Migration is an explicit copy-only Physical Systems command.
+  if (!TEST_ONBOARDING) yield* Effect.promise(() => finishFirstLaunchOnboarding(false))
   yield* Effect.promise(() => cleanupStoreFiles(app.getPath("userData"))).pipe(
     Effect.tap((result) =>
       Effect.sync(() => {
@@ -268,7 +294,7 @@ const main = Effect.gen(function* () {
       }),
     ),
   )
-  app.setAsDefaultProtocolClient("opencode")
+  // A review build never takes over the installed OpenCode URL handler.
   registerRendererProtocol()
   setDockIcon()
   const updater = setupAutoUpdater(stopSidecars)
@@ -281,6 +307,7 @@ const main = Effect.gen(function* () {
     relaunch,
   }
   registerIpcHandlers({
+    physical,
     killSidecar: () => killSidecar(),
     relaunch,
     awaitInitialization: Effect.fnUntraced(
@@ -293,8 +320,8 @@ const main = Effect.gen(function* () {
       (e) => Effect.runPromise(e),
     ),
     consumeInitialDeepLinks: () => pendingDeepLinks.splice(0),
-    getDefaultServerUrl: () => getDefaultServerUrl(),
-    setDefaultServerUrl: (url) => setDefaultServerUrl(url),
+    getDefaultServerUrl: () => null,
+    setDefaultServerUrl: () => { throw new Error("PHYSICALSYSTEMS_OWNED_SERVER_REQUIRED") },
     isFirstLaunchOnboardingPending,
     finishFirstLaunchOnboarding,
     isOldLayoutEligible,
@@ -311,7 +338,7 @@ const main = Effect.gen(function* () {
       if (setNativeTranslations(bundle)) createMenu(menuDeps)
     },
   })
-  registerWslIpcHandlers(wslServers)
+  // Remote physical Nodes use reviewed operator transports, not arbitrary agent servers.
   void updater.start()
   const updateTimer = setInterval(() => void updater.check(), 10 * 60 * 1000)
   updateTimer.unref()
@@ -329,23 +356,6 @@ const main = Effect.gen(function* () {
 
     ensureLoopbackNoProxy()
     useEnvProxy()
-
-    if (SIDECAR_VERSION === "v2") {
-      logger.log("spawning v2 sidecar")
-      const sidecar = yield* Effect.promise(() => startBackgroundCli(logger, shellEnv?.XDG_STATE_HOME))
-      yield* Deferred.succeed(serverReady, {
-        url: sidecar.url,
-        username: sidecar.username,
-        password: sidecar.password,
-      })
-
-      if (process.platform === "win32") {
-        void wslServers.initialize().catch((error) => logger.error("wsl server initialization failed", error))
-      }
-
-      logger.log("loading task finished")
-      return
-    }
 
     const port = yield* Effect.gen(function* () {
       const fromEnv = process.env.OPENCODE_PORT
@@ -373,27 +383,24 @@ const main = Effect.gen(function* () {
     const hostname = "127.0.0.1"
     const url = `http://${hostname}:${port}`
     const password = randomUUID()
+    yield* Effect.promise(() => physical!.configureServer(url, password))
 
     logger.log("spawning sidecar", { url })
-    const { listener, health } = yield* Effect.promise(() =>
-      spawnLocalServer(hostname, port, password, {
+    const { health } = yield* Effect.promise(() => {
+      if (shutdownStarted) throw new Error("APPLICATION_CLOSING")
+      return spawnLocalServer(hostname, port, password, {
         userDataPath: app.getPath("userData"),
+        onSpawn: (listener) => { server = listener },
         onStdout: (message) => writeLog("server", "stdout", { message }),
         onStderr: (message) => writeLog("server", "stderr", { message }, "warn"),
         onExit: (code) => writeLog("utility", "sidecar exited", { code }, "warn"),
-      }),
-    )
-    server = listener
+      })
+    })
     yield* Deferred.succeed(serverReady, {
       url,
       username: "opencode",
       password,
     })
-
-    if (process.platform === "win32") {
-      void wslServers.initialize().catch((error) => logger.error("wsl server initialization failed", error))
-    }
-
     yield* Effect.promise(() => health.wait).pipe(
       Effect.timeout("30 seconds"),
       Effect.catch((e) =>

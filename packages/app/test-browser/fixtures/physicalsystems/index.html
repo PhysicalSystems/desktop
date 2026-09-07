@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Physical Systems isolated UI regression fixture</title>
+    <style>
+      html,
+      body,
+      #root {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: #18191b;
+        color: #e4e5e7;
+        font-family: system-ui;
+      }
+      #root {
+        display: flex;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+      }
+      p {
+        margin: 0;
+      }
+      .fixture-hidden {
+        display: none;
+      }
+      .fixture-composer-button {
+        border: 0;
+        padding: 2px;
+        border-radius: 0;
+        background: rgb(40, 50, 60);
+        text-align: center;
+        transition: none;
+      }
+      .fixture-composer-button:disabled {
+        opacity: 0.8;
+        cursor: wait;
+      }
+      .fixture-composer-text {
+        padding: 3px;
+        margin: 0;
+      }
+      .fixture-composer-text:focus-visible {
+        outline: 1px dashed rgb(200, 150, 100);
+        outline-offset: 1px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./entry.tsx"></script>
+  </body>
+</html>

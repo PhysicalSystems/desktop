@@ -1,0 +1,68 @@
+name: Desktop source checks
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact candidate source revision
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+# The vendored artifact and release input hashes refer to the committed bytes.
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+
+concurrency:
+  group: desktop-source-${{ inputs.source_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  source:
+    name: Source and authority checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CI: "true"
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      OPENCODE_DISABLE_MODELS_FETCH: "1"
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 5GiB
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+
+      - name: Integration and release regression tests
+        working-directory: packages/physicalsystems
+        run: bun test src
+
+      - name: Physical Systems UI regression tests
+        working-directory: packages/app
+        run: bun test --conditions=solid --preload ./happydom.ts ./src/physicalsystems
+
+      - name: Agent authority and adapter regression tests
+        working-directory: packages/opencode
+        run: bun test --timeout 30000 ./test/plugin/physicalsystems.test.ts ./test/plugin/physicalsystems-authority.test.ts
+
+      - name: Typecheck integration
+        working-directory: packages/physicalsystems
+        run: bun typecheck
+      - name: Typecheck app
+        working-directory: packages/app
+        run: bun typecheck
+      - name: Typecheck desktop
+        working-directory: packages/desktop
+        run: bun typecheck
+      - name: Typecheck agent server
+        working-directory: packages/opencode
+        run: bun typecheck

@@ -1,7 +1,6 @@
-import { sentryVitePlugin } from "@sentry/vite-plugin"
 import { defineConfig } from "electron-vite"
 import appPlugin from "@opencode-ai/app/vite"
-import * as fs from "node:fs/promises"
+import { cp, mkdir, readdir, copyFile } from "node:fs/promises"
 
 const OPENCODE_SERVER_DIST = "../opencode/dist/node"
 
@@ -14,23 +13,6 @@ const channel = (() => {
 
 const nodePtyPkg = `@lydell/node-pty-${process.platform}-${process.arch}`
 
-const sentry =
-  process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT
-    ? sentryVitePlugin({
-        authToken: process.env.SENTRY_AUTH_TOKEN,
-        org: process.env.SENTRY_ORG,
-        project: process.env.SENTRY_PROJECT,
-        telemetry: false,
-        release: {
-          name: process.env.SENTRY_RELEASE ?? process.env.VITE_SENTRY_RELEASE,
-        },
-        sourcemaps: {
-          assets: "./out/renderer/**",
-          filesToDeleteAfterUpload: "./out/renderer/**/*.map",
-        },
-      })
-    : false
-
 export default defineConfig({
   main: {
     define: {
@@ -38,7 +20,7 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        input: { index: "src/main/index.ts", sidecar: "src/main/sidecar.ts" },
+        input: { index: "src/main/index.ts", sidecar: "src/main/sidecar.ts", "physical-worker": "src/main/physical-worker.ts" },
         // Keep this identical to electron-vite's Node 20.11+ shim. Its regex insertion can
         // corrupt bundled TypeScript, while a Rollup banner places the shim safely.
         output: {
@@ -65,15 +47,25 @@ const require = __cjs_mod__.createRequire(import.meta.url);
         name: "opencode:virtual-server-module",
         enforce: "pre",
         resolveId(id) {
-          if (id === "virtual:opencode-server") return this.resolve(`${OPENCODE_SERVER_DIST}/node.js`)
+          // Bun has already bundled the agent server. Keep that artifact separate
+          // instead of parsing its entire dependency graph again in Rollup.
+          if (id === "virtual:opencode-server") return { id: "./server/node.js", external: true }
+          if (id === "virtual:physicalsystems-operator") return this.resolve("../physicalsystems/vendor/operator-service.mjs")
         },
       },
       {
         name: "opencode:copy-server-assets",
         async writeBundle() {
-          for (const l of await fs.readdir(OPENCODE_SERVER_DIST)) {
-            if (!l.endsWith(".wasm")) continue
-            await fs.writeFile(`./out/main/chunks/${l}`, await fs.readFile(`${OPENCODE_SERVER_DIST}/${l}`))
+          await cp("../physicalsystems/vendor/skills", "./out/main/skills", { recursive: true })
+          await mkdir("./out/legal", { recursive: true })
+          await copyFile("../../LICENSE", "./out/legal/OpenCode-LICENSE")
+          for (const name of ["LICENSE", "NOTICE", "manifest.json"]) {
+            await copyFile(`../physicalsystems/vendor/${name}`, `./out/legal/PhysicalSystems-${name}`)
+          }
+          await mkdir("./out/main/server", { recursive: true })
+          for (const l of await readdir(OPENCODE_SERVER_DIST)) {
+            if (!l.endsWith(".wasm") && l !== "node.js") continue
+            await copyFile(`${OPENCODE_SERVER_DIST}/${l}`, `./out/main/server/${l}`)
           }
         },
       },
@@ -90,8 +82,8 @@ const require = __cjs_mod__.createRequire(import.meta.url);
       },
     },
   },
-  renderer: {
-    plugins: [appPlugin, sentry],
+  renderer: process.env.PHYSICALSYSTEMS_BUILD_TARGET === "main" ? undefined : {
+    plugins: [appPlugin],
     publicDir: "../../../app/public",
     root: "src/renderer",
     build: {

@@ -1,4 +1,5 @@
 import path from "node:path"
+import { PhysicalSystems } from "@/plugin/physicalsystems"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -371,7 +372,7 @@ const layer = Layer.effect(
 
     const create = Effect.fn("MCP.create")(
       function* (key: string, mcp: ConfigMCPV1.Info) {
-        if (mcp.enabled === false) {
+        if (PhysicalSystems.enabled() || mcp.enabled === false) {
           return DISABLED_RESULT
         }
 
@@ -493,7 +494,7 @@ const layer = Layer.effect(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        const config = PhysicalSystems.enabled() ? {} : (cfg.mcp ?? {})
         const s: State = {
           config: {},
           status: {},
@@ -804,6 +805,7 @@ const layer = Layer.effect(
     })
 
     const startAuth = Effect.fn("MCP.startAuth")(function* (mcpName: string) {
+      PhysicalSystems.requireGeneric("MCP authentication")
       const mcpConfig = yield* requireMcpConfig(mcpName)
       if (mcpConfig.type !== "remote") throw new Error(`MCP server ${mcpName} is not a remote server`)
       if (mcpConfig.oauth === false) throw new Error(`MCP server ${mcpName} has OAuth explicitly disabled`)
@@ -916,6 +918,7 @@ const layer = Layer.effect(
     })
 
     const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
+      PhysicalSystems.requireGeneric("MCP authentication")
       yield* requireMcpConfig(mcpName)
       const pending = pendingOAuthTransports.get(mcpName)
       if (!pending) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
@@ -942,6 +945,7 @@ const layer = Layer.effect(
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {
+      PhysicalSystems.requireGeneric("MCP authentication")
       yield* auth.remove(mcpName)
       McpOAuthCallback.cancelPending(mcpName)
       pendingOAuthTransports.delete(mcpName)

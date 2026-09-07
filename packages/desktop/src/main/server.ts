@@ -6,6 +6,7 @@ import { getLogger } from "./logging"
 import { getUserShell, loadShellEnv } from "./shell-env"
 import { getStore } from "./store"
 import { DEFAULT_SERVER_URL_KEY } from "./store-keys"
+import { createProcessStopper } from "../../../physicalsystems/src/lifecycle"
 
 export type HealthCheck = { wait: Promise<void> }
 
@@ -22,6 +23,7 @@ const SIDECAR_STOP_TIMEOUT = 6_000
 
 type SpawnLocalServerOptions = {
   userDataPath: string
+  onSpawn?: (listener: SidecarListener) => void
   onStdout?: (message: string) => void
   onStderr?: (message: string) => void
   onExit?: (code: number) => void
@@ -86,6 +88,16 @@ export async function spawnLocalServer(
 
   child.stdout?.on("data", (chunk: Buffer) => options.onStdout?.(chunk.toString("utf8").trimEnd()))
   child.stderr?.on("data", (chunk: Buffer) => options.onStderr?.(chunk.toString("utf8").trimEnd()))
+
+  const listener = createProcessStopper({
+    exit: exit.promise,
+    exited: () => exited,
+    requestStop: () => child.postMessage({ type: "stop" }),
+    forceStop: () => { child.kill() },
+    graceMs: SIDECAR_STOP_TIMEOUT,
+    forcedMs: 1000,
+  })
+  options.onSpawn?.(listener)
 
   await new Promise<void>((resolve, reject) => {
     let done = false
@@ -162,23 +174,8 @@ export async function spawnLocalServer(
     await Promise.race([ready(), gone])
   })()
 
-  let stopping: Promise<void> | undefined
-
   return {
-    listener: {
-      stop: () => {
-        if (stopping) return stopping
-        if (exited) return Promise.resolve()
-        child.postMessage({ type: "stop" })
-        stopping = Promise.race([
-          exit.promise.then(() => undefined),
-          delay(SIDECAR_STOP_TIMEOUT).then(() => {
-            if (!exited) child.kill()
-          }),
-        ])
-        return stopping
-      },
-    },
+    listener,
     health: { wait },
   }
 }
@@ -217,10 +214,6 @@ function createSidecarEnv(): Record<string, string> {
   delete env.DEBUG
   if (process.platform === "linux") delete env.LD_PRELOAD
   return env
-}
-
-function delay(ms: number) {
-  return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
 function serializeError(error: unknown) {
