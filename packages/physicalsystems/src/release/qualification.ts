@@ -55,6 +55,7 @@ export const qualificationFailureCodes = [
   "PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED",
   "PACKAGED_MAIN_PROCESS_EXCEPTION",
   "PACKAGED_MODULE_INITIALIZATION_FAILED",
+  "PACKAGED_OPERATOR_STARTUP_FAILED",
   "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
   "PACKAGED_PROJECT_NOT_CREATED",
   "PACKAGED_PROPOSAL_UNAVAILABLE",
@@ -101,13 +102,16 @@ export function qualificationFailureCode(error: unknown): QualificationFailureCo
     : "QUALIFICATION_UNEXPECTED_ERROR"
 }
 
-/** Observe only the owned process's startup; no raw stderr leaves this closure. */
+/** Observe only the owned process's startup; no raw output leaves this closure. */
 export function observePackagedStartup(child: ChildProcess) {
   let tail = ""
   let port: number | undefined
   let failure: QualificationFailureCode | undefined
-  const collect = (chunk: Buffer | string) => {
+  const collectOutput = (chunk: Buffer | string) => {
     tail = (tail + chunk.toString()).slice(-16384)
+  }
+  const collect = (chunk: Buffer | string) => {
+    collectOutput(chunk)
     // Electron can start CDP before application code selects userData. Read only
     // the owned process's exact loopback announcement; never return its raw URL.
     const matches = tail.matchAll(
@@ -128,9 +132,11 @@ export function observePackagedStartup(child: ChildProcess) {
                 tail,
               )
             ? "PACKAGED_MODULE_INITIALIZATION_FAILED"
-            : /A JavaScript error occurred in the main process|Uncaught Exception:/.test(tail)
-              ? "PACKAGED_MAIN_PROCESS_EXCEPTION"
-              : undefined
+            : /\b(?:OPERATOR_SERVICE_UNAVAILABLE|OPERATOR_REQUEST_UNCONFIRMED|OPERATOR_PARENT_REQUIRED)\b/.test(tail)
+              ? "PACKAGED_OPERATOR_STARTUP_FAILED"
+              : /A JavaScript error occurred in the main process|Uncaught Exception:|\(FiberFailure\)/.test(tail)
+                ? "PACKAGED_MAIN_PROCESS_EXCEPTION"
+                : undefined
   const spawnFailed = () => {
     failure = "PACKAGED_APP_SPAWN_FAILED"
   }
@@ -139,6 +145,7 @@ export function observePackagedStartup(child: ChildProcess) {
     tail = ""
   }
   child.stderr?.on("data", collect)
+  child.stdout?.on("data", collectOutput)
   child.once("error", spawnFailed)
   // close follows the final stderr chunk; exit can precede it.
   child.once("close", closed)
@@ -156,6 +163,7 @@ export function observePackagedStartup(child: ChildProcess) {
     },
     dispose() {
       child.stderr?.off("data", collect)
+      child.stdout?.off("data", collectOutput)
       child.off("error", spawnFailed)
       child.off("close", closed)
       tail = ""

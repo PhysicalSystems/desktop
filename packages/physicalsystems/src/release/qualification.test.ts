@@ -105,22 +105,29 @@ test("packaged CDP discovery accepts only the owned exact loopback announcement 
 })
 
 test("startup timeout classifies a retained native error dialog without exposing private output", () => {
-  for (const [stderr, expected] of [
+  for (const [output, expected] of [
     ["Error [ERR_MODULE_NOT_FOUND]: private-trap", "PACKAGED_MODULE_INITIALIZATION_FAILED"],
     ["Error: Module did not self-register. private-trap", "PACKAGED_MODULE_INITIALIZATION_FAILED"],
     ["A JavaScript error occurred in the main process private-trap", "PACKAGED_MAIN_PROCESS_EXCEPTION"],
+    ["(FiberFailure) Error: private-trap", "PACKAGED_MAIN_PROCESS_EXCEPTION"],
+    ["(FiberFailure) Error: OPERATOR_REQUEST_UNCONFIRMED private-trap", "PACKAGED_OPERATOR_STARTUP_FAILED"],
     ["some warning /private/profile private-trap", "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE"],
   ] as const) {
-    const child = new EventEmitter() as ChildProcess
-    child.stderr = new PassThrough()
-    const startup = observePackagedStartup(child)
-    child.stderr.emit("data", stderr)
-    expect(() => startup.assertRunning()).not.toThrow()
-    const code = startup.timeoutCode("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
-    expect(code).toBe(expected)
-    expect(qualificationFailureCode(new Error(code))).toBe(expected)
-    expect(code).not.toContain("private-trap")
-    startup.dispose()
+    for (const stream of ["stderr", "stdout"] as const) {
+      const child = new EventEmitter() as ChildProcess
+      child.stderr = new PassThrough()
+      child.stdout = new PassThrough()
+      const startup = observePackagedStartup(child)
+      child[stream]!.emit("data", output)
+      expect(() => startup.assertRunning()).not.toThrow()
+      const code = startup.timeoutCode("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
+      expect(code).toBe(expected)
+      expect(qualificationFailureCode(new Error(code))).toBe(expected)
+      expect(code).not.toContain("private-trap")
+      startup.dispose()
+      expect(child.stdout.listenerCount("data")).toBe(0)
+      expect(child.stderr.listenerCount("data")).toBe(0)
+    }
   }
 })
 

@@ -59,7 +59,7 @@ bun script/desktop-release.ts verify-artifacts \
   --output "$DESKTOP_WORK/reports"
 ```
 
-For Windows, use `--platform windows-x64` on a disposable Windows runner and omit `xvfb-run`. The NSIS install smoke is CI-only and targets a fresh temporary directory. It must not be redirected to an existing installation. Linux qualification extracts each `.deb` and AppImage and launches its payload; this does not qualify system package-manager installation, FUSE operation or desktop integration.
+For Windows, use `--platform windows-x64` on a disposable Windows runner and omit `xvfb-run`. The NSIS install smoke is CI-only and targets a fresh temporary directory. It must not be redirected to an existing installation. Linux qualification installs the `.deb` with its shipped AppArmor policy on an owned GitHub-hosted runner and removes it only after confirmed shutdown. It extracts the AppImage and loads an exact-path temporary AppArmor profile for its sandboxed launch. That AppImage check does not establish stock Ubuntu double-click or FUSE behavior; the website prefers the `.deb` on Linux. Neither path disables Chromium's sandbox.
 
 The source checks use `bun test` and `bun typecheck` from the affected package directories. Root-level `bun test` is intentionally unsupported in this monorepo. Upstream publishing scripts and the canonical `check:release-packages` command are not part of this desktop workflow.
 
@@ -72,13 +72,15 @@ In GitHub Actions, every consuming CLI command also requires `PHYSICALSYSTEMS_EX
 | Target                        | Files prepared   | Automated qualification boundary                                                                     |
 | ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------- |
 | Windows x64 on `windows-2025` | NSIS `.exe`      | Fresh temporary installation and packaged simulation checks; no signing or real provider credentials |
-| Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Separate extracted-payload launches under Xvfb and packaged simulation checks                        |
+| Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Owned Debian install/uninstall and AppImage extraction with scoped sandbox setup, under Xvfb         |
 
 Each platform retains the exact installer files, `artifacts.json`, `SHA256SUMS`, per-artifact qualification JSON and a verification report. Failure paths retain available sanitized receipts and `workflow-status.json`; a skipped or missing required check cannot become a pass. The final assessment collects both platform reports and retains `summary.json`, `summary.md`, checksums and `candidate-downloads.json`.
 
 `candidate-downloads.json` is review metadata: publication is disabled and download URLs are unset. It is not the public website's selected-release manifest. Artifacts use run/attempt-specific names and 30-day retention. Preserve a reviewed, sanitized evidence bundle in the eventual durable release record before relying on it beyond that retention period.
 
 Temporary app profiles, credentials, runtime attachment files, browser logs and screenshots are excluded from workflow uploads. Qualification uses a local inert provider and synthetic experiments, with hardware access disabled. Those results do not verify real provider authentication, cameras or robot behavior. Headless UI blanking checks do not measure optical/display flicker.
+
+For a failing candidate, the optional `diagnostic_public_key` dispatch input accepts an RSA public PEM of at least 3072 bits. Generate and retain its private key outside the repository; never submit a private key to GitHub. The qualifier can encrypt bounded tails of only its own `application.log` and `diagnostic.txt`, authenticating the run, attempt, source and artifact digest. Only ciphertext leaves the runner, in a separate three-day diagnostic artifact; profiles, attachments and imagery are never included. Missing or invalid diagnostic inputs cannot make qualification pass. This envelope is troubleshooting data, not qualification or publication evidence.
 
 ## Public release blockers and follow-up
 

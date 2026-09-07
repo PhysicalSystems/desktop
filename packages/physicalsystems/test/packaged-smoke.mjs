@@ -9,6 +9,9 @@ import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { startFixtureProvider } from "./fixture-provider.mjs"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
+import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
+import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
+import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import {
   authenticodeResult,
   executableArtifactCopy,
@@ -76,6 +79,7 @@ let linuxInstallation
 let linuxSandboxProfile
 let applicationStarted = false
 let systemMutationUnconfirmed = false
+let diagnosticLogStatus = "NOT_STARTED"
 let failed
 let stage = "artifact-integrity"
 check(stage, "PASS", "SHA-256 recorded for the exact package supplied to this test.")
@@ -451,6 +455,30 @@ try {
       checks: checks.map(({ id, status, failureCode }) => ({ id, status, ...(failureCode ? { failureCode } : {}) })),
     }),
   )
+  // Optional encrypted diagnostics are separate from qualification. Only the
+  // two direct private log files are eligible; never profiles or attachments.
+  let sealedDiagnostic = { status: "DISABLED" }
+  if (process.env.PS_DIAGNOSTIC_PUBLIC_KEY_PEM) {
+    try {
+      const directory = process.env.PS_DIAGNOSTIC_DIRECTORY
+      if (!directory || !isAbsolute(directory)) throw new Error("DIAGNOSTIC_DIRECTORY_INVALID")
+      await mkdir(directory, { recursive: true, mode: 0o700 })
+      sealedDiagnostic = await sealDiagnostics({
+        root: await realpath(root),
+        publicKeyPem: process.env.PS_DIAGNOSTIC_PUBLIC_KEY_PEM,
+        output: join(await realpath(directory), `${artifactSha256}.sealed.json`),
+        context: {
+          runId: process.env.GITHUB_RUN_ID,
+          runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+          sourceRevision: embeddedInputs?.source?.revision || process.env.GITHUB_SHA,
+          artifactSha256,
+        },
+      })
+    } catch {
+      sealedDiagnostic = { status: "FAILED", reason: "SEALING_REQUEST_FAILED" }
+    }
+  }
+  console.log(JSON.stringify({ sealedDiagnostic, diagnosticLogStatus }))
   if (failed) process.exitCode = 1
 }
 
@@ -493,6 +521,7 @@ async function launch(executable) {
   )
   applicationStarted = true
   const log = createWriteStream(join(root, "application.log"), { mode: 0o600 })
+  const privateLog = observePrivateLog(log)
   child.stdout.pipe(log, { end: false })
   child.stderr.pipe(log, { end: false })
   const exited = new Promise((resolve) => {
@@ -725,6 +754,40 @@ async function launch(executable) {
       "PASS",
       "Renderer reload preserved the bound conversation and exactly three recorded trials without replay.",
     )
+  } catch (error) {
+    if (stage === "launch") {
+      const lines =
+        process.platform === "linux"
+          ? await Promise.all(
+              [child.pid, ...(await descendants(child.pid).catch(() => []))].map((pid) =>
+                readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => ""),
+              ),
+            )
+          : []
+      check(
+        "startup-observation",
+        "NOT_TESTED",
+        await startupCheckpointDetail(profile, lines).catch(() => "Startup observations unavailable."),
+      )
+    }
+    if (stage === "synthetic-chat") {
+      const observed = evaluate
+        ? await evaluate(`window.api.physicalSystems.snapshot().then(s => ({
+        observed: true, projectSelected: Boolean(s.activeProjectId), conversationBound: Boolean(s.conversation?.sessionId),
+        hostUnavailable: Boolean(s.hostUnavailable), experimentError: Boolean(s.experiments?.error),
+        phase: s.experiments?.current?.phase,
+        approvalVisible: Boolean(document.querySelector("[data-ps-approve]")),
+        userMessages: document.querySelectorAll("[data-component=user-message]").length,
+        alerts: document.querySelectorAll("[role=alert]").length,
+      }))`).catch(() => undefined)
+        : undefined
+      check(
+        "synthetic-observation",
+        "NOT_TESTED",
+        fixtureCheckpointDetail({ calls: provider.calls, renderer: observed }),
+      )
+    }
+    throw error
   } finally {
     startup.dispose()
     const previous = stage
@@ -790,7 +853,7 @@ async function launch(executable) {
     }
     socket?.close()
     await provider.close()
-    log.end()
+    diagnosticLogStatus = await privateLog.finish()
     stage = previous
   }
 }

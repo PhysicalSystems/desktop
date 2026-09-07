@@ -18,6 +18,10 @@ on:
         description: Optional preview version; stable requires an explicit version
         type: string
         required: false
+      diagnostic_public_key:
+        description: Optional RSA public PEM (3072+ bits) for encrypted bounded startup logs; never provide a private key
+        type: string
+        required: false
 
 # These jobs cannot publish releases, push tags, attest, sign or change a website.
 permissions:
@@ -175,6 +179,9 @@ jobs:
 
       - name: Qualify the actual packaged applications
         id: qualify
+        env:
+          PS_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
+          PS_DIAGNOSTIC_DIRECTORY: ${{ runner.temp }}/desktop-release/sealed-diagnostics
         run: |
           args=(script/desktop-release.ts qualify --inputs "$RUNNER_TEMP/desktop-release/inputs/release-inputs.json" --artifacts "$RUNNER_TEMP/desktop-release/artifacts" --output "$RUNNER_TEMP/desktop-release/receipts")
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -210,6 +217,17 @@ jobs:
             publication: false,
           }, null, 2) + '\n');
           NODE
+
+      # The optional envelope contains only encrypted bounded startup diagnostics.
+      # Its private key never reaches the runner. It is not release evidence.
+      - name: Retain optional encrypted startup diagnostics
+        if: always() && inputs.diagnostic_public_key != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-sealed-diagnostics-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-release/sealed-diagnostics/*.sealed.json
+          if-no-files-found: warn
+          retention-days: 3
 
       # Only generated public-safe receipts are retained. Never upload temporary
       # profiles, browser logs, credentials, runtime attachment files or screenshots.
