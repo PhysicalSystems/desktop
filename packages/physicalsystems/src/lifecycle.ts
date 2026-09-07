@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: Apache-2.0
+export type ShutdownIntent = "quit" | "relaunch"
+
+/** Preserve the operator window until both owned services confirm cleanup. */
+export function createShutdownCoordinator(options: {
+  closeOperator(): Promise<unknown>
+  stopServers(): Promise<unknown>
+  finish(intent: ShutdownIntent): void
+  blocked(error: unknown): void
+}) {
+  let pending: Promise<boolean> | undefined
+  let complete = false
+  let relaunch = false
+  return {
+    request(intent: ShutdownIntent): Promise<boolean> {
+      if (complete) return Promise.resolve(true)
+      if (intent === "relaunch") relaunch = true
+      if (pending) return pending
+      pending = (async () => {
+        try {
+          await options.closeOperator()
+          await options.stopServers()
+          complete = true
+          options.finish(relaunch ? "relaunch" : "quit")
+          return true
+        } catch (error) {
+          options.blocked(error)
+          return false
+        } finally {
+          pending = undefined
+          if (!complete) relaunch = false
+        }
+      })()
+      return pending
+    },
+  }
+}
+
+/** A timeout leaves the original work intact so an explicit retry can observe it. */
+export function waitForShutdownStep(work: Promise<unknown>, timeoutMs: number, errorCode: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(errorCode)), timeoutMs)
+    work.then(() => { clearTimeout(timer); resolve() }, (error) => { clearTimeout(timer); reject(error) })
+  })
+}
+
+/** An acknowledgement or a sent signal is not confirmation of process exit. */
+export function waitForProcessExit(exit: Promise<unknown>, timeoutMs: number): Promise<void> {
+  return waitForShutdownStep(exit, timeoutMs, "PROCESS_EXIT_UNCONFIRMED")
+}
+
+/** Available from fork time, even if the model server never becomes ready. */
+export function createProcessStopper(options: {
+  exit: Promise<unknown>
+  exited(): boolean
+  requestStop(): void
+  forceStop(): void
+  graceMs: number
+  forcedMs: number
+}) {
+  let stopping: Promise<void> | undefined
+  return {
+    stop(): Promise<void> {
+      if (stopping) return stopping
+      if (options.exited()) return Promise.resolve()
+      options.requestStop()
+      stopping = (async () => {
+        try { await waitForProcessExit(options.exit, options.graceMs) }
+        catch {
+          // For the owned model server only, after operator cleanup confirms.
+          if (!options.exited()) options.forceStop()
+          await waitForProcessExit(options.exit, options.forcedMs)
+        }
+      })().catch((error) => { stopping = undefined; throw error })
+      return stopping
+    },
+  }
+}

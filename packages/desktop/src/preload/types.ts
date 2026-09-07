@@ -2,6 +2,7 @@ import type { DesktopMenuAction } from "@opencode-ai/app/desktop-menu"
 import type { WslServersPlatform } from "@opencode-ai/app/wsl/types"
 import type { UpdaterState } from "@opencode-ai/app/updater"
 import type { DesktopNativeBundle } from "@opencode-ai/app/i18n/desktop-native"
+import type { PhysicalSystemsBridge } from "@opencode-ai/app/physicalsystems-types"
 export type {
   WslDistroProbe,
   WslInstalledDistro,
@@ -43,6 +44,7 @@ export type FatalRendererError = {
 }
 
 export type ElectronAPI = {
+  physicalSystems: PhysicalSystemsBridge
   killSidecar: () => Promise<void>
   installCli: () => Promise<string>
   awaitInitialization: () => Promise<ServerReadyData>

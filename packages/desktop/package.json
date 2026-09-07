@@ -16,10 +16,10 @@
     "prebuild": "bun ./scripts/prebuild.ts",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "package": "electron-builder --config electron-builder.config.ts",
-    "package:mac": "electron-builder --mac --config electron-builder.config.ts",
-    "package:win": "electron-builder --win --config electron-builder.config.ts",
-    "package:linux": "electron-builder --linux --config electron-builder.config.ts",
+    "package": "electron-builder --dir --config physical-review.config.ts",
+    "package:mac": "electron-builder --dir --mac --config physical-review.config.ts",
+    "package:win": "electron-builder --dir --win --config physical-review.config.ts",
+    "package:linux": "electron-builder --dir --linux --config physical-review.config.ts",
     "native:build": "bun install --cwd native"
   },
   "main": "./out/main/index.js",
@@ -31,11 +31,12 @@
     "electron-store": "11.0.2",
     "electron-updater": "6.8.9",
     "electron-window-state": "^5.0.3",
-    "drizzle-orm": "catalog:"
+    "drizzle-orm": "catalog:",
+    "jsonc-parser": "3.3.1",
+    "@lydell/node-pty": "catalog:"
   },
   "devDependencies": {
     "@actions/artifact": "4.0.0",
-    "@lydell/node-pty": "catalog:",
     "@opencode-ai/app": "workspace:*",
     "@opencode-ai/ui": "workspace:*",
     "@sentry/solid": "catalog:",

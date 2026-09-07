@@ -54,6 +54,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
+import { PhysicalSystems } from "@/plugin/physicalsystems"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -70,8 +71,8 @@ type ReadDef = Tool.InferDef<typeof ReadTool>
 type State = {
   custom: Tool.Def[]
   builtin: Tool.Def[]
-  task: TaskDef
-  read: ReadDef
+  task?: TaskDef
+  read?: ReadDef
 }
 
 export interface Interface {
@@ -120,6 +121,11 @@ const layer = Layer.effect(
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("ToolRegistry.state")(function* (ctx) {
+        if (PhysicalSystems.enabled())
+          return {
+            custom: yield* Effect.promise(() => PhysicalSystems.tools(ctx.directory)),
+            builtin: [yield* Tool.init(question)],
+          }
         const custom: Tool.Def[] = []
 
         function fromPlugin(id: string, def: ToolDefinition): Tool.Def {
@@ -340,7 +346,9 @@ const layer = Layer.effect(
     })
 
     const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {
+      PhysicalSystems.requireGeneric("Direct file and subagent tools")
       const s = yield* InstanceState.get(state)
+      if (!s.task || !s.read) throw new Error("Direct file and subagent tools are unavailable.")
       return { task: s.task, read: s.read }
     })
 
