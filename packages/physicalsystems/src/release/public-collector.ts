@@ -238,6 +238,7 @@ export async function collectPublicDistribution(input: {
       ...requiredQualificationChecks,
       "public-compiled-identity",
       "native-credential-probe",
+      ...(artifact.name.endsWith(".exe") || artifact.name.endsWith(".deb") ? ["native-reinstall-probe"] : []),
       ...(platform === "windows-x64"
         ? ["public-signing", "uninstall"]
         : [
@@ -407,6 +408,7 @@ function checkMap(value: unknown, native: boolean) {
           "native-credential-probe",
           "native-secret-service",
           "native-secret-service-cleanup",
+          "native-reinstall-probe",
           "uninstall",
           "appimage-launcher",
           "linux-sandbox-setup",

@@ -295,7 +295,7 @@ export async function desktopRelease(args: string[]) {
     await writeFile(join(output, "report.json"), json(report))
     await writeFile(
       join(output, "report.md"),
-      `# ${inputs.version} · ${inventory.platform}\n\nCandidate qualification: **${report.result}**. Public distribution: **BLOCKED**.\n\n${checks.map((check) => `- ${check.artifact}: ${check.status}`).join("\n")}\n\nSimulation only. Windows signing, native credentials, upgrade/recovery qualification and public release setup remain separate. Optical/display flicker was not measured.\n`,
+      `# ${inputs.version} · ${inventory.platform}\n\nCandidate qualification: **${report.result}**. Public distribution: **BLOCKED**.\n\n${checks.map((check) => `- ${check.artifact}: ${check.status}`).join("\n")}\n\nTask execution used simulation only. Native credential observations are recorded in the per-artifact receipts; candidate results do not qualify signed public installers. Windows signing, provider login, display and upgrade/recovery qualification, and public release setup remain separate. Optical/display flicker was not measured.\n`,
     )
     await writeFile(join(output, "SHA256SUMS"), checksums(inventory.files))
     await writeFile(join(output, "candidate-downloads.json"), json(candidateDownloads(inputs, [inventory])))
@@ -327,7 +327,7 @@ export async function desktopRelease(args: string[]) {
   await writeFile(join(output, "SHA256SUMS"), checksums(reports.flatMap((report) => report.inventory.files)))
   await writeFile(
     join(output, "summary.md"),
-    `# Physical Systems Desktop ${inputs.version}\n\nWindows x64 and Linux x64 candidate checks passed. Publication and website updates remain disabled.\n\nSource: ${inputs.source.revision}\n\nInputs: ${inputs.sha256}\n\nThis is an unsigned simulation candidate, not a qualified hardware release. Native credentials, platform display coverage, signing and upgrade/rollback remain release blockers. Optical/display flicker was not measured.\n`,
+    `# Physical Systems Desktop ${inputs.version}\n\nWindows x64 and Linux x64 candidate checks passed. Publication and website updates remain disabled.\n\nSource: ${inputs.source.revision}\n\nInputs: ${inputs.sha256}\n\nThis is an unsigned candidate with simulated task execution; hardware was not qualified. Native credential observations are recorded in each candidate receipt. Signed public installers still require their own qualification, including provider login, platform display and installation/upgrade recovery. Signing and public release setup remain prerequisites. Optical/display flicker was not measured.\n`,
   )
   console.log(`Candidate ${inputs.version} is ready for review; no release or website was changed`)
 }

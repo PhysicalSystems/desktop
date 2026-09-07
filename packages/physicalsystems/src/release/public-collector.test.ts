@@ -71,13 +71,15 @@ async function fixture() {
     await writeFile(join(evidence, item.name), bytes)
     const windows = item.format === "nsis"
     const extra = windows
-      ? ["public-signing", "uninstall"]
+      ? ["public-signing", "uninstall", "native-reinstall-probe"]
       : [
           "linux-sandbox-setup",
           "linux-renderer-sandbox",
           "linux-temporary-cleanup",
           "native-secret-service-cleanup",
-          ...(item.format === "deb" ? ["uninstall"] : ["appimage-launcher", "linux-sandbox-cleanup"]),
+          ...(item.format === "deb"
+            ? ["uninstall", "native-reinstall-probe"]
+            : ["appimage-launcher", "linux-sandbox-cleanup"]),
         ]
     const observed = { Status: "Valid", Publisher: build.windowsSigning.publisher, Thumbprint: "C".repeat(40) }
     const signing = windows
@@ -234,6 +236,7 @@ test("the current producer's native probe and every owned Linux cleanup must pas
   for (const index of [0, 1, 2]) {
     const required = [
       "native-credential-probe",
+      ...(index < 2 ? ["native-reinstall-probe"] : []),
       ...(index === 0 ? [] : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
     ]
     for (const id of required) {
@@ -270,6 +273,7 @@ test("passing auxiliary smoke probes cannot replace any of the eight separate pu
     record.checks = [
       { id: "native-credential-probe", status: "PASS" },
       { id: "native-secret-service-cleanup", status: "PASS" },
+      { id: "native-reinstall-probe", status: "PASS" },
     ]
   })
   await expect(collectPublicDistribution(substituted.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")

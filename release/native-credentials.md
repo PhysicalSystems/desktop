@@ -76,6 +76,9 @@ successful provider-vault write. Windows requires `windows_dpapi`; the controlle
 Linux session requires `gnome_libsecret`. Missing, mixed or other backend evidence
 fails this probe. The first successful synthetic journey remains unchanged; the
 next two launches reuse its profile and conversation without additional trials.
+NSIS and Debian then run a fourth read-only launch after a same-byte
+[uninstall/reinstall persistence probe](installed-reinstall.md); AppImage retains
+the three credential phases only.
 
 This auxiliary smoke check does not replace the public native receipt. The
 collector still requires all eight public native checks from trusted reviewed
@@ -89,7 +92,8 @@ its existing `libsecret-1-0` and Xvfb dependencies. A client library alone does 
 provide an unlocked Secret Service.
 
 The controller starts one owned private D-Bus daemon and one owned foreground
-GNOME keyring daemon for all three application launches. Private runtime, keyring
+GNOME keyring daemon across the credential phases and the optional reinstall
+launch. Private runtime, keyring
 and control directories live under the disposable runner's temporary directory.
 A generated nonempty test password travels over the daemon's stdin only. The
 helper verifies the private bus and Secret Service process ownership before
@@ -109,6 +113,6 @@ and [distribution manual](https://manpages.debian.org/unstable/gnome-keyring/gno
 This controlled native credential check does not qualify a default desktop,
 compositor, provider browser login, user logout/login, or physical display.
 
-The smoke child has a ten-minute overall deadline for three bounded launches;
+The smoke child has a ten-minute overall deadline for its bounded launches;
 auth writes remain bounded to 6.5 seconds and each nonce request to 30 seconds.
 Public qualification must rerun the real probe for each exact public installer.

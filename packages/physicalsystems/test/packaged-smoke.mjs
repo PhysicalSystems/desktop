@@ -18,6 +18,12 @@ import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { desktopIdentity } from "../src/release/identity.ts"
 import { createNativeCredentialProbe, waitForCredentialAttachment } from "../src/release/native-credentials.ts"
 import { observeCredentialBackend } from "../src/release/credential-backend.ts"
+import {
+  nsisInstallArguments,
+  nsisSpawnOptions,
+  nsisUninstallArguments,
+  qualifyInstalledReinstall,
+} from "../src/release/installed-reinstall.ts"
 import { startLinuxSecretService } from "../src/release/linux-secret-service.ts"
 import {
   packagedQualificationArguments,
@@ -81,6 +87,12 @@ let installerSignatureObservation
 let publicSigning
 let publicCompiledIdentity
 let installed
+let nsisUninstallerSha256
+let nsisUninstallCopies = 0
+let reinstallBefore
+let reinstallAfter
+let preservedPinchZoom
+const reinstallInstallationState = { unconfirmed: false }
 let linuxInstallation
 let linuxSandboxProfile
 let linuxTemporary
@@ -190,8 +202,10 @@ try {
       check(stage, "NOT_TESTED", "Installer digest and signature inspected; payload installation was not requested.")
     } else {
       // Both owned configs forbid auto-start, elevation and machine-wide install.
-      await command(options.artifact, ["/S", `/D=${extracted}`])
+      const plan = nsisInstallArguments(extracted)
+      await command(options.artifact, plan.args, nsisSpawnOptions(options.artifact))
       installed = extracted
+      nsisUninstallerSha256 = await sha256File(await ownedNsisUninstaller(installed))
       check("package-format", "PASS", "NSIS installed per-user into this disposable CI test directory.")
     }
   } else if (extension === ".deb") {
@@ -405,6 +419,62 @@ try {
           removedVault: credentialState.removed,
         }),
       )
+      if (installed || linuxInstallation) {
+        stage = "native-reinstall-probe"
+        const windows = installed
+        const debian = linuxInstallation
+        const result = await qualifyInstalledReinstall({
+          env: process.env,
+          root,
+          format: windows ? "nsis" : "deb",
+          artifact: options.artifact,
+          artifactSha256,
+          payloadSha256: payload.sha256,
+          before: reinstallBefore,
+          installationState: reinstallInstallationState,
+          shutdown: {
+            applicationExited: !failed && checks.find((item) => item.id === "cleanup")?.status === "PASS",
+            descendantsExited: !failed && checks.find((item) => item.id === "cleanup")?.status === "PASS",
+          },
+          uninstall: () => (windows ? uninstallNsis(windows) : uninstallDebian(debian)),
+          verifyRemoved: async () => {
+            if (windows) {
+              await verifyNsisRemoved(windows)
+              installed = undefined
+            } else {
+              await verifyDebianRemoved(debian)
+              linuxInstallation = undefined
+            }
+          },
+          install: async () => {
+            if (windows) {
+              installed = windows
+              const plan = nsisInstallArguments(windows)
+              await command(options.artifact, plan.args, nsisSpawnOptions(options.artifact)).catch(
+                retainUnconfirmedMutation,
+              )
+              if ((await sha256File(await ownedNsisUninstaller(windows))) !== nsisUninstallerSha256)
+                throw new Error("PACKAGED_REINSTALL_PAYLOAD_CHANGED")
+            } else {
+              linuxInstallation = debian
+              await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--install", options.artifact]).catch(
+                retainUnconfirmedMutation,
+              )
+              if (!debianProfileIsLoaded(await loadedProfiles(), identity.kind))
+                throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
+            }
+          },
+          installedPayloadSha256: async () =>
+            (await payloadFingerprint(windows ? join(windows, `${identity.productName}.exe`) : debian.executable))
+              .sha256,
+          relaunch: async () => {
+            await launch(entrypoint, "reinstall")
+            const closed = !failed && checks.find((item) => item.id === "cleanup")?.status === "PASS"
+            return { observation: reinstallAfter, applicationExited: closed, descendantsExited: closed }
+          },
+        })
+        check("native-reinstall-probe", "PASS", JSON.stringify(result))
+      }
     }
   }
 } catch (error) {
@@ -420,6 +490,7 @@ try {
 } finally {
   const safeToRemove =
     !systemMutationUnconfirmed &&
+    !reinstallInstallationState.unconfirmed &&
     (!applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS")
   if (secretService) {
     try {
@@ -463,12 +534,8 @@ try {
   if (linuxInstallation) {
     if (safeToRemove) {
       try {
-        await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--purge", linuxInstallation.packageName])
-        requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"), identity.kind)
-        if (debianProfileIsLoaded(await loadedProfiles(), identity.kind))
-          throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
-        for (const path of linuxInstallation.paths)
-          if (await exists(path)) throw new Error("OWNED_UNINSTALL_NOT_COMPLETE")
+        await uninstallDebian(linuxInstallation)
+        await verifyDebianRemoved(linuxInstallation)
         check(
           "uninstall",
           "PASS",
@@ -516,36 +583,22 @@ try {
   }
   if (installed) {
     if (safeToRemove) {
-      const uninstallers = (await readdir(installed)).filter((name) => /^Uninstall .*\.exe$/i.test(name))
-      if (uninstallers.length === 1) {
-        try {
-          await command(join(installed, uninstallers[0]), ["/S"])
-          await until(
-            () =>
-              lstat(join(installed, `${identity.productName}.exe`)).then(
-                () => false,
-                () => true,
-              ),
-            "OWNED_UNINSTALL_NOT_COMPLETE",
-            30000,
-          )
-          check(
-            "uninstall",
-            "PASS",
-            "Owned per-user package uninstalled after confirming that no application was started or application shutdown completed.",
-          )
-        } catch (error) {
-          check(
-            "uninstall",
-            "FAIL",
-            "Package uninstallation did not confirm completion.",
-            qualificationFailureCode(error),
-          )
-          failed ||= new Error("UNINSTALL_UNCONFIRMED")
-        }
-      } else {
-        check("uninstall", "FAIL", "Expected owned NSIS uninstaller was not found.", "UNINSTALLER_MISSING")
-        failed ||= new Error("UNINSTALLER_MISSING")
+      try {
+        await uninstallNsis(installed)
+        await verifyNsisRemoved(installed)
+        check(
+          "uninstall",
+          "PASS",
+          "Exact owned NSIS uninstaller exited and its installation directory was removed after confirmed application shutdown.",
+        )
+      } catch (error) {
+        check(
+          "uninstall",
+          "FAIL",
+          "Package uninstallation did not confirm completion.",
+          qualificationFailureCode(error),
+        )
+        failed ||= error
       }
     } else check("uninstall", "BLOCKED", "Cleanup is unconfirmed; the test did not interrupt a retained application.")
   }
@@ -744,6 +797,42 @@ async function launch(executable, credentialPhase) {
     if (text.length > 128) throw new Error("CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
     return JSON.parse(text)
   }
+  const preservedState = async () => {
+    const state = await evaluate(`window.api.physicalSystems.snapshot().then(async s => ({
+      projectId: s.activeProjectId, sessionId: s.conversation?.sessionId,
+      experimentId: s.experiments?.current?.id, phase: s.experiments?.current?.phase,
+      trials: s.experiments?.current?.trials, pinchZoomEnabled: await window.api.getPinchZoomEnabled(),
+    }))`)
+    if (
+      state.sessionId !== attached.sessionId ||
+      state.pinchZoomEnabled !== preservedPinchZoom ||
+      !Array.isArray(state.trials) ||
+      state.trials.length !== 3 ||
+      state.trials.some((trial) => trial.status !== "COMPLETED")
+    )
+      throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+    const response = await api(`/session/${attached.sessionId}/message`)
+    if (!response.ok) throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+    const transcript = await response.text()
+    if (transcript.length > 4 * 1024 * 1024) throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+    const messages = JSON.parse(transcript)
+    if (
+      !Array.isArray(messages) ||
+      !messages.length ||
+      messages.some((message) => message.info?.sessionID !== attached.sessionId)
+    )
+      throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+    return {
+      projectId: state.projectId,
+      sessionId: state.sessionId,
+      experimentId: state.experimentId,
+      phase: state.phase,
+      trialCount: state.trials.length,
+      trialsSha256: digest(JSON.stringify(state.trials)),
+      transcriptSha256: digest(JSON.stringify(messages)),
+      pinchZoomEnabled: state.pinchZoomEnabled,
+    }
+  }
   try {
     if (credentialState.pids.includes(child.pid)) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
     credentialState.pids.push(child.pid)
@@ -868,6 +957,11 @@ async function launch(executable, credentialPhase) {
       )
       await attach()
       if (attached.sessionId !== credentialState.sessionId) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      if (credentialPhase === "reinstall") {
+        stage = "native-reinstall-probe"
+        reinstallAfter = await preservedState()
+        return
+      }
       const stored = await credentialProbe.inspectFiles(profile)
       const expected = credentialPhase === "retrieve-remove" ? credentialState.saved : credentialState.removed
       if (stored.vaultSha256 !== expected.vaultSha256) throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
@@ -914,6 +1008,7 @@ async function launch(executable, credentialPhase) {
         )
         if (selected !== credentialState.backend) throw new Error("CREDENTIAL_PROBE_BACKEND_UNCONFIRMED")
       }
+      if (credentialPhase === "absent" && (installed || linuxInstallation)) reinstallBefore = await preservedState()
       return
     }
     stage = "synthetic-chat"
@@ -1020,6 +1115,14 @@ async function launch(executable, credentialPhase) {
       "Renderer reload preserved the bound conversation and exactly three recorded trials without replay.",
     )
     stage = "native-credential-probe"
+    if (installed || linuxInstallation) {
+      const preference = await evaluate(
+        "window.api.getPinchZoomEnabled().then(async before => { await window.api.setPinchZoomEnabled(!before); return { before, saved: await window.api.getPinchZoomEnabled() } })",
+      )
+      if (typeof preference?.before !== "boolean" || preference.saved !== !preference.before)
+        throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+      preservedPinchZoom = preference.saved
+    }
     credentialState.sessionId = attached.sessionId
     credentialState.experimentId = completed.id
     await credentialProbe.save(authRequest)
@@ -1147,6 +1250,47 @@ async function launch(executable, credentialPhase) {
     diagnosticLogStatus = await privateLog.finish()
     stage = previous
   }
+}
+
+async function ownedNsisUninstaller(directory) {
+  if (directory !== join(root, "payload")) throw new Error("PACKAGED_REINSTALL_PATH_INVALID")
+  const names = (await readdir(directory)).filter((name) => /^Uninstall .*\.exe$/i.test(name))
+  if (names.length !== 1) throw new Error("UNINSTALLER_MISSING")
+  return join(directory, names[0])
+}
+
+async function uninstallNsis(directory) {
+  await requireDisposablePublicRunner(process.env, root)
+  const source = await ownedNsisUninstaller(directory)
+  if ((await sha256File(source)) !== nsisUninstallerSha256) throw new Error("PACKAGED_REINSTALL_PAYLOAD_CHANGED")
+  // NSIS's default /S copies/forks its uninstaller. An exact private copy and
+  // final unquoted _?= keep the actual uninstall in the process we await.
+  const executable = await executableArtifactCopy(
+    source,
+    join(root, `owned-uninstaller-${++nsisUninstallCopies}.exe`),
+    nsisUninstallerSha256,
+  )
+  const plan = nsisUninstallArguments(directory)
+  systemMutationUnconfirmed = true
+  await command(executable, plan.args, nsisSpawnOptions(executable)).catch(retainUnconfirmedMutation)
+}
+
+async function verifyNsisRemoved(directory) {
+  await until(async () => !(await exists(directory)), "OWNED_UNINSTALL_NOT_COMPLETE", 30000)
+  systemMutationUnconfirmed = false
+}
+
+async function uninstallDebian(plan) {
+  systemMutationUnconfirmed = true
+  await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--purge", plan.packageName]).catch(retainUnconfirmedMutation)
+}
+
+async function verifyDebianRemoved(plan) {
+  requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"), identity.kind)
+  if (debianProfileIsLoaded(await loadedProfiles(), identity.kind))
+    throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
+  for (const path of plan.paths) if (await exists(path)) throw new Error("OWNED_UNINSTALL_NOT_COMPLETE")
+  systemMutationUnconfirmed = false
 }
 
 async function exists(path) {
