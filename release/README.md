@@ -7,8 +7,8 @@ The desktop has its own version sequence, initially `0.1.0-beta.1`. It bundles t
 ## Maintainer workflow
 
 1. Commit and review the desktop source, including the vendor manifest and release policy. Source and bundled artifacts must be clean and their hashes must match. Make this commit available in the desktop repository before requesting a CI candidate.
-2. Dispatch **Prepare desktop candidate (no publication)** with its full lowercase commit SHA. The default track is `preview`; an empty version allocates the next preview from this repository's complete `desktop-v*` release history. `stable` requires an explicit version and still produces only an internal candidate.
-3. The prepare job reads every page of this repository's releases, including drafts and prereleases, and creates one immutable input bundle. Unrelated upstream release tags are excluded. A failed or incomplete history read cannot be treated as an empty history.
+2. Dispatch **Prepare desktop candidate (no publication)** with its full lowercase commit SHA. The default track is `preview`; an empty version allocates the next preview from the public download repository's fully paginated visible `desktop-v*` release history. `stable` requires an explicit version and still produces only an internal candidate.
+3. The prepare job reads every page of this repository's releases, including prereleases and any drafts visible to its read credential, and creates one immutable input bundle. Unrelated upstream release tags are excluded. A failed or incomplete history read cannot be treated as an empty history. A source-repository token may not see drafts in the separate public destination; candidate allocation remains provisional and the protected public publisher must check all draft/tag reservations with the appropriate credential.
 4. Required source checks run against that exact SHA. The Windows x64 and Linux x64 package jobs then run in parallel, consuming the same inputs and tracked model catalog. Packaging always uses `--publish never` and the Physical Systems candidate configuration.
 5. Each platform qualifies the exact generated files, then verifies artifact hashes against the sanitized qualification receipts. No replacement build occurs after qualification. Download the candidate assessment and per-platform reports before using the installer artifacts for internal review.
 
@@ -78,7 +78,7 @@ Temporary app profiles, credentials, runtime attachment files, browser logs and 
 
 ## Public release blockers and follow-up
 
-The candidate identity is deliberately `Physical Systems Candidate`, using the development application identity. The preview/stable application IDs, data directories, migration rules, public repository/download destination and branding must be settled before public distribution. The workflow does not imply that those decisions have been made.
+The candidate identity is deliberately `Physical Systems Candidate`, using the development application identity. The preview/stable application IDs, data directories, migration rules and branding must be settled before public distribution. The workflow does not imply that those decisions have been made.
 
 Public release remains blocked until the applicable evidence and infrastructure exist:
 
@@ -88,6 +88,33 @@ Public release remains blocked until the applicable evidence and infrastructure 
 - Qualify actual supported OS versions, Linux installation/launcher behavior, X11/Xwayland and Wayland display behavior, plus clean-machine operation without developer Node/Bun in the installed application's runtime path.
 - Exercise fresh installation, upgrade from a previously qualified desktop, failed/interrupted upgrade recovery, uninstall/reinstall, preserved history/configuration and unresolved operation ownership in disposable environments.
 - Verify the declared desktop/operator/Node compatibility and canonical operator source/provenance. Declared or unverified compatibility must not be advertised as tested hardware support.
-- Add a separately authorized, protected publication path that publishes the approved artifact bytes, verifies public downloads, then updates the website's selected-release manifest. It must not rebuild approved artifacts or select a new website download before readback succeeds.
+- Add the signed public publisher described below. It must publish the approved artifact bytes and public review record without rebuilding. The implemented, disabled download-promotion workflow then verifies public bytes and opens a website selection PR; it cannot qualify or publish an unsigned candidate.
 
 The first public preview should retain manual updates until installation lifecycle checks pass. Any later in-app updater must use owned feeds, verify the expected publisher, prohibit automatic downgrade, and respect confirmed shutdown/operation ownership. A desktop update must never silently restart a hardware session or upgrade its Node service. This candidate workflow neither enables nor qualifies in-app updates.
+
+## Website download integration
+
+The public installer destination is **PhysicalSystems/physicalsystems**, matching the existing `PhysicalSystems/platform` download page. Desktop source may live in its separate fork. The existing npm and Node releases remain independent; the website looks up the selected exact `desktop-v${version}` tag, so newer npm releases cannot displace a desktop download.
+
+The companion website change is based on platform `main` at `6d41e1c`. It introduces `public/desktop-selection.json`, initially `release: null`. The page offers only installers matching that controlled selection and live GitHub metadata. It retains the last checked selection within an open page when a refresh fails, with an explicit notice. A successful empty selection withdraws the buttons. It does not verify installer bytes or Windows signatures inside the browser.
+
+The integration path is implemented locally, but **disabled by default**:
+
+1. A future signed public publisher at `.github/workflows/desktop-public-release.yml` must qualify the actual public build, obtain approval, publish the exact artifacts and retain `public-review.json` as the sole file in `desktop-public-review-${run_id}-${run_attempt}`. That publisher is not implemented by the candidate workflow.
+2. `.github/workflows/desktop-download-promotion.yml` accepts the exact completed publisher run/attempt, source SHA and the **canonical** review digest from its trusted summary. It checks the publisher identity and requires a protected `desktop-download-promotion` environment with reviewers. It can be dispatched separately or called by a coordinator after the publisher run has completed successfully; a publisher cannot call this synchronously inside its own still-running run.
+3. `verify-public` rejects candidate/development identities, unsigned evidence and incomplete public qualification. It anonymously reads the exact public release and streams each of the three installer files, checking size and SHA-256 against the independently anchored review. It produces `desktop-selection.json` only after all downloads match. Timeouts, missing assets, unexpected redirects or changed bytes produce no selection.
+4. The protected promotion job verifies the output digest again and runs `script/desktop-promote-website.ts`. With a separately scoped `DESKTOP_WEBSITE_TOKEN`, it creates or resumes a release-specific branch and one-file PR in `PhysicalSystems/platform`. It does not write `main`, merge the PR or deploy. It refuses downgrades, replacement bytes under an existing version, stable-to-preview switching and unrelated branch changes.
+5. The website's normal checks, review, merge and deployment make the approved selection live. Failed verification or an unmerged PR leaves the current download selection unchanged. This is automatic PR preparation, not unattended production deployment.
+
+The workflow is skipped unless `DESKTOP_DOWNLOAD_PROMOTION_ENABLED` is exactly `true`. No environment, token, signing identity or repository setting was provisioned here. The source snapshot's development identity is intentionally ineligible for this public path. A JSON field saying approved is insufficient: `PublicDistributionReview` must come from the protected public-distribution process, and its expected canonical digest must be obtained independently. The readback helper validates that trusted evidence and byte identity; it does not itself grant approval or perform native signature qualification.
+
+```sh
+bun script/desktop-release.ts verify-public \
+  --review "$DESKTOP_WORK/public-review.json" \
+  --expected-review-sha256 "$APPROVED_PUBLIC_REVIEW_DIGEST" \
+  --output "$DESKTOP_WORK/verified-selection"
+```
+
+This command is read-only outside its new local output directory. It never publishes or updates the website. Do not call the separate website promotion command on the robot laptop as part of candidate validation.
+
+The producer and website share this strict selection contract: schema version 1, repository `PhysicalSystems/physicalsystems`, and a selected release with `tag`, `version`, `channel`, `releaseId`, `publishedAt`, `sourceRevision`, `inputsSha256` and `assets`. Each asset has `name`, `bytes`, and `sha256`; all three exact x64 filenames from the candidate inventory are required. URLs are resolved from matching public GitHub metadata rather than invented for unpublished candidates.

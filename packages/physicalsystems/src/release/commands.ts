@@ -30,8 +30,10 @@ export function releaseArguments(args: string[]) {
     qualify: ["inputs", "artifacts", "output"],
     "verify-artifacts": ["inputs", "artifacts", "receipts", "output"],
     summarize: ["inputs", "reports", "output"],
+    "verify-public": ["review", "expected-review-sha256", "output"],
   }
-  if (!allowed[command]) throw new Error("Use prepare, verify-inputs, build, qualify, verify-artifacts or summarize")
+  if (!allowed[command])
+    throw new Error("Use prepare, verify-inputs, build, qualify, verify-artifacts, summarize or verify-public")
   const options: Record<string, string> = {}
   for (let i = 0; i < rest.length; i += 2) {
     const key = rest[i]?.slice(2)
@@ -180,6 +182,17 @@ async function buildCandidate(file: string, platform: CandidatePlatform, outputP
 
 export async function desktopRelease(args: string[]) {
   const { command, options } = releaseArguments(args)
+  if (command === "verify-public") {
+    const { verifyPublicDownloads } = await import("./public-downloads")
+    const selection = await verifyPublicDownloads({
+      review: JSON.parse(await readFile(options.review, "utf8")),
+      expectedReviewSha256: options["expected-review-sha256"],
+    })
+    const output = await emptyOutput(options.output)
+    await writeFile(join(output, "desktop-selection.json"), json(selection))
+    console.log(`Verified public desktop ${selection.release.version}; prepared website selection without deploying it`)
+    return
+  }
   if (command === "prepare") {
     const history = JSON.parse(await readFile(options.history, "utf8")) as ReleaseHistory
     if (options.channel !== "preview" && options.channel !== "stable") throw new Error("Invalid desktop channel")
