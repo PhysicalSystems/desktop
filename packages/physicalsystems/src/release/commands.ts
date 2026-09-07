@@ -122,6 +122,16 @@ async function readInputs(file: string) {
   return { inputs: verified, models }
 }
 
+export async function stageCandidateSource(root: string, revision: string, transaction: string, env = process.env) {
+  const stage = join(transaction, "source")
+  await mkdir(stage)
+  await run("git", ["archive", "--format=tar", "--output", join(transaction, "source.tar"), revision], root, env)
+  // Git Bash's GNU tar interprets a Windows drive prefix as a remote host.
+  // Relative operands also work with Windows' native BSD tar and Linux tar.
+  await run("tar", ["-xf", "source.tar", "-C", "source"], transaction, env)
+  return stage
+}
+
 async function buildCandidate(file: string, platform: CandidatePlatform, outputPath: string) {
   const { inputs, models } = await readInputs(file)
   const host = process.platform === "win32" ? "windows-x64" : process.platform === "linux" ? "linux-x64" : "unsupported"
@@ -131,13 +141,9 @@ async function buildCandidate(file: string, platform: CandidatePlatform, outputP
     throw new Error("Candidate Bun version does not match release inputs")
   const output = await emptyOutput(outputPath)
   const transaction = await mkdtemp(join(dirname(output), "desktop-build-"))
-  const stage = join(transaction, "source")
-  const archive = join(transaction, "source.tar")
   const env = buildEnvironment(process.env, inputs, resolve(file), models)
   try {
-    await mkdir(stage)
-    await run("git", ["archive", "--format=tar", "--output", archive, inputs.source.revision], sourceRoot, env)
-    await run("tar", ["-xf", archive, "-C", stage], sourceRoot, env)
+    const stage = await stageCandidateSource(sourceRoot, inputs.source.revision, transaction, env)
     // Installing in the generated tree avoids workspace symlinks resolving back
     // into an actively edited checkout. Only pinned dependency download caches are reused.
     await run(process.execPath, ["install", "--frozen-lockfile", "--ignore-scripts"], stage, env)

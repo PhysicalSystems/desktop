@@ -1,12 +1,125 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash } from "node:crypto"
+import type { ChildProcess } from "node:child_process"
 import { constants, createReadStream } from "node:fs"
 import { chmod, copyFile, lstat, readdir } from "node:fs/promises"
 import { basename, join, relative, resolve } from "node:path"
 
 export type QualificationStatus = "PASS" | "FAIL" | "BLOCKED" | "NOT_TESTED"
-export type QualificationCheck = { id: string; status: QualificationStatus; detail: string }
+export type QualificationCheck = {
+  id: string
+  status: QualificationStatus
+  detail: string
+  failureCode?: QualificationFailureCode
+}
 export type SignatureResult = { status: QualificationStatus; trust: string; signerThumbprint?: string }
+// Only authored diagnostic literals may leave a disposable runner. Native error
+// messages and stacks can contain private paths, provider output or credentials.
+export const qualificationFailureCodes = [
+  "INSTALLER_SIGNATURE_INVALID",
+  "LINUX_QUALIFICATION_REQUIRES_LINUX",
+  "OWNED_UNINSTALL_NOT_COMPLETE",
+  "PACKAGED_APPROVAL_GATE_BYPASSED",
+  "PACKAGED_APPROVAL_NOT_READY",
+  "PACKAGED_APP_SHUTDOWN_UNCONFIRMED",
+  "PACKAGED_APP_EXITED_BEFORE_READY",
+  "PACKAGED_APP_SPAWN_FAILED",
+  "PACKAGED_ATTACHMENT_OWNER_INVALID",
+  "PACKAGED_ATTACHMENT_RETAINED",
+  "PACKAGED_CDP_CONNECTION_FAILED",
+  "PACKAGED_CDP_CONNECTION_TIMEOUT",
+  "PACKAGED_CDP_REQUEST_FAILED",
+  "PACKAGED_CDP_TIMEOUT",
+  "PACKAGED_COMPOSER_UNAVAILABLE",
+  "PACKAGED_CONVERSATION_NOT_RESTORED",
+  "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE",
+  "PACKAGED_DISPLAY_UNAVAILABLE",
+  "PACKAGED_DESCENDANT_RETAINED",
+  "PACKAGED_EXECUTABLE_NOT_UNIQUE",
+  "PACKAGED_PROFILE_NOT_ISOLATED",
+  "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
+  "PACKAGED_PROJECT_NOT_CREATED",
+  "PACKAGED_PROPOSAL_UNAVAILABLE",
+  "PACKAGED_RELOAD_CHANGED_OWNERSHIP",
+  "PACKAGED_RELOAD_UNAVAILABLE",
+  "PACKAGED_RENDERER_EVALUATION_FAILED",
+  "PACKAGED_RENDERER_UNAVAILABLE",
+  "PACKAGED_RUNTIME_FILE_EMPTY",
+  "PACKAGED_SANDBOX_INITIALIZATION_FAILED",
+  "PACKAGED_SHARED_LIBRARY_UNAVAILABLE",
+  "PACKAGED_SKILL_HASH_MISMATCH",
+  "PACKAGED_TRIAL_EVIDENCE_INVALID",
+  "PACKAGED_TRIALS_NOT_COMPLETE",
+  "PACKAGED_VERSION_MISMATCH",
+  "PACKAGED_WORKSPACE_UNAVAILABLE",
+  "PAYLOAD_SIGNATURE_INVALID",
+  "QUALIFICATION_ARTIFACT_CHANGED",
+  "QUALIFICATION_ARTIFACT_COPY_MISMATCH",
+  "QUALIFICATION_COMMAND_FAILED",
+  "QUALIFICATION_COMMAND_TIMEOUT",
+  "QUALIFICATION_COMMAND_UNAVAILABLE",
+  "QUALIFICATION_PAYLOAD_SYMLINK",
+  "QUALIFICATION_REGULAR_FILE_REQUIRED",
+  "QUALIFICATION_UNEXPECTED_ERROR",
+  "QUALIFICATION_WINDOWS_VERSION_INVALID",
+  "QUALIFICATION_WINDOWS_VERSION_MISMATCH",
+  "UNINSTALLER_MISSING",
+  "UNINSTALL_UNCONFIRMED",
+  "UNSUPPORTED_CANDIDATE_PACKAGE",
+  "WINDOWS_QUALIFICATION_REQUIRES_WINDOWS",
+] as const
+export type QualificationFailureCode = (typeof qualificationFailureCodes)[number]
+
+export function isQualificationFailureCode(value: unknown): value is QualificationFailureCode {
+  return qualificationFailureCodes.some((code) => code === value)
+}
+
+export function qualificationFailureCode(error: unknown): QualificationFailureCode {
+  return error instanceof Error && isQualificationFailureCode(error.message)
+    ? error.message
+    : "QUALIFICATION_UNEXPECTED_ERROR"
+}
+
+/** Observe only the owned process's startup; no raw stderr leaves this closure. */
+export function observePackagedStartup(child: ChildProcess) {
+  let tail = ""
+  let failure: QualificationFailureCode | undefined
+  const collect = (chunk: Buffer | string) => {
+    tail = (tail + chunk.toString()).slice(-16384)
+  }
+  const spawnFailed = () => {
+    failure = "PACKAGED_APP_SPAWN_FAILED"
+  }
+  const closed = () => {
+    failure ||=
+      /The SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!|Failed to move to new namespace|Failed to unshare namespace|Running as root without --no-sandbox is not supported/.test(
+        tail,
+      )
+        ? "PACKAGED_SANDBOX_INITIALIZATION_FAILED"
+        : /error while loading shared libraries:/.test(tail)
+          ? "PACKAGED_SHARED_LIBRARY_UNAVAILABLE"
+          : /Missing X server or \$DISPLAY|The platform failed to initialize/.test(tail)
+            ? "PACKAGED_DISPLAY_UNAVAILABLE"
+            : "PACKAGED_APP_EXITED_BEFORE_READY"
+    tail = ""
+  }
+  child.stderr?.on("data", collect)
+  child.once("error", spawnFailed)
+  // close follows the final stderr chunk; exit can precede it.
+  child.once("close", closed)
+  return {
+    assertRunning() {
+      if (failure) throw new Error(failure)
+    },
+    dispose() {
+      child.stderr?.off("data", collect)
+      child.off("error", spawnFailed)
+      child.off("close", closed)
+      tail = ""
+    },
+  }
+}
+
 export const requiredQualificationChecks = [
   "artifact-integrity",
   "package-format",
@@ -148,6 +261,13 @@ export function qualificationReport(input: {
   sourceRevision?: string
   windowsVersion?: { productName: string; fileVersion: string; productVersion: string }
 }) {
+  if (
+    input.checks.some(
+      (check) =>
+        check.failureCode !== undefined && (check.status !== "FAIL" || !isQualificationFailureCode(check.failureCode)),
+    )
+  )
+    throw new Error("Invalid qualification failure diagnostic")
   const result: QualificationStatus = input.checks.some((check) => check.status === "FAIL")
     ? "FAIL"
     : input.checks.some((check) => check.status === "BLOCKED")

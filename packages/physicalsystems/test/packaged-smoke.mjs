@@ -12,8 +12,10 @@ import { startFixtureProvider } from "./fixture-provider.mjs"
 import {
   authenticodeResult,
   executableArtifactCopy,
+  observePackagedStartup,
   payloadFingerprint,
   qualificationEnvironment,
+  qualificationFailureCode,
   qualificationReport,
   sha256File,
   verifyWindowsVersionInfo,
@@ -45,8 +47,8 @@ await mkdir(options.evidence, { recursive: true, mode: 0o700 })
 await mkdir(dirname(options.report), { recursive: true })
 const root = await mkdtemp(join(options.evidence, "packaged-"))
 const checks = []
-const check = (id, status, detail) => {
-  const value = { id, status, detail }
+const check = (id, status, detail, failureCode) => {
+  const value = { id, status, detail, ...(failureCode ? { failureCode } : {}) }
   const index = checks.findIndex((entry) => entry.id === id)
   if (index >= 0) checks[index] = value
   else checks.push(value)
@@ -235,7 +237,12 @@ try {
 } catch (error) {
   failed = error
   // Fixed diagnostic codes only; raw app output and provider credentials never enter receipts.
-  check(stage, "FAIL", "Qualification failed at this boundary; inspect the private CI diagnostic log.")
+  check(
+    stage,
+    "FAIL",
+    "Qualification failed at this boundary; inspect the private CI diagnostic log.",
+    qualificationFailureCode(error),
+  )
   await writeFile(join(root, "diagnostic.txt"), String(error?.stack || error), { mode: 0o600 })
 } finally {
   if (installed) {
@@ -254,12 +261,17 @@ try {
             30000,
           )
           check("uninstall", "PASS", "Owned per-user candidate uninstalled after confirmed application shutdown.")
-        } catch {
-          check("uninstall", "FAIL", "Candidate uninstallation did not confirm completion.")
+        } catch (error) {
+          check(
+            "uninstall",
+            "FAIL",
+            "Candidate uninstallation did not confirm completion.",
+            qualificationFailureCode(error),
+          )
           failed ||= new Error("UNINSTALL_UNCONFIRMED")
         }
       } else {
-        check("uninstall", "FAIL", "Expected owned NSIS uninstaller was not found.")
+        check("uninstall", "FAIL", "Expected owned NSIS uninstaller was not found.", "UNINSTALLER_MISSING")
         failed ||= new Error("UNINSTALLER_MISSING")
       }
     } else check("uninstall", "BLOCKED", "Cleanup is unconfirmed; the test did not interrupt a retained application.")
@@ -293,7 +305,7 @@ try {
     JSON.stringify({
       result: report.result,
       artifact: basename(options.artifact),
-      checks: checks.map(({ id, status }) => ({ id, status })),
+      checks: checks.map(({ id, status, failureCode }) => ({ id, status, ...(failureCode ? { failureCode } : {}) })),
     }),
   )
   if (failed) process.exitCode = 1
@@ -342,18 +354,30 @@ async function launch(executable) {
     child.once("exit", resolve)
     child.once("error", resolve)
   })
+  const startup = observePackagedStartup(child)
+  const untilStarted = (fn, label, limit) =>
+    until(
+      async () => {
+        startup.assertRunning()
+        const value = await fn()
+        startup.assertRunning()
+        return value
+      },
+      label,
+      limit,
+    )
   let socket
   let evaluate
   let api
   let owned = []
   try {
-    const port = await until(async () => {
+    const port = await untilStarted(async () => {
       for (const folder of ["session", "desktop"]) {
         const value = await readFile(join(profile, folder, "DevToolsActivePort"), "utf8").catch(() => "")
         if (value && /^[0-9]+$/.test(value.split("\n")[0])) return Number(value.split("\n")[0])
       }
     }, "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
-    const target = await until(
+    const target = await untilStarted(
       async () =>
         (await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) })).json()).find(
           (target) => target.type === "page" && target.url.startsWith("oc://renderer/"),
@@ -423,10 +447,11 @@ async function launch(executable) {
       await call("Input.insertText", { text })
       await sleep(200)
     }
-    await until(
+    await untilStarted(
       () => evaluate('Boolean(document.querySelector("[data-ps-workspace]"))'),
       "PACKAGED_WORKSPACE_UNAVAILABLE",
     )
+    startup.dispose()
     check(
       stage,
       "PASS",
@@ -536,6 +561,7 @@ async function launch(executable) {
       "Renderer reload preserved the bound conversation and exactly three recorded trials without replay.",
     )
   } finally {
+    startup.dispose()
     const previous = stage
     stage = "cleanup"
     try {
@@ -584,7 +610,12 @@ async function launch(executable) {
         "Owned Electron process and observed descendants exited; private terminal attachment was removed.",
       )
     } catch (error) {
-      check(stage, "FAIL", "Owned app cleanup is unconfirmed; no retained operation was force-terminated.")
+      check(
+        stage,
+        "FAIL",
+        "Owned app cleanup is unconfirmed; no retained operation was force-terminated.",
+        qualificationFailureCode(error),
+      )
       failed ||= error
       child.stdout.unpipe(log)
       child.stderr.unpipe(log)

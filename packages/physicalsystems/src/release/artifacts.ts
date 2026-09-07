@@ -4,7 +4,8 @@ import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir } from "node:fs/promises"
 import { basename, join } from "node:path"
 import type { ReleaseInputs } from "./inputs"
-import { requiredQualificationChecks } from "./qualification"
+import { isQualificationFailureCode, requiredQualificationChecks } from "./qualification"
+import type { QualificationFailureCode } from "./qualification"
 
 export type CandidatePlatform = "windows-x64" | "linux-x64"
 export type CandidateArtifact = {
@@ -30,7 +31,12 @@ export type Qualification = {
   platform: CandidatePlatform
   simulationOnly: true
   opticalFlickerMeasured: false
-  checks: { id: string; status: "PASS" | "FAIL" | "NOT_TESTED" | "BLOCKED"; detail?: string }[]
+  checks: {
+    id: string
+    status: "PASS" | "FAIL" | "NOT_TESTED" | "BLOCKED"
+    detail?: string
+    failureCode?: QualificationFailureCode
+  }[]
   result: "PASS" | "FAIL" | "NOT_TESTED" | "BLOCKED"
   inputsSha256?: string
   sourceRevision?: string
@@ -129,6 +135,13 @@ export function verifyQualification(artifact: CandidateArtifact, inventory: Cand
     throw new Error("Qualification does not identify the exact candidate")
   if (!Array.isArray(report.checks) || new Set(report.checks.map((check) => check.id)).size !== report.checks.length)
     throw new Error("Duplicate or missing qualification checks")
+  if (
+    report.checks.some(
+      (check) =>
+        check.failureCode !== undefined && (check.status !== "FAIL" || !isQualificationFailureCode(check.failureCode)),
+    )
+  )
+    throw new Error("Invalid qualification failure diagnostic")
   if (
     report.inputsSha256 !== inventory.inputsSha256 ||
     report.sourceRevision !== inventory.sourceRevision ||

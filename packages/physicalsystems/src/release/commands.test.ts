@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, describe, expect, test } from "bun:test"
+import { execFileSync } from "node:child_process"
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { buildEnvironment, emptyOutput, releaseArguments } from "./commands"
+import { buildEnvironment, emptyOutput, releaseArguments, stageCandidateSource } from "./commands"
 import type { ReleaseInputs } from "./inputs"
 
 const directories: string[] = []
@@ -180,4 +181,37 @@ describe("isolated candidate output directories", () => {
     await expect(emptyOutput(finalAlias, data.root)).rejects.toThrow("empty real directory")
     expect((await lstat(finalAlias)).isSymbolicLink()).toBe(true)
   })
+})
+
+test("stages exact committed bytes with real Git and tar on native drive paths", async () => {
+  const data = await workspace()
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", data.root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+  git("init", "--quiet")
+  const tracked = path.join(data.root, "tracked.txt")
+  await writeFile(tracked, "committed candidate bytes\n")
+  git("add", ".")
+  git(
+    "-c",
+    "user.name=Release fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--quiet",
+    "-m",
+    "test: archive fixture",
+  )
+  const revision = git("rev-parse", "HEAD")
+  await writeFile(tracked, "later working tree changes\n")
+  await writeFile(path.join(data.root, "private-untracked.txt"), "must never enter candidate\n")
+  const transaction = path.join(data.folder, "candidate with spaces")
+  await mkdir(transaction)
+  const stage = await stageCandidateSource(data.root, revision, transaction)
+  expect(await readFile(path.join(stage, "tracked.txt"), "utf8")).toBe("committed candidate bytes\n")
+  expect(await lstat(path.join(stage, "private-untracked.txt")).catch(() => undefined)).toBeUndefined()
+  expect(await readFile(tracked, "utf8")).toBe("later working tree changes\n")
+  await expect(stageCandidateSource(data.root, revision, transaction)).rejects.toThrow()
+  expect(await readFile(path.join(stage, "tracked.txt"), "utf8")).toBe("committed candidate bytes\n")
 })
