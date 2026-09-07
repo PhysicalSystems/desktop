@@ -104,7 +104,7 @@ The public installer destination is **PhysicalSystems/physicalsystems**, matchin
 
 The website integration is reviewed in [platform PR #287](https://github.com/PhysicalSystems/platform/pull/287). Its controlled `public/desktop-selection.json` starts with `release: null`. The page offers only installers matching that selection and live GitHub metadata, with bounded requests and explicit recovery. It does not claim to check binary bytes or Windows signatures inside the browser. A successful empty selection withdraws downloads.
 
-The [public build driver](public-build.md) can prepare installers under the public identity from independently anchored inputs, with signing credentials scoped to packaging. It emits an unqualified build record; the complete native producer and actual signing setup remain prerequisites.
+The [public producer workflow](public-producer.md) freezes the provisioned signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records public-mode packaged smoke. Signing credentials are scoped to packaging. It deliberately fails at incomplete native qualification and emits only unqualified records; actual signing setup, remaining native checks and qualified-bundle production remain prerequisites.
 
 The [public publisher](public-publisher.md) is implemented, with publication disabled until the signed producer, native evidence and protected credentials are available:
 

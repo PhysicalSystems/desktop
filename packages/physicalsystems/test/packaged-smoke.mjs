@@ -7,11 +7,22 @@ import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node
 import { fileURLToPath } from "node:url"
 import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
-import { startFixtureProvider } from "./fixture-provider.mjs"
+import { qualificationPrompt, startFixtureProvider } from "./fixture-provider.mjs"
+import { composerReadiness } from "../src/release/composer-readiness.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
 import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
+import { desktopIdentity } from "../src/release/identity.ts"
+import {
+  packagedQualificationArguments,
+  loadPublicQualification,
+  requireDisposablePublicRunner,
+  verifyPublicAuthenticode,
+  verifyPublicSignaturePair,
+  verifyPublicPackagedIdentity,
+  unqualifiedPublicSmokeReport,
+} from "../src/release/public-qualification.ts"
 import {
   authenticodeResult,
   executableArtifactCopy,
@@ -34,22 +45,9 @@ import {
   verifyLinuxRendererSandbox,
 } from "../src/release/linux-qualification.ts"
 
-const options = {}
-for (let index = 2; index < process.argv.length; index++) {
-  const key = process.argv[index]
-  if (key === "--inspection-only") {
-    options.inspectionOnly = true
-    continue
-  }
-  if (
-    !["--artifact", "--evidence", "--report", "--version", "--executable-name"].includes(key) ||
-    !process.argv[index + 1]
-  )
-    throw new Error("INVALID_QUALIFICATION_ARGUMENTS")
-  options[key.slice(2)] = process.argv[++index]
-}
-if (!options.artifact || !options.evidence || !options.report || !options.version)
-  throw new Error("ARTIFACT_EVIDENCE_REPORT_VERSION_REQUIRED")
+const options = packagedQualificationArguments(process.argv.slice(2))
+const publicMode = await loadPublicQualification(options)
+const identity = desktopIdentity(publicMode ? "public" : "candidate")
 for (const key of ["artifact", "evidence", "report"])
   if (!isAbsolute(options[key])) throw new Error("QUALIFICATION_ABSOLUTE_PATH_REQUIRED")
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
@@ -74,6 +72,9 @@ let signature = { status: "NOT_TESTED", trust: "NOT_APPLICABLE_TO_LINUX_PACKAGE"
 let payload
 let embeddedInputs
 let windowsVersion
+let installerSignatureObservation
+let publicSigning
+let publicCompiledIdentity
 let installed
 let linuxInstallation
 let linuxSandboxProfile
@@ -113,7 +114,7 @@ async function command(executable, args, options = {}) {
     })
   })
 }
-async function signatureFor(file) {
+async function signatureObservation(file) {
   // Literal path travels in a private child env, not interpolated PowerShell code.
   const value = await command(
     "powershell.exe",
@@ -121,11 +122,13 @@ async function signatureFor(file) {
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      "$s = Get-AuthenticodeSignature -LiteralPath $env:PS_QUALIFICATION_SIGNATURE_FILE; @{ Status=$s.Status.ToString(); Thumbprint=$s.SignerCertificate.Thumbprint } | ConvertTo-Json -Compress",
+      publicMode
+        ? "$s = Get-AuthenticodeSignature -LiteralPath $env:PS_QUALIFICATION_SIGNATURE_FILE; $publisher = if ($s.SignerCertificate) { $s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { $null }; @{ Status=$s.Status.ToString(); Thumbprint=$s.SignerCertificate.Thumbprint; Publisher=$publisher } | ConvertTo-Json -Compress"
+        : "$s = Get-AuthenticodeSignature -LiteralPath $env:PS_QUALIFICATION_SIGNATURE_FILE; @{ Status=$s.Status.ToString(); Thumbprint=$s.SignerCertificate.Thumbprint } | ConvertTo-Json -Compress",
     ],
     { env: { ...process.env, PS_QUALIFICATION_SIGNATURE_FILE: file } },
   )
-  return authenticodeResult(JSON.parse(value.trim()))
+  return JSON.parse(value.trim())
 }
 async function findExecutable(folder, name, depth = 0) {
   if (depth > 7) return []
@@ -157,17 +160,20 @@ async function until(fn, label, limit = 60000) {
 
 try {
   stage = "payload-integrity"
+  if (publicMode && !options.inspectionOnly) await requireDisposablePublicRunner(process.env, root)
   const extension = extname(options.artifact).toLowerCase()
   const extracted = join(root, "payload")
   await mkdir(extracted)
   if (extension === ".exe") {
     if (process.platform !== "win32") throw new Error("WINDOWS_QUALIFICATION_REQUIRES_WINDOWS")
-    signature = await signatureFor(options.artifact)
+    installerSignatureObservation = await signatureObservation(options.artifact)
+    signature = authenticodeResult(installerSignatureObservation)
     if (signature.status === "FAIL") throw new Error("INSTALLER_SIGNATURE_INVALID")
+    if (publicMode) verifyPublicAuthenticode(installerSignatureObservation, publicMode.build.windowsSigning)
     if (options.inspectionOnly) {
       check(stage, "NOT_TESTED", "Installer digest and signature inspected; payload installation was not requested.")
     } else {
-      // NSIS candidate config forbids auto-start, elevation, shortcuts and machine-wide install.
+      // Both owned configs forbid auto-start, elevation and machine-wide install.
       await command(options.artifact, ["/S", `/D=${extracted}`])
       installed = extracted
       check("package-format", "PASS", "NSIS installed per-user into this disposable CI test directory.")
@@ -190,7 +196,7 @@ try {
   if (!(extension === ".exe" && options.inspectionOnly)) {
     const name =
       options["executable-name"] ||
-      (process.platform === "win32" ? "Physical Systems Candidate.exe" : "physical-systems-candidate")
+      (process.platform === "win32" ? `${identity.productName}.exe` : identity.executableName)
     const executables = await findExecutable(extracted, name)
     if (executables.length !== 1) throw new Error("PACKAGED_EXECUTABLE_NOT_UNIQUE")
     const executable = executables[0]
@@ -198,7 +204,11 @@ try {
     check(stage, "PASS", "Executable and every bundled resource fingerprinted from the named package payload.")
     if (extension === ".appimage") {
       stage = "appimage-launcher"
-      await verifyAppImageLauncher(dirname(executable), join(repo, "packages/desktop/resources/AppRun"))
+      await verifyAppImageLauncher(
+        dirname(executable),
+        join(repo, "packages/desktop/resources", identity.launcherSource),
+        identity.kind,
+      )
       check(
         stage,
         "PASS",
@@ -206,10 +216,30 @@ try {
       )
     }
     if (process.platform === "win32") {
-      const executableSignature = await signatureFor(executable)
+      const executableObservation = await signatureObservation(executable)
+      const executableSignature = authenticodeResult(executableObservation)
       if (executableSignature.status === "FAIL") throw new Error("PAYLOAD_SIGNATURE_INVALID")
       if (signature.status === "PASS" && executableSignature.status !== "PASS")
         signature = { status: "BLOCKED", trust: "INSTALLER_VALID_PAYLOAD_UNSIGNED" }
+      if (publicMode) {
+        publicSigning = verifyPublicSignaturePair({
+          installer: installerSignatureObservation,
+          executable: executableObservation,
+          mode: publicMode,
+          installerSha256: artifactSha256,
+          executableSha256: payload.executableSha256,
+        })
+        signature = {
+          status: "PASS",
+          trust: "WINDOWS_AUTHENTICODE_VALID",
+          signerThumbprint: publicSigning.installer.certificateThumbprint,
+        }
+        check(
+          "public-signing",
+          "PASS",
+          "The exact installer and extracted executable have valid Authenticode signatures matching the anchored publisher and signing policy; both certificate identities and byte hashes are recorded.",
+        )
+      }
     }
     stage = "bundled-runtime"
     const archive = openPackagedArchive(
@@ -241,7 +271,7 @@ try {
     const metadata = archive.json("package.json")
     const release = archive.json("out/legal/desktop-release-inputs.json")
     if (
-      metadata.name !== "physical-systems-desktop-candidate" ||
+      metadata.name !== identity.packageName ||
       metadata.version !== options.version ||
       release.version !== options.version ||
       !/^[a-f0-9]{64}$/.test(release.sha256) ||
@@ -249,6 +279,20 @@ try {
     )
       throw new Error("PACKAGED_VERSION_MISMATCH")
     embeddedInputs = release
+    if (publicMode) {
+      publicCompiledIdentity = verifyPublicPackagedIdentity(publicMode, {
+        metadata,
+        releaseInputs: release,
+        publicInputs: archive.json("out/legal/public-build-inputs.json"),
+        compiledIdentity: archive.json("out/legal/physical-build-identity.json"),
+        mainBytes: read("out/main/index.js"),
+      })
+      check(
+        "public-compiled-identity",
+        "PASS",
+        "The final archive contains the public main process bound to both independently supplied input digests, exact source and version.",
+      )
+    }
     if (process.platform === "win32") {
       const pe = await command(
         "powershell.exe",
@@ -260,9 +304,9 @@ try {
         ],
         { env: { ...process.env, PS_QUALIFICATION_VERSION_FILE: executable } },
       )
-      windowsVersion = verifyWindowsVersionInfo(JSON.parse(pe.trim()), options.version)
+      windowsVersion = verifyWindowsVersionInfo(JSON.parse(pe.trim()), options.version, identity.kind)
     }
-    check(stage, "PASS", "Packaged app metadata and embedded release input match the requested candidate version.")
+    check(stage, "PASS", "Packaged app metadata and embedded release input match the requested desktop version.")
     if (!options.inspectionOnly) {
       let entrypoint = executable
       if (process.platform === "linux") {
@@ -274,9 +318,9 @@ try {
             "--showformat=${Package}\n${Version}\n${Architecture}\n",
             options.artifact,
           ])
-          const plan = debianCandidatePlan(options.version, metadata)
-          requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"))
-          if (debianProfileIsLoaded(await loadedProfiles()))
+          const plan = debianCandidatePlan(options.version, metadata, identity.kind)
+          requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"), identity.kind)
+          if (debianProfileIsLoaded(await loadedProfiles(), identity.kind))
             throw new Error("LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT")
           for (const path of plan.paths)
             if (await exists(path)) throw new Error("LINUX_QUALIFICATION_PACKAGE_ALREADY_PRESENT")
@@ -285,7 +329,8 @@ try {
           await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--install", options.artifact]).catch(
             retainUnconfirmedMutation,
           )
-          if (!debianProfileIsLoaded(await loadedProfiles())) throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
+          if (!debianProfileIsLoaded(await loadedProfiles(), identity.kind))
+            throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
           if ((await payloadFingerprint(plan.executable)).sha256 !== payload.sha256)
             throw new Error("LINUX_QUALIFICATION_INSTALLED_PAYLOAD_MISMATCH")
           entrypoint = plan.executable
@@ -296,7 +341,7 @@ try {
           )
         } else {
           if ((await realpath(executable)) !== executable) throw new Error("LINUX_QUALIFICATION_PROFILE_PATH_INVALID")
-          const profile = appImageSandboxProfile(executable, root)
+          const profile = appImageSandboxProfile(executable, root, identity.kind)
           await writeFile(profile.file, profile.text, { flag: "wx", mode: 0o600 })
           if (profileIsLoaded(await loadedProfiles(), profile.name))
             throw new Error("LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT")
@@ -339,18 +384,19 @@ try {
     if (safeToRemove) {
       try {
         await command("/usr/bin/sudo", ["-n", "/usr/bin/dpkg", "--purge", linuxInstallation.packageName])
-        requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"))
-        if (debianProfileIsLoaded(await loadedProfiles())) throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
+        requireAbsentDebianCandidate(await readFile("/var/lib/dpkg/status", "utf8"), identity.kind)
+        if (debianProfileIsLoaded(await loadedProfiles(), identity.kind))
+          throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
         for (const path of linuxInstallation.paths)
           if (await exists(path)) throw new Error("OWNED_UNINSTALL_NOT_COMPLETE")
         check(
           "uninstall",
           "PASS",
-          "Owned Debian candidate purged after confirmed application shutdown; package, installation paths and its AppArmor profile were removed.",
+          "Owned Debian package purged after confirmed application shutdown; package, installation paths and its AppArmor profile were removed.",
         )
       } catch (error) {
         failed ||= error
-        check("uninstall", "FAIL", "Debian candidate uninstallation is unconfirmed.", qualificationFailureCode(error))
+        check("uninstall", "FAIL", "Debian package uninstallation is unconfirmed.", qualificationFailureCode(error))
       }
     } else check("uninstall", "BLOCKED", "Application cleanup is unconfirmed; its installed package was retained.")
   }
@@ -396,7 +442,7 @@ try {
           await command(join(installed, uninstallers[0]), ["/S"])
           await until(
             () =>
-              lstat(join(installed, "Physical Systems Candidate.exe")).then(
+              lstat(join(installed, `${identity.productName}.exe`)).then(
                 () => false,
                 () => true,
               ),
@@ -406,13 +452,13 @@ try {
           check(
             "uninstall",
             "PASS",
-            "Owned per-user candidate uninstalled after confirming that no application was started or application shutdown completed.",
+            "Owned per-user package uninstalled after confirming that no application was started or application shutdown completed.",
           )
         } catch (error) {
           check(
             "uninstall",
             "FAIL",
-            "Candidate uninstallation did not confirm completion.",
+            "Package uninstallation did not confirm completion.",
             qualificationFailureCode(error),
           )
           failed ||= new Error("UNINSTALL_UNCONFIRMED")
@@ -435,7 +481,7 @@ try {
     "real-hardware",
   ])
     if (!checks.some((entry) => entry.id === id)) check(id, "NOT_TESTED", "Outside the checks completed by this run.")
-  const report = qualificationReport({
+  const baseReport = qualificationReport({
     artifact: options.artifact,
     artifactSha256,
     artifactBytes,
@@ -447,6 +493,14 @@ try {
     sourceRevision: embeddedInputs?.source?.revision,
     windowsVersion,
   })
+  const report = publicMode
+    ? unqualifiedPublicSmokeReport({
+        base: baseReport,
+        mode: publicMode,
+        compiledIdentity: publicCompiledIdentity,
+        signing: publicSigning,
+      })
+    : baseReport
   await writeFile(options.report, JSON.stringify(report, null, 2) + "\n")
   console.log(
     JSON.stringify({
@@ -479,7 +533,7 @@ try {
     }
   }
   console.log(JSON.stringify({ sealedDiagnostic, diagnosticLogStatus }))
-  if (failed) process.exitCode = 1
+  if (failed || publicMode) process.exitCode = 1
 }
 
 async function launch(executable) {
@@ -674,13 +728,37 @@ async function launch(executable) {
       () => evaluate('Boolean(document.querySelector("[data-ps-project-row]"))'),
       "PACKAGED_PROJECT_NOT_CREATED",
     )
+    const expectedProjectId = await evaluate(
+      'document.querySelector("[data-ps-project-row]")?.getAttribute("data-ps-project-row")',
+    )
     await click("[data-ps-project-row]")
     await until(
       () => evaluate('Boolean(document.querySelector("[data-component=prompt-input]"))'),
       "PACKAGED_COMPOSER_UNAVAILABLE",
     )
-    await type("[data-component=prompt-input]", "Find a synthetic alignment approach using three trials.")
+    const waitForComposer = async () => {
+      let readiness = "CONVERSATION_NOT_READY"
+      await until(async () => {
+        readiness = await evaluate(`(async () => {
+          const snapshot = await window.api.physicalSystems.snapshot();
+          const routeKeys = Object.keys(localStorage).filter(key => /^opencode\\.desktop\\.window\\..+\\.last-active-url$/.test(key));
+          return (${composerReadiness.toString()})({ expectedProjectId: ${JSON.stringify(expectedProjectId)}, snapshot, routeKeys,
+            route: routeKeys.length === 1 ? localStorage.getItem(routeKeys[0]) : null,
+            model: document.querySelector('[data-action="prompt-model"] .truncate')?.textContent ?? null,
+            agent: document.querySelector('[data-action="prompt-agent"] [data-slot="select-select-trigger-value"]')?.textContent ?? null });
+        })()`)
+        return readiness === "READY"
+      }, "PACKAGED_CONVERSATION_NOT_READY").catch((error) => {
+        if (error.message === "PACKAGED_CONVERSATION_NOT_READY" && readiness === "MODEL_NOT_READY")
+          throw new Error("PACKAGED_MODEL_NOT_READY")
+        throw error
+      })
+    }
+    await waitForComposer()
+    await type("[data-component=prompt-input]", qualificationPrompt)
+    await waitForComposer()
     await click('button[aria-label="Send"]')
+    await until(() => provider.calls.some((call) => call.syntheticPrompt === true), "PACKAGED_PROMPT_NOT_ADMITTED")
     await until(
       () => evaluate('Boolean(document.querySelector("[data-ps-approve]"))'),
       "PACKAGED_PROPOSAL_UNAVAILABLE",
@@ -756,6 +834,13 @@ async function launch(executable) {
     )
   } catch (error) {
     if (stage === "launch") {
+      const phase = startup.startupPhase()
+      if (phase)
+        check(
+          "startup-phase",
+          "NOT_TESTED",
+          `Last observed fixed main-process checkpoint: ${phase}. This does not establish application readiness.`,
+        )
       const lines =
         process.platform === "linux"
           ? await Promise.all(

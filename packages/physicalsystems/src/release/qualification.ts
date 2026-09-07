@@ -5,6 +5,7 @@ import { constants, createReadStream } from "node:fs"
 import { chmod, copyFile, lstat, readFile, readdir } from "node:fs/promises"
 import { basename, join, relative, resolve } from "node:path"
 import { desktopIdentity } from "./identity"
+import { startupPhases, type StartupPhase } from "./startup-phases"
 
 export type QualificationStatus = "PASS" | "FAIL" | "BLOCKED" | "NOT_TESTED"
 export type QualificationCheck = {
@@ -47,14 +48,21 @@ export const qualificationFailureCodes = [
   "PACKAGED_CDP_TIMEOUT",
   "PACKAGED_COMPOSER_UNAVAILABLE",
   "PACKAGED_CONVERSATION_NOT_RESTORED",
+  "PACKAGED_CONVERSATION_NOT_READY",
   "PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE",
   "PACKAGED_DISPLAY_UNAVAILABLE",
   "PACKAGED_DESCENDANT_RETAINED",
   "PACKAGED_EXECUTABLE_NOT_UNIQUE",
   "PACKAGED_PROFILE_NOT_ISOLATED",
+  "PACKAGED_PROMPT_NOT_ADMITTED",
+  "PACKAGED_PUBLIC_INPUTS_INVALID",
+  "PACKAGED_PUBLIC_IDENTITY_MISMATCH",
+  "PACKAGED_PUBLIC_SIGNATURE_INVALID",
+  "PACKAGED_PUBLIC_SIGNATURE_POLICY_MISMATCH",
   "PACKAGED_LINUX_RENDERER_SANDBOX_UNCONFIRMED",
   "PACKAGED_MAIN_PROCESS_EXCEPTION",
   "PACKAGED_MODULE_INITIALIZATION_FAILED",
+  "PACKAGED_MODEL_NOT_READY",
   "PACKAGED_OPERATOR_STARTUP_FAILED",
   "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
   "PACKAGED_PROJECT_NOT_CREATED",
@@ -85,6 +93,8 @@ export const qualificationFailureCodes = [
   "QUALIFICATION_UNEXPECTED_ERROR",
   "QUALIFICATION_WINDOWS_VERSION_INVALID",
   "QUALIFICATION_WINDOWS_VERSION_MISMATCH",
+  "PUBLIC_QUALIFICATION_REQUIRES_DISPOSABLE_RUNNER",
+  "PUBLIC_QUALIFICATION_PATH_OUTSIDE_RUNNER",
   "UNINSTALLER_MISSING",
   "UNINSTALL_UNCONFIRMED",
   "UNSUPPORTED_CANDIDATE_PACKAGE",
@@ -106,12 +116,17 @@ export function qualificationFailureCode(error: unknown): QualificationFailureCo
 export function observePackagedStartup(child: ChildProcess) {
   let tail = ""
   let port: number | undefined
+  let phase: StartupPhase | undefined
+  let stderrTail = ""
   let failure: QualificationFailureCode | undefined
   const collectOutput = (chunk: Buffer | string) => {
     tail = (tail + chunk.toString()).slice(-16384)
   }
   const collect = (chunk: Buffer | string) => {
     collectOutput(chunk)
+    stderrTail = (stderrTail + chunk.toString()).slice(-16384)
+    for (const match of stderrTail.matchAll(/^PHYSICALSYSTEMS_STARTUP_([A-Z_]+)\r?\n/gm))
+      if (startupPhases.some((value) => value === match[1])) phase = match[1] as StartupPhase
     // Electron can start CDP before application code selects userData. Read only
     // the owned process's exact loopback announcement; never return its raw URL.
     const matches = tail.matchAll(
@@ -156,6 +171,9 @@ export function observePackagedStartup(child: ChildProcess) {
     debugPort() {
       return port
     },
+    startupPhase() {
+      return phase
+    },
     timeoutCode(fallback: QualificationFailureCode) {
       // A native error dialog can keep the process alive. Classify its stderr
       // only after readiness expires; a warning cannot abort a healthy startup.
@@ -167,7 +185,9 @@ export function observePackagedStartup(child: ChildProcess) {
       child.off("error", spawnFailed)
       child.off("close", closed)
       tail = ""
+      stderrTail = ""
       port = undefined
+      phase = undefined
     },
   }
 }
@@ -239,7 +259,7 @@ export async function executableArtifactCopy(source: string, destination: string
   return destination
 }
 
-export function verifyWindowsVersionInfo(input: unknown, version: string) {
+export function verifyWindowsVersionInfo(input: unknown, version: string, kind: "candidate" | "public" = "candidate") {
   if (
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/.test(version) ||
     !input ||
@@ -251,7 +271,7 @@ export function verifyWindowsVersionInfo(input: unknown, version: string) {
   // Pinned electron-builder 26.15.2 preserves FileVersion's prerelease string,
   // while its PE ProductVersion is the numeric core plus the default build 0.
   if (
-    value.ProductName !== "Physical Systems Candidate" ||
+    value.ProductName !== desktopIdentity(kind).productName ||
     value.FileVersion !== version ||
     value.ProductVersion !== `${version.split("-")[0]}.0`
   )
@@ -320,6 +340,7 @@ export function qualificationEnvironment(
     ...(platform === "win32" ? { SystemRoot: windows, WINDIR: windows, COMSPEC: `${windows}\\System32\\cmd.exe` } : {}),
     PHYSICALSYSTEMS_DATA_DIR: root,
     PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
+    PHYSICALSYSTEMS_QUALIFICATION_TRACE: "1",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
   })

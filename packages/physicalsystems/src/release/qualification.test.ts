@@ -104,6 +104,24 @@ test("packaged CDP discovery accepts only the owned exact loopback announcement 
   expect(child.stderr.listenerCount("data")).toBe(0)
 })
 
+test("startup phase diagnostics accept only complete allowlisted owned stderr markers", () => {
+  const child = new EventEmitter() as ChildProcess
+  child.stderr = new PassThrough()
+  child.stdout = new PassThrough()
+  const startup = observePackagedStartup(child)
+  child.stdout.emit("data", "PHYSICALSYSTEMS_STARTUP_MAIN_ENTER\n")
+  child.stderr.emit("data", "PHYSICALSYSTEMS_STARTUP_PRIVATE_TOKEN\n")
+  expect(startup.startupPhase()).toBeUndefined()
+  child.stderr.emit("data", "PHYSICALSYSTEMS_STARTUP_CRASH_REPORTER_BEFORE")
+  expect(startup.startupPhase()).toBeUndefined()
+  child.stderr.emit("data", "\r\n")
+  expect(startup.startupPhase()).toBe("CRASH_REPORTER_BEFORE")
+  child.stderr.emit("data", "PHYSICALSYSTEMS_STARTUP_OPERATOR_AFTER credential-private-trap\n")
+  expect(startup.startupPhase()).toBe("CRASH_REPORTER_BEFORE")
+  startup.dispose()
+  expect(startup.startupPhase()).toBeUndefined()
+})
+
 test("startup timeout classifies a retained native error dialog without exposing private output", () => {
   for (const [output, expected] of [
     ["Error [ERR_MODULE_NOT_FOUND]: private-trap", "PACKAGED_MODULE_INITIALIZATION_FAILED"],
@@ -283,6 +301,7 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
       GH_TOKEN: "secret",
       NODE_OPTIONS: "--require=ambient",
       PHYSICALSYSTEMS_ALLOW_DEVICES: "1",
+      PHYSICALSYSTEMS_QUALIFICATION_TRACE: "credential-private-trap",
       OPENCODE_CONFIG: "/real/config",
       DISPLAY: ":44",
     },
@@ -292,6 +311,8 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
   expect(env.PATH).toBe(join("/owned/profile", "empty-path"))
   expect(env.HOME).toBe("/owned/profile")
   expect(env.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
+  expect(env.PHYSICALSYSTEMS_QUALIFICATION_TRACE).toBe("1")
+  expect(JSON.stringify(env)).not.toContain("credential-private-trap")
   expect(env.DISPLAY).toBe(":44")
   for (const key of ["OPENAI_API_KEY", "GH_TOKEN", "NODE_OPTIONS", "OPENCODE_CONFIG"]) expect(env[key]).toBeUndefined()
 })

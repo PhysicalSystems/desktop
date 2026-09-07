@@ -4,6 +4,12 @@
 the committed source identified by two independently anchored input records.
 It does not publish, start the application, or grant native qualification.
 
+The [public producer workflow](public-producer.md) now prepares these inputs,
+reuses source validation, builds both native targets and records public-mode
+packaged smoke evidence. It remains disabled until provisioning and deliberately
+fails at incomplete native public qualification; adding the workflow does not
+make an installer eligible for website selection.
+
 Prepare ordinary `ReleaseInputs` from the exact clean commit containing the
 public build implementation, retaining its `history.json` and decoded
 `models.dev-api.json`. Prepare `PublicBuildInputs` with the same source revision,

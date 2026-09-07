@@ -54,6 +54,10 @@ jobs:
         working-directory: packages/opencode
         run: bun test --timeout 30000 ./test/plugin/physicalsystems.test.ts ./test/plugin/physicalsystems-authority.test.ts
 
+      - name: Desktop startup diagnostic regression tests
+        working-directory: packages/desktop
+        run: bun test ./src/main/startup-trace.test.ts
+
       - name: Typecheck integration
         working-directory: packages/physicalsystems
         run: bun typecheck

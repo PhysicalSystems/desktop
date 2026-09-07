@@ -78,15 +78,20 @@ export function validatePublicBuildInputs(input: unknown, expectedSha256: string
     throw new Error("Expected immutable publication-disabled public build inputs")
   if (publicReviewDigest(data.identity) !== publicReviewDigest(desktopIdentity("public")))
     throw new Error("Public app, profile and executable identities are fixed before compilation")
-  if (!data.windowsSigning || typeof data.windowsSigning !== "object" || Array.isArray(data.windowsSigning))
+  validatePublicSigningPolicy(data.windowsSigning)
+  return data as PublicBuildInputs
+}
+
+export function validatePublicSigningPolicy(input: unknown): PublicSigningPolicy {
+  if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("An explicit signing provider is required")
-  const signing = data.windowsSigning as Record<string, unknown>
+  const signing = input as Record<string, unknown>
   if (!text(signing.publisher, 200)) throw new Error("Pin the exact expected signing publisher")
   if (signing.provider === "pfx") {
     exact(signing, ["provider", "publisher", "certificateThumbprint"])
     if (typeof signing.certificateThumbprint !== "string" || !/^[A-F0-9]{40}$/.test(signing.certificateThumbprint))
       throw new Error("Pin the expected PFX certificate thumbprint")
-    return data as PublicBuildInputs
+    return signing as PublicSigningPolicy
   }
   if (signing.provider === "azure-trusted-signing") {
     exact(signing, ["provider", "publisher", "endpoint", "account", "certificateProfile"])
@@ -99,7 +104,7 @@ export function validatePublicBuildInputs(input: unknown, expectedSha256: string
       !/^[A-Za-z0-9-]+$/.test(signing.certificateProfile)
     )
       throw new Error("Pin the owned Azure signing endpoint, account and certificate profile")
-    return data as PublicBuildInputs
+    return signing as PublicSigningPolicy
   }
   throw new Error("Unsupported public signing provider; unsigned fallback is prohibited")
 }

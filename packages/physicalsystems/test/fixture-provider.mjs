@@ -4,6 +4,8 @@
 import { createServer } from 'node:http'
 import { randomUUID } from 'node:crypto'
 
+export const qualificationPrompt = 'Find a synthetic alignment approach using three trials.'
+
 export async function startFixtureProvider() {
   const calls = []
   const server = createServer(async (request, response) => {
@@ -42,7 +44,8 @@ export async function startFixtureProvider() {
         name = 'run_simulated_trial'; args = { experimentId: current.id, offsetMm: current.trials.length === 0 ? 0 : 3 }
       } else if (current.phase !== 'COMPLETED' && current.phase !== 'FINISHED' && current.trials?.length === 3) { name = 'finish_local_experiment'; args = { experimentId: current.id } }
       else text = '### Recorded synthetic result\n\nThe baseline measured **3 mm error**; the correction and confirmation measured **0 mm error at 3 mm offset**. These are arithmetic fixture results only.'
-      calls.push({ tool: name || null, recent: recent.length, phase: current?.phase || null, latest: latest?.name || null })
+      calls.push({ tool: name || null, recent: recent.length, phase: current?.phase || null, latest: latest?.name || null,
+        syntheticPrompt: requestText.includes(qualificationPrompt) && (body.tools || []).some((tool) => tool.function?.name === 'propose_local_experiment') })
       const message = name ? { role: 'assistant', content: null, tool_calls: [{ id: `fixture_${randomUUID()}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } : { role: 'assistant', content: text }
       const base = { id: `chatcmpl-${randomUUID()}`, created: Math.floor(Date.now() / 1000), model: 'fixture', choices: [{ index: 0, message, finish_reason: name ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 20, total_tokens: 40 } }
       if (!body.stream) { response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ...base, object: 'chat.completion' })); return }

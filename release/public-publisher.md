@@ -2,7 +2,7 @@
 
 `desktop-public-release.yml` adds the publication half of the release process. It consumes signed, publicly identified, natively qualified installers from the owned producer. It does **not** make today's unsigned internal candidates publicly eligible, implement signing, or claim that native checks have passed.
 
-The current producer prerequisite is `.github/workflows/desktop-public-build.yml`, successful on the exact reviewed `main` commit used by the publisher. The existing `.github/workflows/desktop-release.yml` is deliberately rejected. Until that real producer, required native evidence and credentials exist, preflight fails closed. Do not create a producer that simply changes candidate booleans to `PASS`.
+The producer prerequisite is `.github/workflows/desktop-public-build.yml`, successful on the exact reviewed `main` commit used by the publisher. Its [implemented build and smoke stages](public-producer.md) currently fail deliberately at incomplete native qualification and emit only unqualified artifacts. The existing `.github/workflows/desktop-release.yml` is deliberately rejected. Until complete native evidence and credentials exist, preflight fails closed. Do not change candidate or unqualified booleans to `PASS`.
 
 One dispatch to **Publish qualified desktop installers** supplies the producer run ID, its exact current attempt and the canonical qualified-distribution digest from the trusted producer summary. This is a continuation of a previously qualified build; it is not yet a one-dispatch build-and-publish pipeline. A future top-level coordinator can combine those phases without rebuilding qualified bytes.
 
@@ -60,13 +60,13 @@ Tests use synthetic byte payloads and fake GitHub responses. They verify orderin
 
 ## Public build identity and signing configuration
 
-The [public build driver](public-build.md), `packages/desktop/physical-public.config.ts` and the pure `public-build.ts` helpers are implemented separately from the candidate packager. The driver builds from independently anchored input snapshots and scopes signing credentials to packaging. Its output remains unqualified; the signed producer workflow and complete native public qualification are **not yet implemented or qualified**.
+The [public build driver](public-build.md), `packages/desktop/physical-public.config.ts` and the pure `public-build.ts` helpers are implemented separately from the candidate packager. The [public producer workflow](public-producer.md) freezes inputs, reuses source checks, invokes native packaging and records public smoke evidence. The driver scopes signing credentials to packaging. Output remains unqualified: real signing provisioning, remaining native checks and qualified-bundle production are **not yet completed or qualified**.
 
 Public preview and stable use one fixed installation identity: `systems.physical.desktop`, product `Physical Systems`, package/executable `physical-systems-desktop`, and the default `physicalsystems-desktop` data directory. A preview-to-stable change must pass the same upgrade/configuration-preservation checks. Candidate/development identity and default data remain unchanged. This policy does not automatically migrate existing candidate data.
 
 Before compiling, a producer must create a separate `PublicBuildInputs` record containing the exact source SHA, already-verified release input digest, version/channel, fixed public identity and an explicit signing policy. Both the public record digest and underlying release input digest are independently supplied to the builder. `PHYSICALSYSTEMS_PUBLIC_BUILD_INPUTS` is an absolute runner-private file path; `PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256` and `PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256` are trusted upstream job outputs. Setting an application launch-time environment variable cannot relabel a packaged candidate. Electron-vite embeds the identity in the main process and writes a compilation receipt bound to the main output hash. The public packager requires that receipt and rejects candidate output or changed compiled main bytes.
 
-The build still uses publication disabled and the eventual producer must invoke packaging with `--publish never`. All packaged modes preserve the existing `PHYSICALSYSTEMS_ALLOW_DEVICES=0` boundary. Public Linux uses the owned `AppRun.public` launcher and never disables Chromium sandboxing.
+The build uses publication disabled and the producer invokes packaging with `--publish never`. All packaged modes preserve the existing `PHYSICALSYSTEMS_ALLOW_DEVICES=0` boundary. Public Linux uses the owned `AppRun.public` launcher and never disables Chromium sandboxing.
 
 Windows configuration enables executable signing, requires code signing and retains update signature verification. Signing policy is explicitly either:
 
