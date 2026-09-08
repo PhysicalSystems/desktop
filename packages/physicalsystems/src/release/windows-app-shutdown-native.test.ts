@@ -2,7 +2,10 @@
 import { expect, test } from "bun:test"
 import { ChildProcess, execFile } from "node:child_process"
 import { PassThrough } from "node:stream"
-import { win32 } from "node:path"
+import { join, win32 } from "node:path"
+import { mkdtemp, realpath, rm } from "node:fs/promises"
+import { requireDisposablePublicRunner } from "./public-qualification"
+import { windowsReviewNativeEnvironment } from "./windows-review-native"
 import {
   createWindowsAppShutdownTransport,
   windowsAppShutdownNative,
@@ -15,6 +18,97 @@ const rows = [
   { pid: 50, parent: 20, birth: "639086980000000000", executable: "C:\\owned\\app.exe" },
   { pid: 51, parent: 50, birth: "639086980000000010", executable: "C:\\owned\\app.exe" },
 ]
+const fixturePhases = [
+  "bootstrap",
+  "role-definition",
+  "query-definition",
+  "initial-query",
+  "query-class",
+  "query-properties",
+  "initial-status",
+  "initial-closure",
+  "initial-ticks",
+  "initial-missing-metadata",
+  "final-query",
+  "final-closure",
+  "expected-query-failure",
+  "query-failure-assertion",
+  "role-renderer",
+  "role-lookalike",
+  "role-duplicate",
+  "role-gpu",
+  "role-utility",
+  "role-crashpad",
+  "json",
+] as const
+const fixtureTypes = [
+  "RuntimeException",
+  "MethodInvocationException",
+  "ParameterBindingException",
+  "ParameterBindingValidationException",
+  "ArgumentException",
+  "InvalidOperationException",
+  "PSInvalidCastException",
+  "ParseException",
+  "ActionPreferenceStopException",
+  "Other",
+] as const
+const fixtureCategories = [
+  "InvalidArgument",
+  "InvalidData",
+  "InvalidOperation",
+  "NotSpecified",
+  "ObjectNotFound",
+  "OperationStopped",
+  "ParserError",
+  "PermissionDenied",
+  "Other",
+] as const
+
+function fixtureFailure(error: unknown, stderr: string, invalidJson = false) {
+  const lines = Buffer.byteLength(stderr) <= 8192 ? stderr.split(/\r?\n/) : []
+  const read = (prefix: string, allowed: readonly string[]) =>
+    lines
+      .flatMap((line) => {
+        if (!line.startsWith(prefix)) return []
+        const value = line.slice(prefix.length)
+        return allowed.includes(value) ? [value] : []
+      })
+      .at(-1) ?? "unknown"
+  const phase = read("INERT_APP_SHUTDOWN_FIXTURE_PHASE_", fixturePhases)
+  const type = read("INERT_APP_SHUTDOWN_FIXTURE_TYPE_", fixtureTypes)
+  const category = read("INERT_APP_SHUTDOWN_FIXTURE_CATEGORY_", fixtureCategories)
+  const native = error as { killed?: unknown; signal?: unknown; code?: unknown } | undefined
+  const outcome =
+    native?.killed === true
+      ? "timeout"
+      : typeof native?.signal === "string"
+        ? "signal"
+        : typeof native?.code === "number"
+          ? "exit"
+          : invalidJson
+            ? "invalid-json"
+            : "unknown"
+  return Error(`INERT_APP_SHUTDOWN_FIXTURE_FAILED:${phase}:${type}:${category}:${outcome}`)
+}
+
+test("hosted fixture diagnostics expose only bounded authored phases, exception types and categories", () => {
+  expect(
+    fixtureFailure(
+      { code: 1, message: "PRIVATE" },
+      "PRIVATE\nINERT_APP_SHUTDOWN_FIXTURE_PHASE_initial-ticks\nINERT_APP_SHUTDOWN_FIXTURE_TYPE_RuntimeException\nINERT_APP_SHUTDOWN_FIXTURE_CATEGORY_OperationStopped\n",
+    ).message,
+  ).toBe("INERT_APP_SHUTDOWN_FIXTURE_FAILED:initial-ticks:RuntimeException:OperationStopped:exit")
+  expect(
+    fixtureFailure(
+      { killed: true },
+      "INERT_APP_SHUTDOWN_FIXTURE_PHASE_PRIVATE\nINERT_APP_SHUTDOWN_FIXTURE_TYPE_PRIVATE\nINERT_APP_SHUTDOWN_FIXTURE_CATEGORY_PRIVATE",
+    ).message,
+  ).toBe("INERT_APP_SHUTDOWN_FIXTURE_FAILED:unknown:unknown:unknown:timeout")
+  expect(fixtureFailure(undefined, "x".repeat(8193), true).message).toBe(
+    "INERT_APP_SHUTDOWN_FIXTURE_FAILED:unknown:unknown:unknown:invalid-json",
+  )
+})
 function fixture() {
   const calls: {
     child: ChildProcess
@@ -162,20 +256,44 @@ test("invalid or oversized requests never dispatch a helper; production cannot l
     await expect(windowsAppShutdownNative({}, "C:\\owned")).rejects.toThrow("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNAVAILABLE")
 })
 
-test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "github-hosted")(
+const hostedWindows =
+  process.platform === "win32" &&
+  process.env.CI === "true" &&
+  process.env.GITHUB_ACTIONS === "true" &&
+  process.env.RUNNER_ENVIRONMENT === "github-hosted" &&
+  process.env.RUNNER_OS === "Windows" &&
+  process.env.GITHUB_REPOSITORY === "PhysicalSystems/desktop"
+test.skipIf(!hostedWindows)(
   "hosted inert PowerShell executes the exact fixed snapshot closure and keeps native query failures unreadable",
   async () => {
     // Get-CimInstance is shadowed with fixed objects: no native process table,
     // application, browser, keyring or system mutation is accessed by this test.
     const script = String.raw`
 $ErrorActionPreference='Stop'
+$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+function Mark([string]$phase){[Console]::Error.WriteLine('INERT_APP_SHUTDOWN_FIXTURE_PHASE_'+$phase)}
+trap {
+  $type=$_.Exception.GetType().Name
+  if($type -cnotin @(${fixtureTypes.map((value) => `'${value}'`).join(",")})){$type='Other'}
+  $category=$_.CategoryInfo.Category.ToString()
+  if($category -cnotin @(${fixtureCategories.map((value) => `'${value}'`).join(",")})){$category='Other'}
+  [Console]::Error.WriteLine('INERT_APP_SHUTDOWN_FIXTURE_TYPE_'+$type)
+  [Console]::Error.WriteLine('INERT_APP_SHUTDOWN_FIXTURE_CATEGORY_'+$category)
+  exit 1
+}
+Mark 'bootstrap'
+Mark 'role-definition'
 ${windowsAppShutdownRole}
+Mark 'query-definition'
 ${windowsAppShutdownQuery}
 function Require($value){if(!$value){throw 'fixture'}}
 $script:mode='complete'
 function Get-CimInstance {
   [CmdletBinding()]param([string]$ClassName,[string[]]$Property)
+  Mark 'query-class'
   Require ($ClassName -ceq 'Win32_Process' -and $PSBoundParameters.ErrorAction -eq 'Stop')
+  Mark 'query-properties'
   Require (($Property -join ',') -ceq 'ProcessId,ParentProcessId,CreationDate,ExecutablePath,CommandLine')
   if($script:mode -eq 'failed'){throw 'inert-query-failed'}
   $birth=[DateTime]::SpecifyKind([DateTime]::new(2026,9,8,12,0,0),[DateTimeKind]::Utc)
@@ -186,27 +304,44 @@ function Get-CimInstance {
     [pscustomobject]@{ProcessId=53;ParentProcessId=20;CreationDate=$birth;ExecutablePath='C:\unrelated\other.exe'}
   )
 }
+Mark 'initial-query'
 $initial=Read-AppShutdownSnapshot ([pscustomobject]@{rootPid=50})
+Mark 'initial-status'
 Require ($initial.status -ceq 'COMPLETE' -and $initial.processes.Count -eq 3)
+Mark 'initial-closure'
 Require ((@($initial.processes | Sort-Object pid | ForEach-Object {$_.pid}) -join ',') -ceq '50,51,52')
+Mark 'initial-ticks'
 Require (($initial.processes | Where-Object {$_.pid -eq 50}).birth -ceq ([DateTime]::new(2026,9,8,12,0,0)).Ticks.ToString())
+Mark 'initial-missing-metadata'
 Require ($null -eq ($initial.processes | Where-Object {$_.pid -eq 51}).executable)
+Mark 'final-query'
 $final=Read-AppShutdownSnapshot ([pscustomobject]@{rootPid=50;pids=@(52)})
+Mark 'final-closure'
 Require ((@($final.processes | Sort-Object pid | ForEach-Object {$_.pid}) -join ',') -ceq '50,52')
 $script:mode='failed';$failed=$false
+Mark 'expected-query-failure'
 try {$null=Read-AppShutdownSnapshot ([pscustomobject]@{rootPid=50})}catch{$failed=$true}
+Mark 'query-failure-assertion'
 Require $failed
+Mark 'role-renderer'
 Require ((Read-AppShutdownRole '"C:\Program Files\app.exe" --type=renderer') -ceq 'renderer')
+Mark 'role-lookalike'
 Require ((Read-AppShutdownRole '"C:\Program Files\app.exe" "text --type=renderer"') -ceq 'unknown')
+Mark 'role-duplicate'
 Require ((Read-AppShutdownRole 'app.exe --type=renderer --type=utility') -ceq 'unknown')
+Mark 'role-gpu'
 Require ((Read-AppShutdownRole 'app.exe --type=gpu-process') -ceq 'gpu')
+Mark 'role-utility'
 Require ((Read-AppShutdownRole 'app.exe --type=utility') -ceq 'utility')
+Mark 'role-crashpad'
 Require ((Read-AppShutdownRole 'app.exe --type=crashpad-handler') -ceq 'crashpad')
+Mark 'json'
 [Console]::Out.Write('{"fixtureOnly":true,"closure":true,"exactFinalPids":true,"ticks":true,"missingMetadata":true,"queryFailure":true}')
 `
-    const system = process.env.SystemRoot || process.env.SYSTEMROOT
-    expect(system).toBeTruthy()
-    const executable = win32.join(system!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    const root = await mkdtemp(join(await realpath(process.env.RUNNER_TEMP!), "app-shutdown-fixture-"))
+    await requireDisposablePublicRunner(process.env, root)
+    const environment = windowsReviewNativeEnvironment(process.env, root)
+    const executable = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
     const args = [
       "-NoLogo",
       "-NoProfile",
@@ -216,8 +351,11 @@ Require ((Read-AppShutdownRole 'app.exe --type=crashpad-handler') -ceq 'crashpad
     ]
     expect(executable.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3).toBeLessThan(32767)
     let result: unknown
-    const transport = createWindowsAppShutdownTransport((deadline, complete) =>
-      execFile(
+    let diagnostic: Error | undefined
+    let retainRoot = false
+    const transport = createWindowsAppShutdownTransport((deadline, complete) => {
+      retainRoot = true
+      return execFile(
         executable,
         args,
         {
@@ -226,26 +364,38 @@ Require ((Read-AppShutdownRole 'app.exe --type=crashpad-handler') -ceq 'crashpad
           encoding: "utf8",
           timeout: deadline.timeout,
           maxBuffer: 8192,
+          cwd: root,
+          env: environment,
         },
         (error, stdout, stderr) => {
-          if (!error) {
+          if (error) diagnostic = fixtureFailure(error, stderr)
+          else {
             try {
-              result = JSON.parse(stdout)
-            } catch {}
+              result = JSON.parse(stdout.replace(/^\uFEFF/, ""))
+            } catch {
+              diagnostic = fixtureFailure(undefined, stderr, true)
+            }
           }
           complete(error, stdout, stderr)
         },
-      ),
-    )
-    expect((await transport({ rootPid: 50 })).quiescence).toBe("confirmed")
-    expect(result).toEqual({
-      fixtureOnly: true,
-      closure: true,
-      exactFinalPids: true,
-      ticks: true,
-      missingMetadata: true,
-      queryFailure: true,
+      )
     })
+    try {
+      const observed = await transport({ rootPid: 50 })
+      retainRoot = observed.quiescence !== "confirmed"
+      expect(observed.quiescence).toBe("confirmed")
+      if (diagnostic) throw diagnostic
+      expect(result).toEqual({
+        fixtureOnly: true,
+        closure: true,
+        exactFinalPids: true,
+        ticks: true,
+        missingMetadata: true,
+        queryFailure: true,
+      })
+    } finally {
+      if (!retainRoot) await rm(root, { recursive: true, force: true })
+    }
   },
   20000,
 )
