@@ -169,6 +169,11 @@ test("handoff facts remain fixed and distinct from cleanup process snapshots", (
     handoffPolls: 1,
     handoffListeners: 1,
     handoffUnknownProcesses: 0,
+    handoffUnknownExecutableProcesses: 0,
+    handoffUnknownSidProcesses: 0,
+    handoffUnknownSessionProcesses: 0,
+    handoffUnknownBirthProcesses: 0,
+    handoffUnknownProfileOrAncestryProcesses: 0,
     handoffTargetCount: 0,
     handoffWindowsNativePhase: "listener",
     handoffWindowsNativeOutcome: "timeout",
@@ -195,4 +200,64 @@ test("handoff facts remain fixed and distinct from cleanup process snapshots", (
   ]) {
     expect(readBrowserObservation({ browserObservation: { ...observed, ...invalid } })).toBeUndefined()
   }
+})
+
+test("handoff ownership reasons admit bounded counts only, with no process identity metadata", () => {
+  for (const key of [
+    "handoffUnknownExecutableProcesses",
+    "handoffUnknownSidProcesses",
+    "handoffUnknownSessionProcesses",
+    "handoffUnknownBirthProcesses",
+    "handoffUnknownProfileOrAncestryProcesses",
+  ]) {
+    for (const value of [0, 1, 65536]) {
+      const observation = { browserPhase: "handoff-targets" as const, [key]: value }
+      expect(readBrowserObservation({ browserObservation: observation })).toEqual(observation)
+    }
+    for (const value of [-1, 1.5, 65537, NaN, "PRIVATE-PID-PATH-ARGV", { pid: 4100 }])
+      expect(
+        readBrowserObservation({ browserObservation: { browserPhase: "handoff-targets", [key]: value } }),
+      ).toBeUndefined()
+  }
+  for (const key of ["unknownPid", "unknownPath", "unknownArgs", "unknownSid"])
+    expect(
+      readBrowserObservation({ browserObservation: { browserPhase: "handoff-targets", [key]: "PRIVATE" } }),
+    ).toBeUndefined()
+})
+
+test("directory failure observations admit fixed categories and tightly bounded metadata only", () => {
+  const value = {
+    browserPhase: "cleanup-profile",
+    directoryFailurePhase: "remove",
+    directoryRemovalAttempt: 4,
+    directorySyscall: "rm",
+    directoryErrorPath: "descendant",
+    directoryInventory: "bounded",
+    directoryEntries: 128,
+    directoryDirectories: 10,
+    directoryFiles: 115,
+    directoryLinks: 3,
+    directoryNonWritableMode: 1,
+    directoryReadFailures: 0,
+    directoryInventoryDepth: 4,
+  } as const
+  expect(readBrowserObservation({ browserObservation: value })).toEqual(value)
+  for (const key of ["directoryFailurePhase", "directorySyscall", "directoryErrorPath", "directoryInventory"])
+    expect(readBrowserObservation({ browserObservation: { ...value, [key]: "PRIVATE-PATH" } })).toBeUndefined()
+  for (const key of [
+    "directoryRemovalAttempt",
+    "directoryEntries",
+    "directoryDirectories",
+    "directoryFiles",
+    "directoryLinks",
+    "directoryNonWritableMode",
+    "directoryReadFailures",
+    "directoryInventoryDepth",
+  ]) {
+    const maximum = ["directoryRemovalAttempt", "directoryInventoryDepth"].includes(key) ? 4 : 128
+    for (const invalid of [-1, 1.5, maximum + 1, "PRIVATE"])
+      expect(readBrowserObservation({ browserObservation: { ...value, [key]: invalid } })).toBeUndefined()
+  }
+  for (const key of ["directoryPath", "directoryFileNames", "directoryLockOwner", "directoryAcl"])
+    expect(readBrowserObservation({ browserObservation: { ...value, [key]: "PRIVATE" } })).toBeUndefined()
 })

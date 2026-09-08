@@ -148,9 +148,27 @@ export type BrowserObservation = {
   handoffPolls?: number
   handoffListeners?: number
   handoffUnknownProcesses?: number
+  handoffUnknownExecutableProcesses?: number
+  handoffUnknownSidProcesses?: number
+  handoffUnknownSessionProcesses?: number
+  handoffUnknownBirthProcesses?: number
+  handoffUnknownProfileOrAncestryProcesses?: number
   handoffTargetCount?: number
   handoffWindowsNativePhase?: (typeof windowsPhases)[number]
   handoffWindowsNativeOutcome?: BrowserObservation["windowsNativeOutcome"]
+  directoryFailurePhase?: "parent-canonical" | "parent-identity" | "root-identity" | "remove" | "absence-check"
+  directoryRemovalAttempt?: number
+  directorySyscall?: "rm" | "lstat" | "realpath" | "readdir" | "other" | "absent"
+  directoryErrorPath?: "root" | "parent" | "descendant" | "other" | "absent"
+  directoryInventory?: "complete" | "bounded" | "identity-unconfirmed" | "read-failed"
+  directoryEntries?: number
+  directoryDirectories?: number
+  directoryFiles?: number
+  directoryLinks?: number
+  /** POSIX mode metadata only; not Windows readonly, ACL or lock evidence. */
+  directoryNonWritableMode?: number
+  directoryReadFailures?: number
+  directoryInventoryDepth?: number
 }
 const codes = [
   "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
@@ -199,6 +217,11 @@ const counts = [
   "handoffPolls",
   "handoffListeners",
   "handoffUnknownProcesses",
+  "handoffUnknownExecutableProcesses",
+  "handoffUnknownSidProcesses",
+  "handoffUnknownSessionProcesses",
+  "handoffUnknownBirthProcesses",
+  "handoffUnknownProfileOrAncestryProcesses",
   "handoffTargetCount",
   "ownedProcesses",
   "targetCount",
@@ -213,12 +236,27 @@ const counts = [
   "readinessUnknownProcesses",
   "readinessTargetCount",
 ]
+const directoryCounts = [
+  "directoryEntries",
+  "directoryDirectories",
+  "directoryFiles",
+  "directoryLinks",
+  "directoryNonWritableMode",
+  "directoryReadFailures",
+]
+const directoryEnums = new Map<string, readonly string[]>([
+  ["directoryFailurePhase", ["parent-canonical", "parent-identity", "root-identity", "remove", "absence-check"]],
+  ["directorySyscall", ["rm", "lstat", "realpath", "readdir", "other", "absent"]],
+  ["directoryErrorPath", ["root", "parent", "descendant", "other", "absent"]],
+  ["directoryInventory", ["complete", "bounded", "identity-unconfirmed", "read-failed"]],
+])
 function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
     const allowed =
-      key === "handoffPhase"
+      directoryEnums.get(key) ??
+      (key === "handoffPhase"
         ? ["context", "native", "ownership", "targets", "complete"]
         : key === "handoffOutcome"
           ? ["pending", "matched", "not-matched", "canceled", "failed"]
@@ -250,14 +288,22 @@ function validate(value: unknown): BrowserObservation | undefined {
                                     ? ["sandbox", "display", "dbus", "other"]
                                     : key === "inspectPhase"
                                       ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
-                                      : undefined
+                                      : undefined)
+    const maximum =
+      key === "directoryRemovalAttempt" || key === "directoryInventoryDepth"
+        ? 4
+        : directoryCounts.includes(key)
+          ? 128
+          : counts.includes(key)
+            ? 65536
+            : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)
         : bools.includes(key)
           ? typeof item !== "boolean"
-          : counts.includes(key)
-            ? !Number.isInteger(item) || Number(item) < 0 || Number(item) > 65536
+          : maximum !== undefined
+            ? !Number.isInteger(item) || Number(item) < 0 || Number(item) > maximum
             : key === "exitCode"
               ? !Number.isInteger(item) || Number(item) < 0 || Number(item) > 255
               : true

@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { BigIntStats } from "node:fs"
-import { lstat, realpath, rm } from "node:fs/promises"
-import { dirname, isAbsolute, resolve } from "node:path"
+import { lstat, readdir, realpath, rm } from "node:fs/promises"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { browserObservationError, type BrowserObservation } from "./browser-observation"
 
-type IdentityStat = Pick<BigIntStats, "dev" | "ino" | "isDirectory" | "isSymbolicLink">
+type IdentityStat = Pick<BigIntStats, "dev" | "ino" | "mode" | "isFile" | "isDirectory" | "isSymbolicLink">
 type DirectoryIO = {
   stat?(path: string): Promise<IdentityStat>
   canonical?(path: string): Promise<string>
   remove?(path: string, options: { recursive: true }): Promise<void>
   wait?(milliseconds: number): Promise<void>
+  entries?(path: string): Promise<string[]>
+  inventoryTimeoutMs?: number
 }
 export type OwnedBrowserDirectory = Readonly<{ root: string; dev: bigint; ino: bigint }>
 
@@ -19,14 +22,187 @@ const captured = new WeakMap<
 const delays = [0, 100, 200, 400] as const
 const retryable = ["EACCES", "EPERM", "EBUSY", "ENOTEMPTY"]
 const code = (error: unknown) => (error as NodeJS.ErrnoException | undefined)?.code
-const failure = (error?: unknown) => {
+const failure = (error?: unknown, observation?: BrowserObservation) => {
   const value = code(error)
-  return Object.assign(Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED"), {
-    ...(value && [...retryable, "ENOENT", "ENOTDIR", "EIO"].includes(value) ? { code: value } : {}),
-  })
+  return Object.assign(
+    browserObservationError(
+      "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED",
+      undefined,
+      observation ?? { browserPhase: "cleanup-profile" },
+    ),
+    {
+      ...(value && [...retryable, "ENOENT", "ENOTDIR", "EIO"].includes(value) ? { code: value } : {}),
+    },
+  )
 }
 const stat = (path: string) => lstat(path, { bigint: true })
 const wait = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds))
+
+function errorMetadata(error: unknown, root: string, parent: string): BrowserObservation {
+  try {
+    const value = error as NodeJS.ErrnoException | undefined
+    const syscall = value?.syscall
+    const path = value?.path
+    let relation: BrowserObservation["directoryErrorPath"] = "absent"
+    if (typeof path === "string") {
+      relation = "other"
+      if (isAbsolute(path) && !path.includes("\0")) {
+        const normalized = resolve(path)
+        const child = relative(root, normalized)
+        relation =
+          normalized === root
+            ? "root"
+            : normalized === parent
+              ? "parent"
+              : child &&
+                  !isAbsolute(child) &&
+                  child !== ".." &&
+                  !child.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`)
+                ? "descendant"
+                : "other"
+      }
+    }
+    return {
+      directorySyscall:
+        syscall === undefined
+          ? "absent"
+          : ["rm", "lstat", "realpath", "readdir"].includes(syscall)
+            ? (syscall as "rm" | "lstat" | "realpath" | "readdir")
+            : "other",
+      directoryErrorPath: relation,
+    }
+  } catch {
+    return { directorySyscall: "other", directoryErrorPath: "other" }
+  }
+}
+
+/** Failure-only metadata, never profile bytes or deletion authority. Counts of
+ * links and mode bits mean exactly what lstat reported; they do not establish
+ * Windows readonly attributes, ACLs, retained handles or the denial's cause. */
+async function remainingMetadata(identity: OwnedBrowserDirectory, io: DirectoryIO): Promise<BrowserObservation> {
+  const owner = captured.get(identity)!
+  const timeout = io.inventoryTimeoutMs ?? 1000
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 1000) return { directoryInventory: "bounded" }
+  let active = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = Date.now() + timeout
+  const bounded = Symbol("bounded")
+  const unconfirmed = Symbol("identity")
+  const call = async <T>(operation: () => Promise<T>): Promise<T> => {
+    if (!active || Date.now() >= deadline) throw bounded
+    const value = await operation()
+    if (!active || Date.now() >= deadline) throw bounded
+    return value
+  }
+  const read = (path: string) => call(() => (io.stat ?? stat)(path))
+  const canonical = (path: string) => call(() => (io.canonical ?? realpath)(path))
+  type Anchor = { path: string; dev: bigint; ino: bigint }
+  const anchors: Anchor[] = [
+    { path: owner.parent, dev: owner.parentDev, ino: owner.parentIno },
+    { path: identity.root, dev: identity.dev, ino: identity.ino },
+  ]
+  const guard = async (chain: Anchor[]) => {
+    for (const expected of chain) {
+      const current = await read(expected.path)
+      if (
+        !directory(current) ||
+        current.dev !== expected.dev ||
+        current.ino !== expected.ino ||
+        (await canonical(expected.path)) !== expected.path
+      )
+        throw unconfirmed
+    }
+  }
+  const scan = async (): Promise<BrowserObservation> => {
+    const counts = {
+      directoryEntries: 0,
+      directoryDirectories: 0,
+      directoryFiles: 0,
+      directoryLinks: 0,
+      directoryNonWritableMode: 0,
+      directoryReadFailures: 0,
+      directoryInventoryDepth: 0,
+    }
+    let limited = false
+    const pending = [{ chain: anchors, depth: 0 }]
+    try {
+      await guard(anchors)
+      while (pending.length) {
+        const { chain, depth } = pending.shift()!
+        await guard(chain)
+        let names: string[]
+        try {
+          names = await call(() => (io.entries ?? readdir)(chain.at(-1)!.path))
+        } catch (error) {
+          if (error === bounded) throw error
+          counts.directoryReadFailures = Math.min(128, counts.directoryReadFailures + 1)
+          await guard(chain)
+          continue
+        }
+        await guard(chain)
+        for (const name of names) {
+          if (counts.directoryEntries >= 128) {
+            limited = true
+            break
+          }
+          if (!name || name === "." || name === ".." || /[\\/\0]/.test(name)) throw unconfirmed
+          const path = join(chain.at(-1)!.path, name)
+          counts.directoryEntries++
+          counts.directoryInventoryDepth = Math.max(counts.directoryInventoryDepth, depth + 1)
+          let entry: IdentityStat
+          try {
+            entry = await read(path)
+          } catch (error) {
+            if (error === bounded) throw error
+            counts.directoryReadFailures = Math.min(128, counts.directoryReadFailures + 1)
+            continue
+          }
+          if (entry.isSymbolicLink()) {
+            counts.directoryLinks++
+            continue
+          }
+          if (entry.isFile()) {
+            counts.directoryFiles++
+            if (typeof entry.mode === "bigint" && (entry.mode & 0o222n) === 0n) counts.directoryNonWritableMode++
+          } else if (entry.isDirectory()) {
+            counts.directoryDirectories++
+            if (!directory(entry)) throw unconfirmed
+            if (depth + 1 >= 4) limited = true
+            else pending.push({ chain: [...chain, { path, dev: entry.dev, ino: entry.ino }], depth: depth + 1 })
+          }
+        }
+        await guard(chain)
+        if (counts.directoryEntries >= 128) {
+          limited ||= pending.length > 0
+          break
+        }
+      }
+      await guard(anchors)
+      return {
+        ...counts,
+        directoryInventory: limited ? "bounded" : counts.directoryReadFailures ? "read-failed" : "complete",
+      }
+    } catch (error) {
+      // Discard counts if final identity cannot be verified. A timeout can end
+      // the diagnostic; a late read cannot schedule more filesystem work.
+      return { directoryInventory: error === bounded ? "bounded" : "identity-unconfirmed" }
+    }
+  }
+  try {
+    return await Promise.race([
+      scan(),
+      new Promise<BrowserObservation>((resolve) => {
+        timer = setTimeout(() => {
+          active = false
+          resolve({ directoryInventory: "bounded" })
+        }, timeout)
+      }),
+    ])
+  } finally {
+    active = false
+    clearTimeout(timer)
+  }
+}
 
 function directory(value: IdentityStat) {
   // Bun 1.3.14's Windows lstat uses libuv, preserving its 64-bit device/file ID
@@ -78,10 +254,15 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
   return (owner.removal ??= remove())
 
   async function remove() {
+    let phase: BrowserObservation["directoryFailurePhase"] = "parent-canonical"
+    let removalAttempt = 0
     const read = async () => {
+      phase = "parent-canonical"
       if ((await (io.canonical ?? realpath)(owner!.parent)) !== owner!.parent) throw failure()
+      phase = "parent-identity"
       const parent = await (io.stat ?? stat)(owner!.parent)
       if (!directory(parent) || parent.dev !== owner!.parentDev || parent.ino !== owner!.parentIno) throw failure()
+      phase = "root-identity"
       const current = await (io.stat ?? stat)(identity.root).catch((error: unknown) => {
         if (code(error) === "ENOENT") return undefined
         throw error
@@ -92,24 +273,41 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
     }
     try {
       for (const [attempt, delay] of delays.entries()) {
+        removalAttempt = attempt + 1
         if (delay) await (io.wait ?? wait)(delay)
         if (!(await read())) return
         try {
           // No force, chmod, ACL alteration, symlink following or implicit
           // runtime retries. Each further attempt rechecks the captured root.
+          phase = "remove"
           await (io.remove ?? rm)(identity.root, { recursive: true })
         } catch (error) {
           if (![...retryable, "ENOENT"].includes(code(error) || "")) throw error
           if (!(await read())) return
-          if (!retryable.includes(code(error) || "") || attempt === delays.length - 1) throw error
+          if (!retryable.includes(code(error) || "") || attempt === delays.length - 1) {
+            phase = "remove"
+            throw error
+          }
           continue
         }
-        if (await read()) throw failure()
+        if (await read()) {
+          phase = "absence-check"
+          throw failure()
+        }
         return
       }
       throw failure()
     } catch (error) {
-      throw failure(error)
+      const observation: BrowserObservation = {
+        browserPhase: "cleanup-profile",
+        directoryFailurePhase: phase,
+        directoryRemovalAttempt: removalAttempt,
+        ...errorMetadata(error, identity.root, owner!.parent),
+      }
+      const metadata = await remainingMetadata(identity, io).catch(() => ({
+        directoryInventory: "read-failed" as const,
+      }))
+      throw failure(error, { ...observation, ...metadata })
     }
   }
 }

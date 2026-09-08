@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, expect, test } from "bun:test"
-import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { captureOwnedBrowserDirectory, removeOwnedBrowserDirectory } from "./owned-browser-directory"
+import { readBrowserObservation } from "./browser-observation"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -227,4 +228,179 @@ test("zero device IDs are supported and 64-bit file identities are never rounded
     }),
   ).rejects.toThrow("CLEANUP_UNCONFIRMED")
   expect(deletes).toBe(0)
+})
+
+test("failed removal exposes bounded metadata and exact phase without following links or exposing names", async () => {
+  const f = await fixture()
+  const nested = join(f.root, "PRIVATE-DIRECTORY")
+  const file = join(nested, "PRIVATE-FILENAME")
+  await mkdir(nested)
+  await writeFile(file, "PRIVATE-CONTENTS")
+  await symlink(f.parent, join(f.root, "PRIVATE-LINK"), "junction")
+  const enumerated: string[] = []
+  let attempts = 0
+  const error = await removeOwnedBrowserDirectory(f.identity, {
+    remove: async () => {
+      attempts++
+      throw Object.assign(denied(), { syscall: "rm", path: file })
+    },
+    wait: async () => {},
+    entries: async (path) => {
+      enumerated.push(path)
+      return readdir(path)
+    },
+    stat: async (path) => {
+      const value = await lstat(path, { bigint: true })
+      // Inert metadata seam: no native attribute or permission mutation.
+      return path === file ? Object.assign(value, { mode: value.mode & ~0o222n }) : value
+    },
+  }).catch((error: unknown) => error)
+  const observation = readBrowserObservation(error)
+  expect(error).toMatchObject({ code: "EACCES" })
+  expect(attempts).toBe(4)
+  expect(observation).toMatchObject({
+    directoryFailurePhase: "remove",
+    directoryRemovalAttempt: 4,
+    directorySyscall: "rm",
+    directoryErrorPath: "descendant",
+    directoryInventory: "complete",
+    directoryEntries: 4,
+    directoryDirectories: 1,
+    directoryFiles: 2,
+    directoryLinks: 1,
+    directoryNonWritableMode: 1,
+    directoryReadFailures: 0,
+    directoryInventoryDepth: 2,
+  })
+  expect(enumerated).toEqual([f.root, nested])
+  expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+  expect(String(error)).not.toContain(f.parent)
+  expect(await readFile(file, "utf8")).toBe("PRIVATE-CONTENTS")
+})
+
+test("guard and post-removal failures retain distinct stages and diagnostics never mask original errors", async () => {
+  for (const phase of ["parent-canonical", "parent-identity", "root-identity", "absence-check"] as const) {
+    const f = await fixture()
+    let removals = 0
+    const error = await removeOwnedBrowserDirectory(f.identity, {
+      canonical: async (path) => {
+        if (phase === "parent-canonical") throw Object.assign(denied(), { syscall: "realpath", path })
+        return realpath(path)
+      },
+      stat: async (path) => {
+        if ((phase === "parent-identity" && path === f.parent) || (phase === "root-identity" && path === f.root))
+          throw Object.assign(denied(), { syscall: "lstat", path })
+        return lstat(path, { bigint: true })
+      },
+      remove: async () => {
+        removals++
+      },
+    }).catch((error: unknown) => error)
+    expect(readBrowserObservation(error)?.directoryFailurePhase).toBe(phase)
+    expect(removals).toBe(phase === "absence-check" ? 1 : 0)
+    if (phase !== "absence-check") {
+      expect(error).toMatchObject({ code: "EACCES" })
+      expect(readBrowserObservation(error)?.directoryInventory).toBe("identity-unconfirmed")
+    }
+  }
+  const f = await fixture()
+  const error = await removeOwnedBrowserDirectory(f.identity, {
+    remove: async () => {
+      throw Object.defineProperty(denied(), "path", {
+        get() {
+          throw Error("PRIVATE-GETTER")
+        },
+      })
+    },
+    wait: async () => {},
+    entries: async () => {
+      throw Error("PRIVATE-READ-ERROR")
+    },
+  }).catch((error: unknown) => error)
+  expect(error).toMatchObject({ code: "EACCES" })
+  expect(readBrowserObservation(error)).toMatchObject({
+    directoryFailurePhase: "remove",
+    directoryInventory: "read-failed",
+    directoryReadFailures: 1,
+  })
+  expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+})
+
+test("metadata inspection discards counts on replacement and bounds entries, depth and stalled reads", async () => {
+  const f = await fixture()
+  let childReads = 0
+  const error = await removeOwnedBrowserDirectory(f.identity, {
+    remove: async () => {
+      throw denied()
+    },
+    wait: async () => {},
+    entries: async () => {
+      await rename(f.root, join(f.parent, "retained-original"))
+      await mkdir(f.root)
+      return ["PRIVATE-FOREIGN"]
+    },
+    stat: async (path) => {
+      if (path.endsWith("PRIVATE-FOREIGN")) childReads++
+      return lstat(path, { bigint: true })
+    },
+  }).catch((error: unknown) => error)
+  expect(error).toMatchObject({ code: "EACCES" })
+  expect(readBrowserObservation(error)).toMatchObject({ directoryInventory: "identity-unconfirmed" })
+  expect(readBrowserObservation(error)?.directoryEntries).toBeUndefined()
+  expect(childReads).toBe(0)
+
+  const many = await fixture()
+  const leaf = await lstat(join(many.root, "private-state"), { bigint: true })
+  const full = await removeOwnedBrowserDirectory(many.identity, {
+    remove: async () => {
+      throw denied()
+    },
+    wait: async () => {},
+    entries: async () => Array.from({ length: 129 }, (_, i) => `PRIVATE-${i}`),
+    stat: async (path) => (path === many.root || path === many.parent ? lstat(path, { bigint: true }) : leaf),
+  }).catch((error: unknown) => error)
+  expect(readBrowserObservation(full)).toMatchObject({
+    directoryInventory: "bounded",
+    directoryEntries: 128,
+    directoryFiles: 128,
+  })
+
+  const deep = await fixture()
+  await mkdir(join(deep.root, "a/b/c/d/e"), { recursive: true })
+  const depth = await removeOwnedBrowserDirectory(deep.identity, {
+    remove: async () => {
+      throw denied()
+    },
+    wait: async () => {},
+  }).catch((error: unknown) => error)
+  expect(readBrowserObservation(depth)).toMatchObject({ directoryInventory: "bounded", directoryInventoryDepth: 4 })
+
+  const stalled = await fixture()
+  const stats = new Map(
+    await Promise.all([stalled.root, stalled.parent].map(async (p) => [p, await lstat(p, { bigint: true })] as const)),
+  )
+  let release!: (names: string[]) => void
+  let reads = 0
+  const result = await removeOwnedBrowserDirectory(stalled.identity, {
+    remove: async () => {
+      throw denied()
+    },
+    wait: async () => {},
+    inventoryTimeoutMs: 20,
+    canonical: async (path) => path,
+    stat: async (path) => {
+      reads++
+      return stats.get(path)!
+    },
+    entries: async () =>
+      new Promise<string[]>((resolve) => {
+        release = resolve
+      }),
+  }).catch((error: unknown) => error)
+  expect(result).toMatchObject({ code: "EACCES" })
+  expect(readBrowserObservation(result)).toMatchObject({ directoryInventory: "bounded" })
+  const completedReads = reads
+  release(["PRIVATE-LATE-ENTRY"])
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(reads).toBe(completedReads)
 })

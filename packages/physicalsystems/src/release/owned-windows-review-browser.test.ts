@@ -463,6 +463,98 @@ test("Windows ownership rejects unrelated, recycled and malformed process/policy
     expect(() => windowsReviewNative({}, "/tmp")).toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
 })
 
+test("unknown-reason counts partition rejected identities without changing any ownership rule", () => {
+  const main = processRecord("C:\\PRIVATE-PROFILE")
+  const parent = { ...main, pid: 4101, parent: main.pid, birth: "134000000000000010", args: [executable] }
+  const other = { ...main, pid: 9000, parent: 42, birth: "134000000000000020" }
+  const cases = [
+    { ...other, executable: "C:\\PRIVATE-EXECUTABLE.exe", sid: "S-1-PRIVATE" },
+    { ...other, pid: 9001, sid: "S-1-PRIVATE" },
+    { ...other, pid: 9002, session: 999 },
+    { ...other, pid: 9003, birth: "134000000000000000" },
+    { ...other, pid: 9004, parent: parent.pid, birth: "134000000000000009", args: [executable] },
+    { ...other, pid: 9005, args: [executable, "PRIVATE-URL-ARGUMENT"] },
+  ]
+  const input = {
+    processes: [main, parent, ...cases],
+    known: new Map([[main.pid, main]]),
+    root: main,
+    executable,
+    profile: "C:\\PRIVATE-PROFILE",
+    sid: main.sid,
+  }
+  const result = windowsReviewOwnership(input)
+  expect([...result.owned.keys()]).toEqual([main.pid, parent.pid])
+  expect(result.unknown).toEqual(cases)
+  expect(result.rejected).toEqual({ executable: 1, sid: 1, session: 1, birth: 2, profileOrAncestry: 1 })
+  expect(Object.values(result.rejected).reduce((total, value) => total + value, 0)).toBe(result.unknown.length)
+  for (const item of cases) {
+    const single = windowsReviewOwnership({ ...input, processes: [main, parent, item] })
+    expect(single.unknown).toEqual([item])
+    expect(Object.values(single.rejected).reduce((total, value) => total + value, 0)).toBe(1)
+  }
+  expect(JSON.stringify(result.rejected)).not.toMatch(/PRIVATE|900[0-5]|410[01]/)
+})
+
+test("handoff freezes unknown-reason counts before cleanup and never queries CDP while an unknown remains", async () => {
+  const f = await fixture()
+  const native = f.io.native
+  f.io.native = async (request) => {
+    if (request.operation === "restore") {
+      expect(request.observedPids).toEqual([4100, 4101, 4102])
+      expect(f.state.running).toBe(false)
+      f.state.restored = true
+      return { restored: true }
+    }
+    const result = await native(request)
+    if (request.operation !== "observe" || !f.state.handoff) return result
+    const value = result as { processes: WindowsReviewProcess[] }
+    return {
+      ...value,
+      processes: [
+        ...value.processes,
+        {
+          ...processRecord(f.state.profile),
+          pid: 4102,
+          parent: 4101,
+          birth: "134000000000000003",
+          executable: "C:\\PRIVATE-HELPER.exe",
+          args: ["C:\\PRIVATE-HELPER.exe", "PRIVATE-ARGUMENT"],
+        },
+      ],
+    }
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const before = f.state.targetQueries
+    f.state.handoff = true
+    expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(false)
+    expect(f.state.targetQueries).toBe(before)
+    const handoff = browser.observation!()
+    expect(handoff).toMatchObject({
+      handoffPhase: "ownership",
+      handoffUnknownProcesses: 1,
+      handoffUnknownExecutableProcesses: 1,
+      handoffUnknownSidProcesses: 0,
+      handoffUnknownSessionProcesses: 0,
+      handoffUnknownBirthProcesses: 0,
+      handoffUnknownProfileOrAncestryProcesses: 0,
+    })
+    f.state.handoff = false
+    await browser.stop()
+    const final = readBrowserObservation({ browserObservation: browser.observation!() })
+    expect(final).toMatchObject({
+      observedProcesses: 0,
+      unknownProcesses: 0,
+      handoffUnknownProcesses: 1,
+      handoffUnknownExecutableProcesses: 1,
+    })
+    expect(JSON.stringify(final)).not.toMatch(/PRIVATE|410[012]/)
+  } finally {
+    await f.cleanup()
+  }
+})
+
 test("loopback review checks the actual HTTP association and permits only its exact owned URL", async () => {
   const f = await fixture()
   const probeURL = "http://127.0.0.1:23456/physicalsystems-browser-review/" + "c".repeat(64)

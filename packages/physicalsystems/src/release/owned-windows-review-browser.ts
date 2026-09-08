@@ -195,7 +195,20 @@ export function windowsReviewOwnership(input: {
       changed = true
     }
   }
-  return { owned, unknown: input.processes.filter((item) => !owned.has(item.pid)) }
+  const unknown = input.processes.filter((item) => !owned.has(item.pid))
+  const rejected = { executable: 0, sid: 0, session: 0, birth: 0, profileOrAncestry: 0 }
+  // Diagnose the unchanged ownership result. Partition reasons in this fixed
+  // order; one process can violate several rules but contributes only once.
+  for (const item of unknown) {
+    const parent = owned.get(item.parent)
+    if (!pathEqual(item.executable, input.executable)) rejected.executable++
+    else if (item.sid !== input.sid) rejected.sid++
+    else if (item.session !== input.root.session) rejected.session++
+    else if (BigInt(item.birth) < BigInt(input.root.birth) || (parent && BigInt(item.birth) < BigInt(parent.birth)))
+      rejected.birth++
+    else rejected.profileOrAncestry++
+  }
+  return { owned, unknown, rejected }
 }
 
 /** These four Registry64 observations are not a claim about effective policy. */
@@ -391,6 +404,7 @@ async function acquireWindowsReviewBrowser(
         policyOwned: value.policyOwned,
         unknown: processes,
         owned: new Map<number, WindowsReviewProcess>(),
+        rejected: undefined,
       }
     observation.windowsObservePhase = "ownership"
     const ownership = windowsReviewOwnership({
@@ -620,6 +634,13 @@ async function acquireWindowsReviewBrowser(
             observation.handoffListeners = Math.min(current.listening.length, 65536)
             observation.handoffListenerOwned = current.listening.length === 1 && current.listening[0] === main.pid
             observation.handoffUnknownProcesses = Math.min(current.unknown.length, 65536)
+            if (current.rejected) {
+              observation.handoffUnknownExecutableProcesses = Math.min(current.rejected.executable, 65536)
+              observation.handoffUnknownSidProcesses = Math.min(current.rejected.sid, 65536)
+              observation.handoffUnknownSessionProcesses = Math.min(current.rejected.session, 65536)
+              observation.handoffUnknownBirthProcesses = Math.min(current.rejected.birth, 65536)
+              observation.handoffUnknownProfileOrAncestryProcesses = Math.min(current.rejected.profileOrAncestry, 65536)
+            }
             // A canceled native read may complete, but must not schedule CDP or
             // another native read while the caller is waiting for quiescence.
             if (canceled()) return false
