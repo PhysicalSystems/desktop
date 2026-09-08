@@ -25,6 +25,7 @@ import { probePackagedRenderer } from "../src/release/cdp-discovery.ts"
 import { allocateLinuxQualificationTemporary } from "../src/release/linux-temporary.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
+import { legacyApprovalReady } from "../src/release/approval-readiness.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
 import { isDiagnosticsPublicKey, sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { windowsAppShutdownNative } from "../src/release/windows-app-shutdown-native.ts"
@@ -968,6 +969,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
   let linuxShutdown
   let closeRequest = "not-requested"
   let closeRequestedAt
+  let expectedSynthetic
   let attached
   let v2Request
   let credentialReadiness
@@ -1333,6 +1335,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     const proposed = await evaluate("window.api.physicalSystems.snapshot().then(s => s.experiments?.current)")
     if (proposed?.phase !== "PROPOSED" || proposed.trials.length !== 0)
       throw new Error("PACKAGED_APPROVAL_GATE_BYPASSED")
+    expectedSynthetic = { id: proposed.id, planDigest: proposed.planDigest }
     check(
       stage,
       "PASS",
@@ -1340,10 +1343,18 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     )
     await attach()
     stage = "inline-approval"
-    await until(
-      () => evaluate('document.querySelector(".ps-experiment input[type=checkbox]")?.disabled === false'),
-      "PACKAGED_APPROVAL_NOT_READY",
-    )
+    await until(async () => {
+      // The composer uses the legacy compatibility route. Its projected
+      // checkbox can precede the proposal turn's authoritative idle state.
+      return legacyApprovalReady(await api("/session/status"), attached.sessionId, () =>
+        evaluate(`window.api.physicalSystems.snapshot().then(s => {
+          const current = s.experiments?.current;
+          return current?.id === ${JSON.stringify(proposed.id)} &&
+            current?.planDigest === ${JSON.stringify(proposed.planDigest)} && current?.phase === "PROPOSED" &&
+            document.querySelector(".ps-experiment input[type=checkbox]")?.disabled === false;
+        })`),
+      )
+    }, "PACKAGED_APPROVAL_NOT_READY")
     await click('.ps-experiment input[type="checkbox"]')
     await click("[data-ps-approve]")
     const completed = await until(
@@ -1459,22 +1470,41 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         }),
       )
     }
-    if (stage === "synthetic-chat") {
-      const observed = evaluate
-        ? await evaluate(`window.api.physicalSystems.snapshot().then(s => ({
+    if (stage === "synthetic-chat" || stage === "inline-approval") {
+      try {
+        const observed = evaluate
+          ? await evaluate(`window.api.physicalSystems.snapshot().then(s => {
+        const expected = ${JSON.stringify(expectedSynthetic ?? null)};
+        const current = s.experiments?.current;
+        const trials = Array.isArray(current?.trials) ? current.trials : [];
+        return {
         observed: true, projectSelected: Boolean(s.activeProjectId), conversationBound: Boolean(s.conversation?.sessionId),
         hostUnavailable: Boolean(s.hostUnavailable), experimentError: Boolean(s.experiments?.error),
-        phase: s.experiments?.current?.phase,
+        phase: current?.phase,
+        sameExperiment: Boolean(expected && current?.id === expected.id),
+        samePlan: Boolean(expected && current?.planDigest === expected.planDigest),
+        trialCount: trials.length,
+        completedTrials: trials.filter(t => t.status === "COMPLETED").length,
+        failedTrials: trials.filter(t => t.status === "FAILED").length,
+        continuationState: s.experiments?.continuation?.status,
+        conversationBusy: s.conversation?.busy === true,
         approvalVisible: Boolean(document.querySelector("[data-ps-approve]")),
+        approvalDisabled: document.querySelector("[data-ps-approve]")?.disabled === true,
+        continuationVisible: Boolean(document.querySelector("[data-ps-continue]")),
+        continuationDisabled: document.querySelector("[data-ps-continue]")?.disabled === true,
         userMessages: document.querySelectorAll("[data-component=user-message]").length,
         alerts: document.querySelectorAll("[role=alert]").length,
-      }))`).catch(() => undefined)
-        : undefined
-      check(
-        "synthetic-observation",
-        "NOT_TESTED",
-        fixtureCheckpointDetail({ calls: provider.calls, renderer: observed }),
-      )
+      }; })`).catch(() => undefined)
+          : undefined
+        check(
+          "synthetic-observation",
+          "NOT_TESTED",
+          fixtureCheckpointDetail({ calls: provider.calls, renderer: observed }),
+        )
+      } catch {
+        // Capture the failed journey before cleanup stops its experiment;
+        // optional observations cannot replace the original failure.
+      }
     }
     throw error
   } finally {
