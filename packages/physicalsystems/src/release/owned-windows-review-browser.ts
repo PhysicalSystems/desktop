@@ -56,6 +56,8 @@ export async function observeWindowsReviewDirectoryDenial(
     Object.assign(observation, {
       directoryProbeBoundary: result.boundary,
       directoryProbeTransportOutcome: result.transportOutcome,
+      directoryProbeIdentityReason: result.observation.identityReason,
+      directoryProbeIdentityScope: result.observation.identityScope,
       directoryProbeStatus: result.observation.status,
       directoryProbePhase: result.observation.phase,
       directoryProbeKind: result.observation.kind,

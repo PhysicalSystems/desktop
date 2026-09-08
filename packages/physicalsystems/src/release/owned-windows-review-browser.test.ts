@@ -60,13 +60,15 @@ test("Windows failure diagnostic isolates its controller and only cleans it afte
             quiescence: mode,
             boundary: "complete" as const,
             observation: {
-              status: "NOT_LOCALIZED",
-              phase: "none",
-              kind: "root",
-              nativeStatus: "success",
-              ordinal: 0,
-              depth: 0,
-              entriesProbed: 0,
+              status: "IDENTITY_UNCONFIRMED",
+              phase: "metadata",
+              kind: "file",
+              nativeStatus: "other",
+              identityReason: "file-id-mismatch",
+              identityScope: "entry",
+              ordinal: 2,
+              depth: 2,
+              entriesProbed: 2,
               rootReadonlyAttribute: false,
               readonlyAttribute: false,
               readonlyDirectories: 0,
@@ -77,6 +79,15 @@ test("Windows failure diagnostic isolates its controller and only cleans it afte
       )
       expect(observation.directoryProbeQuiescence).toBe(mode === "confirmed" ? "confirmed" : "unconfirmed")
       expect(observation.directoryProbeControllerCleanup).toBe(mode === "confirmed" ? "removed" : "retained")
+      if (mode !== "throw")
+        expect(observation).toMatchObject({
+          directoryProbeStatus: "IDENTITY_UNCONFIRMED",
+          directoryProbeIdentityReason: "file-id-mismatch",
+          directoryProbeIdentityScope: "entry",
+          directoryProbeKind: "file",
+          directoryProbeOrdinal: 2,
+          directoryProbeDepth: 2,
+        })
       if (mode === "confirmed") await expect(lstat(controller)).rejects.toMatchObject({ code: "ENOENT" })
       else expect(await readFile(join(controller, "inert-module-cache"), "utf8")).toBe("INERT CONTROLLER")
       expect(await readFile(join(root, "private-state"), "utf8")).toBe("INERT BROWSER STATE")

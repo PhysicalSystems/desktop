@@ -27,11 +27,28 @@ test("directory access diagnostics preserve fixed fields and reject paths, arbit
     directoryProbeReadonlyFiles: 0,
   } as const
   expect(readBrowserObservation({ browserObservation: fields })).toEqual(fields)
+  const identity = {
+    ...fields,
+    directoryProbeStatus: "IDENTITY_UNCONFIRMED",
+    directoryProbePhase: "metadata",
+    directoryProbeKind: "file",
+    directoryProbeNativeStatus: "other",
+    directoryProbeIdentityReason: "file-id-mismatch",
+    directoryProbeIdentityScope: "entry",
+    directoryProbeOrdinal: 2,
+    directoryProbeDepth: 2,
+    directoryProbeEntries: 2,
+    directoryProbeReadonlyAttribute: false,
+    directoryProbeRootReadonlyAttribute: false,
+  } as const
+  expect(readBrowserObservation({ browserObservation: identity })).toEqual(identity)
   for (const change of [
     { directoryProbePath: "PRIVATE PATH" },
     { directoryProbeNativeStatus: "PRIVATE ERROR" },
     { directoryProbeBoundary: "PRIVATE ERROR" },
     { directoryProbeTransportOutcome: "PRIVATE ERROR" },
+    { directoryProbeIdentityReason: "PRIVATE ERROR" },
+    { directoryProbeIdentityScope: "PRIVATE PATH" },
     { directoryProbeStatus: "PASS" },
     { directoryProbeDepth: 9 },
     { directoryProbeOrdinal: 129 },

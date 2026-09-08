@@ -62,6 +62,47 @@ test("directory observation exposes only exact fixed metadata and rejects coerci
   expect(windowsDirectoryObservation({ ...observed, status: "NOT_LOCALIZED" }).status).toBe("NOT_LOCALIZED")
 })
 
+test("identity diagnostics preserve only fixed failing context and clear stale access and readonly claims", () => {
+  const identity = {
+    ...observed,
+    status: "IDENTITY_UNCONFIRMED",
+    phase: "metadata",
+    kind: "file",
+    nativeStatus: "other",
+    ordinal: 2,
+    depth: 2,
+    entriesProbed: 2,
+    rootReadonlyAttribute: false,
+    readonlyAttribute: false,
+    identityReason: "file-id-mismatch",
+    identityScope: "entry",
+  } as const
+  expect(windowsDirectoryObservation(identity)).toEqual(identity)
+  for (const patch of [
+    { identityReason: "PRIVATE" },
+    { identityScope: "PRIVATE" },
+    { identityReason: { toString: () => "reparse" } },
+    { identityReason: null },
+    { identityScope: null },
+    { nativeStatus: "access-denied" },
+    { readonlyAttribute: true },
+    { rootReadonlyAttribute: true },
+    { readonlyDirectories: 1 },
+    { readonlyFiles: 1 },
+    { status: "NOT_LOCALIZED" },
+  ]) {
+    const value = windowsDirectoryObservation({ ...identity, ...patch })
+    expect(value.status).toBe("UNREADABLE")
+    expect(JSON.stringify(value)).not.toContain("PRIVATE")
+  }
+  expect(windowsDirectoryObservation({ ...observed, identityReason: null, identityScope: null })).toEqual(observed)
+  for (const key of ["toString", "constructor", "__proto__"]) {
+    const extra = JSON.parse(JSON.stringify(identity).replace(/}$/, `,"${key}":"PRIVATE"}`))
+    expect(windowsDirectoryObservation(extra).status).toBe("UNREADABLE")
+    expect(JSON.stringify(windowsDirectoryObservation(extra))).not.toContain("PRIVATE")
+  }
+})
+
 function fixture() {
   const calls: {
     child: ChildProcess
@@ -212,31 +253,37 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
       if(mode=="vanished")return 0xc0000034;
     }
     if(metadata&&node==1&&++parentOpens>1&&mode=="parent-replaced")node=999;
-    if(metadata&&node==2&&++rootOpens>1&&mode=="changed-after-denial")node=999;
+    if(metadata&&node==2&&++rootOpens>1){
+      if(mode=="namespace-open")return 0xc0000022;
+      if(mode=="changed-after-denial"||mode=="ancestor-supersedes")node=999;
+    }
     if(metadata&&node==4&&++entryOpens>1&&mode=="entry-replaced")node=9999;
     handle=new System.IntPtr(++next);handles.Add(handle,node);opened++;return 0;
   }
   int rootReads=0;
   public override DirectoryDenialProbe.Info Metadata(System.IntPtr handle){
     operations++;int node=handles[handle];
-    if(node==4&&mode=="metadata-error")throw new System.Exception();
+    if((node==4&&mode=="metadata-error")||(node==2&&mode=="namespace-read"&&rootOpens>1))throw new System.Exception();
     if(node==2)rootReads++;
     bool dir=node==1||node==2||node==3||(node>=100&&node<1000);
     uint attributes=dir?0x10u:0u;
     if(mode=="readonly"&&node!=1)attributes|=1;
     if(mode=="root-reparse"&&node==2)attributes|=0x400;
+    if(mode=="kind-mismatch"&&node==3)attributes=0;
     ulong id=(ulong)node;
     if(node==2&&mode=="identity")id=999;
-    return new DirectoryDenialProbe.Info{dev=5,ino=id,attributes=attributes};
+    if(node==2&&mode=="zero-file-id")id=0;
+    return new DirectoryDenialProbe.Info{dev=mode=="volume-mismatch"?6u:5u,ino=id,attributes=attributes};
   }
   public override System.Collections.Generic.IEnumerable<DirectoryDenialProbe.Entry> Entries(System.IntPtr handle){
     enumerated++;int node=handles[handle];
-    if(mode=="entry-bound"&&node==2){
+    if(mode=="invalid-entry"&&node==2){yield return null;}
+    else if(mode=="entry-bound"&&node==2){
       for(int i=0;i<129;i++)yield return new DirectoryDenialProbe.Entry{name="f"+i,attributes=0};
     }else if(mode=="depth-bound"){
       yield return new DirectoryDenialProbe.Entry{name="nest",attributes=0x10};
     }else if(node==2){
-      yield return new DirectoryDenialProbe.Entry{name="directory",attributes=mode=="entry-reparse"?0x410u:0x10u};
+      yield return new DirectoryDenialProbe.Entry{name="directory",attributes=mode=="entry-reparse"||mode=="ancestor-supersedes"?0x410u:0x10u};
       yield return new DirectoryDenialProbe.Entry{name="file",attributes=0};
     }else if(node==3){
       yield return new DirectoryDenialProbe.Entry{name="payload",attributes=0};
@@ -250,6 +297,7 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
     var io=new InertDirectoryOps(mode);
     var value=DirectoryDenialProbe.Run(io,@"C:\owned","browser",5,1,5,2);
     if(io.opened!=io.closed||io.handles.Count!=0)throw new System.Exception();
+    if(value.status=="IDENTITY_UNCONFIRMED"&&(value.nativeStatus!="other"||value.rootReadonlyAttribute||value.readonlyAttribute||value.readonlyDirectories!=0||value.readonlyFiles!=0))throw new System.Exception();
     switch(mode){
       case "root-denied":return value.status=="DENIAL_OBSERVED"&&value.phase=="root-file-open"&&value.ordinal==0&&io.enumerated==0;
       case "traversal-denied":return value.status=="DENIAL_OBSERVED"&&value.phase=="directory-traversal"&&io.enumerated==0;
@@ -260,10 +308,23 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
       case "entry-bound":return value.status=="BOUNDED"&&value.entriesProbed==128;
       case "depth-bound":return value.status=="BOUNDED"&&value.depth<=8;
       case "timeout":return value.status=="BOUNDED";
-      case "identity":case "root-reparse":case "entry-reparse":case "changed-after-denial":case "parent-replaced":case "entry-replaced":return value.status=="IDENTITY_UNCONFIRMED"&&value.entriesProbed==0;
+      case "identity":case "changed-after-denial":return Identity(value,"file-id-mismatch","root","root",0,0,0);
+      case "root-reparse":return Identity(value,"reparse","root","root",0,0,0);
+      case "entry-reparse":return Identity(value,"reparse","entry","directory",1,1,1);
+      case "parent-replaced":return Identity(value,"file-id-mismatch","parent","root",0,0,0);
+      case "entry-replaced":return Identity(value,"file-id-mismatch","entry","file",2,2,2);
+      case "volume-mismatch":return Identity(value,"volume-mismatch","parent","root",0,0,0);
+      case "zero-file-id":return Identity(value,"zero-file-id","root","root",0,0,0);
+      case "kind-mismatch":return Identity(value,"kind-mismatch","entry","directory",1,1,1);
+      case "namespace-open":case "namespace-read":return Identity(value,mode,"root","root",0,0,3);
+      case "ancestor-supersedes":return Identity(value,"file-id-mismatch","root","root",0,0,1);
+      case "invalid-entry":return Identity(value,"invalid-entry","root","root",0,0,0);
       case "metadata-error":case "close-error":return value.status=="UNREADABLE";
       default:return value.status=="NOT_LOCALIZED"&&value.entriesProbed==3;
     }
+  }
+  static bool Identity(DirectoryDenialProbe.Result value,string reason,string scope,string kind,int ordinal,int depth,int entries){
+    return value.status=="IDENTITY_UNCONFIRMED"&&value.phase=="metadata"&&value.kind==kind&&value.ordinal==ordinal&&value.depth==depth&&value.entriesProbed==entries&&value.identityReason==reason&&value.identityScope==scope;
   }
 }
 `
@@ -286,6 +347,13 @@ const cases = [
   "entry-replaced",
   "metadata-error",
   "close-error",
+  "volume-mismatch",
+  "zero-file-id",
+  "kind-mismatch",
+  "namespace-open",
+  "namespace-read",
+  "ancestor-supersedes",
+  "invalid-entry",
 ] as const
 
 test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "github-hosted")(
@@ -326,7 +394,7 @@ ${inertDefinition}
   }
   $wire=[DirectoryDenialProbe]::Run([InertDirectoryOps]::new('clear'),$r.parent.path,[IO.Path]::GetFileName($r.root.path),[uint64]$r.parent.dev,[uint64]$r.parent.ino,[uint64]$r.root.dev,[uint64]$r.root.ino)
   $phase='serialize'
-  [Console]::Out.Write((@{fixtureOnly=$true;cases=18;allHandlesClosed=$true;legacyAliasRejected=$legacyRejected;requestPrecisionPreserved=$true;wire=@{boundary='complete';observation=$wire}} | ConvertTo-Json -Depth 5 -Compress))
+  [Console]::Out.Write((@{fixtureOnly=$true;cases=${cases.length};allHandlesClosed=$true;legacyAliasRejected=$legacyRejected;requestPrecisionPreserved=$true;wire=@{boundary='complete';observation=$wire}} | ConvertTo-Json -Depth 5 -Compress))
 }catch{
   [Console]::Out.Write(('{"failure":"'+$phase+'"}'))
 }
@@ -383,7 +451,7 @@ ${inertDefinition}
       }
       expect(value).toMatchObject({
         fixtureOnly: true,
-        cases: 18,
+        cases: cases.length,
         allHandlesClosed: true,
         legacyAliasRejected: true,
         requestPrecisionPreserved: true,

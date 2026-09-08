@@ -15,6 +15,18 @@ export type WindowsDirectoryRequest = { root: WindowsDirectoryAnchor; parent: Wi
 const statuses = ["DENIAL_OBSERVED", "NOT_LOCALIZED", "BOUNDED", "UNREADABLE", "IDENTITY_UNCONFIRMED"] as const
 const phases = ["root-file-open", "directory-traversal", "delete-open", "metadata", "none"] as const
 const kinds = ["root", "directory", "file"] as const
+const identityReasons = [
+  "metadata-unavailable",
+  "zero-file-id",
+  "reparse",
+  "volume-mismatch",
+  "file-id-mismatch",
+  "kind-mismatch",
+  "invalid-entry",
+  "namespace-open",
+  "namespace-read",
+] as const
+const identityScopes = ["parent", "root", "entry"] as const
 const nativeStatuses = [
   "success",
   "is-directory",
@@ -37,6 +49,8 @@ export type WindowsDirectoryObservation = Readonly<{
   readonlyAttribute: boolean
   readonlyDirectories: number
   readonlyFiles: number
+  identityReason?: (typeof identityReasons)[number]
+  identityScope?: (typeof identityScopes)[number]
 }>
 const unavailable = (): WindowsDirectoryObservation =>
   Object.freeze({
@@ -63,7 +77,11 @@ function decodedObservation(value: unknown): WindowsDirectoryObservation | undef
     if (!value || typeof value !== "object" || Array.isArray(value)) return
     const row = value as Record<string, unknown>
     const shape = unavailable()
-    if (Object.keys(row).length !== Object.keys(shape).length || Object.keys(row).some((key) => !(key in shape))) return
+    if (
+      Object.keys(shape).some((key) => !Object.hasOwn(row, key)) ||
+      Object.keys(row).some((key) => !Object.hasOwn(shape, key) && key !== "identityReason" && key !== "identityScope")
+    )
+      return
     for (const [key, allowed] of Object.entries({
       status: statuses,
       phase: phases,
@@ -86,7 +104,24 @@ function decodedObservation(value: unknown): WindowsDirectoryObservation | undef
       (row.readonlyDirectories as number) + (row.readonlyFiles as number) > (row.entriesProbed as number)
     )
       return
-    return Object.freeze({ ...row }) as WindowsDirectoryObservation
+    const { identityReason, identityScope, ...observation } = row
+    if (row.status === "IDENTITY_UNCONFIRMED") {
+      if (
+        typeof identityReason !== "string" ||
+        !(identityReasons as readonly string[]).includes(identityReason) ||
+        typeof identityScope !== "string" ||
+        !(identityScopes as readonly string[]).includes(identityScope) ||
+        row.nativeStatus !== "other" ||
+        row.rootReadonlyAttribute ||
+        row.readonlyAttribute ||
+        row.readonlyDirectories !== 0 ||
+        row.readonlyFiles !== 0
+      )
+        return
+      return Object.freeze({ ...observation, identityReason, identityScope }) as WindowsDirectoryObservation
+    }
+    if (identityReason != null || identityScope != null) return
+    return Object.freeze(observation) as WindowsDirectoryObservation
   } catch {
     return
   }
@@ -157,6 +192,7 @@ using System.Runtime.InteropServices;
 public static class DirectoryDenialProbe {
   public sealed class Result {
     public string status="NOT_LOCALIZED", phase="none", kind="root", nativeStatus="success";
+    public string identityReason=null,identityScope=null;
     public int ordinal=0, depth=0, entriesProbed=0, readonlyDirectories=0, readonlyFiles=0;
     public bool rootReadonlyAttribute=false, readonlyAttribute=false;
   }
@@ -169,17 +205,23 @@ public static class DirectoryDenialProbe {
     public abstract bool Close(IntPtr handle);
     public abstract long Elapsed { get; }
   }
-  sealed class Stop : Exception { public string status; public Stop(string value){status=value;} }
+  sealed class IdentityFailure {
+    readonly string reason,scope,phase,kind;readonly int ordinal,depth,entries;
+    public IdentityFailure(string why,string where,Result value){reason=why;scope=where;phase=value.phase;kind=value.kind;ordinal=value.ordinal;depth=value.depth;entries=value.entriesProbed;}
+    public Result Result(){return new Result{status="IDENTITY_UNCONFIRMED",phase=phase,kind=kind,nativeStatus="other",ordinal=ordinal,depth=depth,entriesProbed=entries,identityReason=reason,identityScope=scope};}
+  }
+  sealed class Stop : Exception { public readonly string status;public readonly IdentityFailure identity;public Stop(string value,IdentityFailure failure=null){status=value;identity=failure;} }
   sealed class Lease : IDisposable {
     readonly State state; public IntPtr handle;
     public Lease(State s,IntPtr h){state=s;handle=h;}
     public void Dispose(){if(handle==IntPtr.Zero)return;var h=handle;handle=IntPtr.Zero;try{if(!state.io.Close(h))state.closeFailed=true;}catch{state.closeFailed=true;}}
   }
   sealed class State {
-    public Ops io; public Result result=new Result(); public bool closeFailed;
+    public Ops io; public Result result=new Result(); public bool closeFailed;string scope="root";
     public State(Ops value){io=value;}
     public void Bound(){if(io.Elapsed>=3000)throw new Stop("BOUNDED");}
-    public void At(string phase,string kind,int ordinal,int depth){result.phase=phase;result.kind=kind;result.ordinal=ordinal;result.depth=depth;result.readonlyAttribute=false;}
+    public void At(string phase,string kind,int ordinal,int depth,string where=null){result.phase=phase;result.kind=kind;result.ordinal=ordinal;result.depth=depth;result.readonlyAttribute=false;scope=where??(kind=="root"?"root":"entry");}
+    public Stop Identity(string reason,string where=null){return new Stop("IDENTITY_UNCONFIRMED",new IdentityFailure(reason,where??scope,result));}
     public Lease Open(IntPtr parent,string name,uint access,uint options,uint attributes,bool expectedDirectory=false){
       Bound();IntPtr handle;uint code=io.Open(parent,name,access,options,attributes,out handle);
       result.nativeStatus=Status(code);
@@ -190,30 +232,38 @@ public static class DirectoryDenialProbe {
     }
     public Info Check(Lease lease,ulong? dev=null,ulong? ino=null,bool? directory=null){
       Bound();var info=io.Metadata(lease.handle);
-      if(info==null||info.ino==0||(info.attributes&0x400)!=0||
-        (dev.HasValue&&info.dev!=dev.Value)||(ino.HasValue&&info.ino!=ino.Value)||
-        (directory.HasValue&&((info.attributes&0x10)!=0)!=directory.Value))throw new Stop("IDENTITY_UNCONFIRMED");
+      if(info==null)throw Identity("metadata-unavailable");
+      if(info.ino==0)throw Identity("zero-file-id");
+      if((info.attributes&0x400)!=0)throw Identity("reparse");
+      if(dev.HasValue&&info.dev!=dev.Value)throw Identity("volume-mismatch");
+      if(ino.HasValue&&info.ino!=ino.Value)throw Identity("file-id-mismatch");
+      if(directory.HasValue&&((info.attributes&0x10)!=0)!=directory.Value)throw Identity("kind-mismatch");
       return info;
     }
-    public void Rebind(IntPtr parent,string name,Info expected,bool directory){
-      var status=result.nativeStatus;
+    public void Rebind(IntPtr parent,string name,Info expected,bool directory,string where,string kind,int ordinal,int depth){
+      var status=result.nativeStatus;var phase=result.phase;var oldKind=result.kind;var oldOrdinal=result.ordinal;var oldDepth=result.depth;var oldScope=scope;var readOnly=result.readonlyAttribute;bool opened=false;
+      At("metadata",kind,ordinal,depth,where);
       try{
         using(var current=Open(parent,name,0x00100080,directory?0x00200001u:0x00200040u,0)){
+          opened=true;
           Check(current,expected.dev,expected.ino,directory);
         }
-      }catch(Stop stop){if(stop.status=="BOUNDED")throw;throw new Stop("IDENTITY_UNCONFIRMED");}
-      catch{throw new Stop("IDENTITY_UNCONFIRMED");}
-      result.nativeStatus=status;
+      }catch(Stop stop){if(stop.status=="BOUNDED"||stop.identity!=null)throw;throw Identity(opened?"namespace-read":"namespace-open");}
+      catch{throw Identity(opened?"namespace-read":"namespace-open");}
+      finally{At(phase,oldKind,oldOrdinal,oldDepth,oldScope);result.nativeStatus=status;result.readonlyAttribute=readOnly;}
     }
-    public void Walk(Lease directory,Info anchor,int depth){
+    public void Walk(Lease directory,Info anchor,int depth,int directoryOrdinal=0){
       foreach(var entry in io.Entries(directory.handle)){
         Bound();
-        if(entry==null||String.IsNullOrEmpty(entry.name)||entry.name=="."||entry.name==".."||
-          entry.name.Length>255||entry.name.IndexOfAny(new char[]{'\\','/','\0',':'})>=0)throw new Stop("IDENTITY_UNCONFIRMED");
         if(result.entriesProbed>=128||depth>=8)throw new Stop("BOUNDED");
+        if(entry==null||String.IsNullOrEmpty(entry.name)||entry.name=="."||entry.name==".."||
+          entry.name.Length>255||entry.name.IndexOfAny(new char[]{'\\','/','\0',':'})>=0){
+          // Malformed entries have no trusted kind; locate their enumerating directory.
+          At("metadata",depth==0?"root":"directory",directoryOrdinal,depth);throw Identity("invalid-entry");
+        }
         var ordinal=++result.entriesProbed;var isDir=(entry.attributes&0x10)!=0;var kind=isDir?"directory":"file";
         At("metadata",kind,ordinal,depth+1);
-        if((entry.attributes&0x400)!=0)throw new Stop("IDENTITY_UNCONFIRMED");
+        if((entry.attributes&0x400)!=0)throw Identity("reparse");
         using(var item=Open(directory.handle,entry.name,0x00100080,isDir?0x00200001u:0x00200040u,0)){
           var identity=Check(item,null,null,isDir);
           if((identity.attributes&1)!=0){if(isDir)result.readonlyDirectories++;else result.readonlyFiles++;}
@@ -223,7 +273,8 @@ public static class DirectoryDenialProbe {
               result.readonlyAttribute=(identity.attributes&1)!=0;
               using(var child=Open(directory.handle,entry.name,0x001200a9,0x00204021,0x80)){
                 Check(child,identity.dev,identity.ino,true);
-                Walk(child,identity,depth+1);
+                Walk(child,identity,depth+1,ordinal);
+                At("directory-traversal",kind,ordinal,depth+1);
                 Check(child,identity.dev,identity.ino,true);
               }
             }
@@ -231,9 +282,10 @@ public static class DirectoryDenialProbe {
             result.readonlyAttribute=(identity.attributes&1)!=0;
             using(var deleting=Open(directory.handle,entry.name,0x00110000,isDir?0x00200001u:0x00200040u,0)){}
           }finally{
-            Rebind(directory.handle,entry.name,identity,isDir);
+            Rebind(directory.handle,entry.name,identity,isDir,"entry",kind,ordinal,depth+1);
           }
         }
+        At("metadata",depth==0?"root":"directory",directoryOrdinal,depth);
         Check(directory,anchor.dev,anchor.ino,true);
       }
     }
@@ -249,9 +301,10 @@ public static class DirectoryDenialProbe {
   public static Result Run(Ops ops,string parentPath,string rootName,ulong parentDev,ulong parentIno,ulong rootDev,ulong rootIno){
     var s=new State(ops);
     try{
-      s.At("metadata","root",0,0);
+      s.At("metadata","root",0,0,"parent");
       using(var parent=s.Open(IntPtr.Zero,parentPath,0x00100080,0x00200001,0)){
         var parentIdentity=s.Check(parent,parentDev,parentIno,true);
+        s.At("metadata","root",0,0);
         using(var root=s.Open(parent.handle,rootName,0x00100080,0x00200001,0)){
           var identity=s.Check(root,rootDev,rootIno,true);
           s.result.rootReadonlyAttribute=(identity.attributes&1)!=0;
@@ -259,7 +312,7 @@ public static class DirectoryDenialProbe {
             s.At("root-file-open","root",0,0);
             s.result.readonlyAttribute=s.result.rootReadonlyAttribute;
             using(var unexpected=s.Open(parent.handle,rootName,0x00110000,0x00200040,0,true)){
-              if(unexpected!=null)throw new Stop("IDENTITY_UNCONFIRMED");
+              if(unexpected!=null)throw s.Identity("kind-mismatch");
             }
             s.At("directory-traversal","root",0,0);
             s.result.readonlyAttribute=s.result.rootReadonlyAttribute;
@@ -272,14 +325,13 @@ public static class DirectoryDenialProbe {
             using(var deleting=s.Open(parent.handle,rootName,0x00110000,0x00200001,0)){}
             s.At("none","root",0,0);s.result.nativeStatus="success";
           } finally {
-            s.Rebind(parent.handle,rootName,identity,true);
-            s.Rebind(IntPtr.Zero,parentPath,parentIdentity,true);
+            s.Rebind(parent.handle,rootName,identity,true,"root","root",0,0);
+            s.Rebind(IntPtr.Zero,parentPath,parentIdentity,true,"parent","root",0,0);
           }
         }
       }
-    }catch(Stop stop){s.result.status=stop.status;}catch{s.result.status="UNREADABLE";s.result.nativeStatus="other";}
-    if(s.closeFailed){s.result.status="UNREADABLE";s.result.nativeStatus="other";}
-    if(s.result.status=="IDENTITY_UNCONFIRMED")return new Result{status="IDENTITY_UNCONFIRMED",phase="metadata",nativeStatus="other"};
+    }catch(Stop stop){if(stop.identity!=null)s.result=stop.identity.Result();s.result.status=stop.status;}catch{s.result.status="UNREADABLE";s.result.nativeStatus="other";}
+    if(s.closeFailed){s.result.status="UNREADABLE";s.result.nativeStatus="other";s.result.identityReason=null;s.result.identityScope=null;}
     return s.result;
   }
   public sealed class NativeOps : Ops {
