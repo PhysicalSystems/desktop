@@ -189,6 +189,30 @@ export function windowsReviewOwnership(input: {
   return { owned, unknown: input.processes.filter((item) => !owned.has(item.pid)) }
 }
 
+/** These four Registry64 observations are not a claim about effective policy. */
+export function windowsReviewDebugPolicyObservation(value: unknown): BrowserObservation {
+  const input = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
+  const read = (key: string, developer: boolean) => {
+    const item = input[key]
+    return typeof item === "string" &&
+      (developer ? ["absent", "restricted", "allow", "deny"] : ["absent", "allow", "deny"]).includes(item)
+      ? item
+      : "invalid"
+  }
+  return {
+    machineRemoteDebugging: read(
+      "machineRemoteDebuggingAllowed",
+      false,
+    ) as BrowserObservation["machineRemoteDebugging"],
+    userRemoteDebugging: read("baseRemoteDebuggingAllowed", false) as BrowserObservation["userRemoteDebugging"],
+    machineDeveloperTools: read(
+      "machineDeveloperToolsAvailability",
+      true,
+    ) as BrowserObservation["machineDeveloperTools"],
+    userDeveloperTools: read("baseDeveloperToolsAvailability", true) as BrowserObservation["userDeveloperTools"],
+  }
+}
+
 /** Windows-only real browser owner. It never changes the default association,
  * imports credentials, returns PASS, or stops a pre-existing/unowned browser. */
 export async function startOwnedWindowsReviewBrowser(
@@ -254,6 +278,7 @@ async function acquireWindowsReviewBrowser(
   observation.browserPhase = "windows-preflight"
   const raw = record(await native({ operation: "preflight", scheme }))
   observation.browserPhase = "windows-preflight-shape"
+  Object.assign(observation, windowsReviewDebugPolicyObservation(raw.debugPolicy))
   if (
     typeof raw.executable !== "string" ||
     !/^[A-Za-z]:\\[^\r\n\0]+\\Microsoft\\Edge\\Application\\msedge\.exe$/i.test(raw.executable) ||
@@ -303,24 +328,28 @@ async function acquireWindowsReviewBrowser(
   let spawnFailed = false
   let stopped = false
   const observe = async () => {
-    const value = record(
-      await native({
-        operation: "observe",
-        scheme,
-        profile,
-        observedPids: [...observed.keys()],
-        ...(port ? { port } : {}),
-        ...(child?.pid ? { rootPid: child.pid } : {}),
-      }),
-    )
+    observation.windowsObservePhase = "native"
+    const response = await native({
+      operation: "observe",
+      scheme,
+      profile,
+      observedPids: [...observed.keys()],
+      ...(port ? { port } : {}),
+      ...(child?.pid ? { rootPid: child.pid } : {}),
+    })
+    observation.windowsObservePhase = "response"
+    const value = record(response)
+    observation.windowsObservePhase = "processes"
     const processes = windowsReviewProcesses(value.processes)
     observation.observedProcesses = processes.length
+    observation.windowsObservePhase = "retained-identity"
     for (const item of processes) {
       const prior = observed.get(item.pid)
       if (prior && !windowsReviewSameProcess(prior, item)) throw failure()
       observed.set(item.pid, item)
       if (observed.size > 256) throw failure()
     }
+    observation.windowsObservePhase = "listener-shape"
     if (
       !Array.isArray(value.listening) ||
       value.listening.some((pid) => !Number.isSafeInteger(pid) || Number(pid) < 1) ||
@@ -339,6 +368,7 @@ async function acquireWindowsReviewBrowser(
         unknown: processes,
         owned: new Map<number, WindowsReviewProcess>(),
       }
+    observation.windowsObservePhase = "ownership"
     const ownership = windowsReviewOwnership({
       processes,
       known,
@@ -350,6 +380,7 @@ async function acquireWindowsReviewBrowser(
     for (const [pid, process] of ownership.owned) known.set(pid, process)
     observation.ownedProcesses = ownership.owned.size
     observation.unknownProcesses = ownership.unknown.length
+    observation.windowsObservePhase = "complete"
     return {
       processes,
       listening: [...new Set(value.listening as number[])],
@@ -451,7 +482,9 @@ async function acquireWindowsReviewBrowser(
       if (!child.pid || spawnFailed || closed || child.exitCode !== null) throw failure()
       observation.browserPhase = "identity-stat"
       const current = await observe()
+      observation.windowsObservePhase = "policy"
       if (!current.policyOwned) throw failure()
+      observation.windowsObservePhase = "complete"
       if (!main) {
         const observed = current.processes.find((item) => item.pid === child!.pid)
         if (!observed) {
@@ -535,6 +568,26 @@ async function acquireWindowsReviewBrowser(
     }
   } catch (error) {
     observation.failedBrowserPhase ??= observation.browserPhase
+    if (observation.windowsObservePhase) observation.failedWindowsObservePhase ??= observation.windowsObservePhase
+    // Capture before stop can cause an exit or remove these files. Inspect only
+    // direct metadata, never profile contents or a symlinked Default directory.
+    observation.childExitedAtFailure = Boolean(child && (closed || child.exitCode != null || child.signalCode != null))
+    observation.profileMarkerReadComplete = true
+    const metadata = async (path: string) =>
+      lstat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") observation.profileMarkerReadComplete = false
+        return undefined
+      })
+    const localState = await metadata(join(profile, "Local State"))
+    const defaultDirectory = await metadata(join(profile, "Default"))
+    if (localState?.isSymbolicLink() || (defaultDirectory && !defaultDirectory.isDirectory()))
+      observation.profileMarkerReadComplete = false
+    const preferences = defaultDirectory?.isDirectory()
+      ? await metadata(join(profile, "Default", "Preferences"))
+      : undefined
+    if (preferences?.isSymbolicLink()) observation.profileMarkerReadComplete = false
+    observation.profileLocalStatePresent = localState?.isFile() ?? false
+    observation.profilePreferencesPresent = preferences?.isFile() ?? false
     const phase = readBrowserObservation(error)?.windowsNativePhase
     if (phase) observation.failedWindowsNativePhase ??= phase
     try {

@@ -209,6 +209,8 @@ function Read-IdentityOrAbsent([scriptblock]$read,[scriptblock]$absent) {
 // read only for selected processes. A failed read reconciles one fresh exact-PID
 // absence; identity comparisons remain outside that catch. Restoration requires
 // every observed PID to be absent, including unknown descendants and reused PIDs.
+// Reassert the OS-only module path before first-use discovery: Windows
+// PowerShell can insert AllUsers paths at startup.
 export const windowsReviewNativeScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
@@ -222,8 +224,6 @@ Set-ReviewPhase 'bootstrap'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 trap { [Console]::Out.WriteLine('PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_'+$script:reviewPhase); [Console]::Error.Write('PROVIDER_REVIEW_WINDOWS_UNCONFIRMED'); exit 1 }
-# Windows PowerShell can insert AllUsers paths at startup. Reassert the
-# OS-shipped module directory before first-use cmdlet discovery begins.
 $env:PSModulePath = [IO.Path]::Combine($PSHOME,'Modules')
 Set-ReviewPhase 'input-read'
 $inputText = [Console]::In.ReadToEnd()
@@ -241,37 +241,44 @@ using System;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class ReviewNative {
-  [DllImport("shlwapi.dll", CharSet=CharSet.Unicode)] static extern uint AssocQueryString(uint flags, uint str, string assoc, string extra, StringBuilder output, ref uint size);
-  [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string command, out int count);
-  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr value);
-  public static string Association(uint kind, string scheme) {
-    uint size=32768; var output=new StringBuilder((int)size);
-    if(AssocQueryString(0x1000,kind,scheme,"open",output,ref size)!=0) throw new Exception();
-    return output.ToString();
+[DllImport("shlwapi.dll", CharSet=CharSet.Unicode)] static extern uint AssocQueryString(uint flags, uint str, string assoc, string extra, StringBuilder output, ref uint size);
+[DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string command, out int count);
+[DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr value);
+public static string Association(uint kind, string scheme) {
+uint size=32768; var output=new StringBuilder((int)size);
+if(AssocQueryString(0x1000,kind,scheme,"open",output,ref size)!=0) throw new Exception();
+return output.ToString();
   }
-  public static string[] Arguments(string command) {
-    int count; var memory=CommandLineToArgvW(command,out count);
-    if(memory==IntPtr.Zero || count<1 || count>256) throw new Exception();
-    try { var values=new string[count]; for(int i=0;i<count;i++) values[i]=Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory,i*IntPtr.Size)); return values; }
-    finally { LocalFree(memory); }
+public static string[] Arguments(string command) {
+int count; var memory=CommandLineToArgvW(command,out count);
+if(memory==IntPtr.Zero || count<1 || count>256) throw new Exception();
+try { var values=new string[count]; for(int i=0;i<count;i++) values[i]=Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory,i*IntPtr.Size)); return values; }
+finally { LocalFree(memory); }
   }
 }
 '@
 function Read-Policy {
-  Set-ReviewPhase 'policy-read'
-  $keys = @($paths | ForEach-Object { $key=$base.OpenSubKey($_); $present=$null -ne $key; if($key){$key.Dispose()}; $present })
-  $key=$base.OpenSubKey($paths[-1]); $value=$null
-  try {
-    if($key -and $key.GetValueNames() -contains 'UserDataDir') {
-      $kind=$key.GetValueKind('UserDataDir').ToString()
-      if($kind -notin @('String','ExpandString')) { throw 'invalid' }
-      $data=$key.GetValue('UserDataDir',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-      if($data -isnot [string] -or $data.Length -gt 32768) { throw 'invalid' }
-      $value=@{kind=$kind;data=$data}
-    }
-  } finally { if($key){$key.Dispose()} }
-  @{keys=$keys;value=$value}
+Set-ReviewPhase 'policy-read'
+$keys = @($paths | ForEach-Object { $key=$base.OpenSubKey($_); $present=$null -ne $key; if($key){$key.Dispose()}; $present })
+$key=$base.OpenSubKey($paths[-1]); $value=$null
+try {
+  if($key -and $key.GetValueNames() -contains 'UserDataDir') {
+    $kind=$key.GetValueKind('UserDataDir').ToString()
+    if($kind -notin @('String','ExpandString')) { throw 'invalid' }
+    $data=$key.GetValue('UserDataDir',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if($data -isnot [string] -or $data.Length -gt 32768) { throw 'invalid' }
+    $value=@{kind=$kind;data=$data}
+  }
+} finally { if($key){$key.Dispose()} }
+@{keys=$keys;value=$value}
 }
+function Debug-Policy($h,$n,$a){
+$k=$h.OpenSubKey($paths[-1]);try{
+if(!$k -or $k.GetValueNames() -notcontains $n){return 'absent'}
+if($k.GetValueKind($n) -ne 'DWord'){return 'invalid'}
+$x=$k.GetValue($n);if($x -lt 0 -or $x -ge $a.Count){return 'invalid'}
+return $a[$x]
+}finally{if($k){$k.Dispose()}}}
 function Same-Value($a,$b) {
   if($null -eq $a -or $null -eq $b) { return $null -eq $a -and $null -eq $b }
   return $a.kind -ceq $b.kind -and $a.data -ceq $b.data
@@ -351,15 +358,18 @@ function Require-NoEdge {
   if(@(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE Name='msedge.exe' OR Name='msedge_crashpad_handler.exe'").Count -ne 0) {throw 'ambient-browser'}
 }
 switch($request.operation) {
-  'preflight' {
-    Require-NoMachineOverride
-    Require-NoEdge
-    $exe=Association
-    Set-ReviewPhase 'signature'
-    $signature=Get-AuthenticodeSignature -LiteralPath $exe
-    if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') { throw 'signature' }
-    $result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@()}
-  }
+'preflight' {
+Require-NoMachineOverride
+Require-NoEdge
+$exe=Association
+Set-ReviewPhase 'signature'
+$signature=Get-AuthenticodeSignature -LiteralPath $exe
+if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') { throw 'signature' }
+Set-ReviewPhase 'debug-policy'
+$rules=@{RemoteDebuggingAllowed=@('deny','allow');DeveloperToolsAvailability=@('restricted','allow','deny')}
+$debug=@{};foreach($h in @('machine','base')){foreach($n in $rules.Keys){$debug[$h+$n]=Debug-Policy (Get-Variable $h -ValueOnly) $n $rules[$n]}}
+$result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolicy=$debug}
+}
   'set' {
     Require-NoMachineOverride
     Require-NoEdge

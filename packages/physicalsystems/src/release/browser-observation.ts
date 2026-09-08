@@ -37,6 +37,7 @@ const windowsPhases = [
   "association-progid",
   "association-executable",
   "signature",
+  "debug-policy",
   "policy-read",
   "policy-compare",
   "policy-write",
@@ -49,6 +50,16 @@ const windowsPhases = [
   "process-signal",
   "process-wait",
   "output",
+] as const
+const windowsObservePhases = [
+  "native",
+  "response",
+  "processes",
+  "retained-identity",
+  "listener-shape",
+  "ownership",
+  "policy",
+  "complete",
 ] as const
 const reviews = [
   "context",
@@ -90,6 +101,16 @@ export type BrowserObservation = {
   windowsNativePhase?: (typeof windowsPhases)[number]
   failedWindowsNativePhase?: (typeof windowsPhases)[number]
   windowsNativeOutcome?: "timeout" | "signal" | "exit" | "start" | "output-limit" | "invalid-json" | "unknown"
+  windowsObservePhase?: (typeof windowsObservePhases)[number]
+  failedWindowsObservePhase?: (typeof windowsObservePhases)[number]
+  machineRemoteDebugging?: "absent" | "allow" | "deny" | "invalid"
+  userRemoteDebugging?: "absent" | "allow" | "deny" | "invalid"
+  machineDeveloperTools?: "absent" | "restricted" | "allow" | "deny" | "invalid"
+  userDeveloperTools?: "absent" | "restricted" | "allow" | "deny" | "invalid"
+  childExitedAtFailure?: boolean
+  profileMarkerReadComplete?: boolean
+  profileLocalStatePresent?: boolean
+  profilePreferencesPresent?: boolean
   policyOwned?: boolean
   sidMatched?: boolean
   observedProcesses?: number
@@ -121,6 +142,10 @@ const codes = [
   "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED",
 ] as const
 const bools = [
+  "childExitedAtFailure",
+  "profileMarkerReadComplete",
+  "profileLocalStatePresent",
+  "profilePreferencesPresent",
   "pidObserved",
   "birthVerified",
   "cdpReady",
@@ -163,25 +188,31 @@ function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
-    const allowed = ["windowsNativePhase", "failedWindowsNativePhase"].includes(key)
-      ? windowsPhases
-      : ["browserPhase", "failedBrowserPhase", "cleanupFailurePhase"].includes(key)
-        ? phases
-        : ["reviewPhase", "failedReviewPhase"].includes(key)
-          ? reviews
-          : key === "windowsNativeOutcome"
-            ? ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]
-            : key === "syscallFailure"
-              ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
-              : key === "processState"
-                ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
-                : key === "termination"
-                  ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
-                  : key === "stderrCategory"
-                    ? ["sandbox", "display", "dbus", "other"]
-                    : key === "inspectPhase"
-                      ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
-                      : undefined
+    const allowed = ["windowsObservePhase", "failedWindowsObservePhase"].includes(key)
+      ? windowsObservePhases
+      : ["machineRemoteDebugging", "userRemoteDebugging"].includes(key)
+        ? ["absent", "allow", "deny", "invalid"]
+        : ["machineDeveloperTools", "userDeveloperTools"].includes(key)
+          ? ["absent", "restricted", "allow", "deny", "invalid"]
+          : ["windowsNativePhase", "failedWindowsNativePhase"].includes(key)
+            ? windowsPhases
+            : ["browserPhase", "failedBrowserPhase", "cleanupFailurePhase"].includes(key)
+              ? phases
+              : ["reviewPhase", "failedReviewPhase"].includes(key)
+                ? reviews
+                : key === "windowsNativeOutcome"
+                  ? ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]
+                  : key === "syscallFailure"
+                    ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
+                    : key === "processState"
+                      ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
+                      : key === "termination"
+                        ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
+                        : key === "stderrCategory"
+                          ? ["sandbox", "display", "dbus", "other"]
+                          : key === "inspectPhase"
+                            ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
+                            : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)

@@ -3,7 +3,7 @@ import { expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { Writable } from "node:stream"
 import type { ChildProcess } from "node:child_process"
-import { access, mkdtemp, realpath, rm } from "node:fs/promises"
+import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -12,6 +12,7 @@ import {
   reserveWindowsReviewPort,
   windowsReviewOwnership,
   windowsReviewPolicy,
+  windowsReviewDebugPolicyObservation,
   windowsReviewProcesses,
 } from "./owned-windows-review-browser"
 import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
@@ -50,6 +51,9 @@ async function fixture(
     policySetLost?: boolean
     restoreFails?: boolean
     stopLost?: boolean
+    exitDuringStop?: boolean
+    profileMarkers?: "files" | "symlink"
+    malformedProcesses?: boolean
     reusedPid?: boolean
     wrongRootSid?: boolean
     reuseOrphanAfterStop?: boolean
@@ -107,11 +111,24 @@ async function fixture(
         executable,
         sid: processRecord("").sid,
         policy: structuredClone(before),
+        debugPolicy: {
+          machineRemoteDebuggingAllowed: "absent",
+          baseRemoteDebuggingAllowed: "allow",
+          machineDeveloperToolsAvailability: "restricted",
+          baseDeveloperToolsAvailability: "deny",
+        },
         processes: options.ambient ? [processRecord("C:\\ambient")] : [],
       }
     if (request.operation === "set") {
       expect(request.before).toEqual(before)
       state.profile = request.profile
+      if (options.profileMarkers) {
+        await writeFile(join(request.profile, "Local State"), "PRIVATE-PROFILE-CONTENTS")
+        if (options.profileMarkers === "files") {
+          await mkdir(join(request.profile, "Default"))
+          await writeFile(join(request.profile, "Default", "Preferences"), "PRIVATE-PREFERENCES")
+        } else await symlink(temporary, join(request.profile, "Default"), "junction")
+      }
       state.policy = { keys: [true, true, true], value: { kind: "String", data: request.profile } }
       if (options.nativeFailure === "set")
         throw windowsReviewNativeFailure("PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_policy-write")
@@ -153,7 +170,7 @@ async function fixture(
           args: ["C:\\Windows\\unexpected-helper.exe"],
         })
       return {
-        processes,
+        processes: options.malformedProcesses && !state.stopped ? "PRIVATE-MALFORMED" : processes,
         listening: state.running && request.port ? [options.unready === "wrong-listener" ? 4999 : 4100] : [],
         policyOwned: state.policy.value?.data === state.profile,
       }
@@ -163,6 +180,7 @@ async function fixture(
       expect(request.processes.every((item) => item.sid === processRecord("").sid)).toBe(true)
       state.running = false
       state.stopped = true
+      if (options.exitDuringStop) child.emit("close", 255)
       if (options.stopLost) throw Error("PRIVATE-STOP-RESPONSE-LOST")
       return { stopped: true }
     }
@@ -818,5 +836,84 @@ test("stripped, duplicate or mismatched native debugging flags fail before any C
     } finally {
       await f.cleanup()
     }
+  }
+})
+
+test("preflight policy observations preserve restricted semantics and reject raw values", () => {
+  for (const value of [
+    undefined,
+    null,
+    [],
+    "PRIVATE",
+    {
+      machineRemoteDebuggingAllowed: "PRIVATE",
+      baseRemoteDebuggingAllowed: "restricted",
+      machineDeveloperToolsAvailability: 0,
+      baseDeveloperToolsAvailability: {},
+    },
+  ]) {
+    expect(windowsReviewDebugPolicyObservation(value)).toEqual({
+      machineRemoteDebugging: "invalid",
+      userRemoteDebugging: "invalid",
+      machineDeveloperTools: "invalid",
+      userDeveloperTools: "invalid",
+    })
+  }
+  for (const state of ["absent", "allow", "deny", "invalid", "restricted"] as const) {
+    const value = windowsReviewDebugPolicyObservation({
+      machineRemoteDebuggingAllowed: state,
+      baseRemoteDebuggingAllowed: state,
+      machineDeveloperToolsAvailability: state,
+      baseDeveloperToolsAvailability: state,
+    })
+    expect(value.machineRemoteDebugging).toBe(state === "restricted" ? "invalid" : state)
+    expect(value.machineDeveloperTools).toBe(state)
+  }
+})
+
+test("failure freezes metadata-only profile markers and child state before cleanup changes them", async () => {
+  for (const profileMarkers of ["files", "symlink"] as const) {
+    const f = await fixture({ unready: "wrong-listener", profileMarkers, exitDuringStop: true })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error) => error)
+      const observation = readBrowserObservation(error)
+      expect(observation).toMatchObject({
+        browserPhase: "stopped",
+        failedBrowserPhase: "cdp-targets",
+        failedWindowsObservePhase: "complete",
+        machineRemoteDebugging: "absent",
+        userRemoteDebugging: "allow",
+        machineDeveloperTools: "restricted",
+        userDeveloperTools: "deny",
+        childExitedAtFailure: false,
+        processExited: true,
+        exitCode: 255,
+        profileMarkerReadComplete: profileMarkers === "files",
+        profileLocalStatePresent: true,
+        profilePreferencesPresent: profileMarkers === "files",
+      })
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      expect(JSON.stringify(observation)).not.toContain(f.input.root)
+      await expect(access(f.input.root)).rejects.toThrow()
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("malformed native process shape retains its first boundary through cleanup uncertainty", async () => {
+  const f = await fixture({ malformedProcesses: true })
+  try {
+    const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error) => error)
+    expect(readBrowserObservation(error)).toMatchObject({
+      failedBrowserPhase: "identity-stat",
+      failedWindowsObservePhase: "processes",
+      childExitedAtFailure: false,
+    })
+    expect(f.state.calls).not.toContain("stop")
+    expect(f.state.calls).not.toContain("restore")
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+  } finally {
+    await f.cleanup()
   }
 })
