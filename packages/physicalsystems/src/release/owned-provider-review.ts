@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import type { ChildProcess } from "node:child_process"
 import { lstat, mkdir, readdir, realpath, rm, writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { createRequire } from "node:module"
 import { pathToFileURL } from "node:url"
 import { startOwnedReviewBrowser } from "./owned-review-browser"
@@ -63,6 +63,7 @@ export async function runOwnedProviderBrowserReview(
   if (selection !== "openai-device") throw failure()
   const platform = io.platform ?? process.platform
   const root = await verifyOwnedReviewContext(input, platform)
+  const applicationTemporary = ownedReviewApplicationTemporary(input, platform)
   const nonce = randomBytes(32).toString("hex")
   const nonceSha256 = createHash("sha256").update(nonce).digest("hex")
   const browserRoot = join(root, "browser")
@@ -92,6 +93,7 @@ export async function runOwnedProviderBrowserReview(
       {
         ...input.runtimeEnvironment,
         ...browser.environment,
+        ...applicationTemporary,
         PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
         PHYSICALSYSTEMS_QUALIFICATION_TRACE: "1",
         PHYSICALSYSTEMS_PROVIDER_REVIEW: "openai-device",
@@ -187,6 +189,22 @@ export async function runOwnedProviderBrowserReview(
       })
     if (cleanupFailed) throw browserObservationError("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED", observedError, observation)
   }
+}
+
+/** Call only after verifyOwnedReviewContext. The fixed qualification caller
+ * creates application/tmp when the app starts, after browser acquisition.
+ * Preserve its original root spelling (including Windows short-path aliases).
+ * Browser routing still owns HOME/AppData; app temporary files stay with the
+ * app's shutdown lease and remain covered by final whole-review cleanup. */
+export function ownedReviewApplicationTemporary(
+  input: { root: string; runtimeEnvironment: NodeJS.ProcessEnv },
+  platform: NodeJS.Platform,
+) {
+  if (platform !== "win32") return Object.freeze({})
+  const { TEMP, TMP } = input.runtimeEnvironment
+  const expected = join(input.root, "application", "tmp")
+  if (!isAbsolute(input.root) || TEMP !== expected || TMP !== expected) throw failure()
+  return Object.freeze({ TEMP, TMP })
 }
 
 export async function verifyOwnedReviewContext(

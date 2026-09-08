@@ -5,7 +5,11 @@ import { mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { startOwnedReviewBrowser } from "./owned-review-browser"
 import { startOwnedWindowsReviewBrowser } from "./owned-windows-review-browser"
-import { verifyOwnedReviewContext, type OwnedProviderReviewSession } from "./owned-provider-review"
+import {
+  ownedReviewApplicationTemporary,
+  verifyOwnedReviewContext,
+  type OwnedProviderReviewSession,
+} from "./owned-provider-review"
 import { validateProviderBrowserReviewContext, type ProviderBrowserReviewContext } from "./provider-browser-review"
 import { browserObservationError, type BrowserObservation } from "./browser-observation"
 import { createBrowserHandoffTask } from "./browser-handoff-task"
@@ -39,6 +43,7 @@ export async function runOwnedBrowserHandoffReview(
   if (input.env.PS_BROWSER_REVIEW !== "1") throw failure()
   const platform = io.platform ?? process.platform
   const root = await verifyOwnedReviewContext(input, platform)
+  const applicationTemporary = ownedReviewApplicationTemporary(input, platform)
   const context = validateProviderBrowserReviewContext(input.context)
   const timeoutMs = io.timeoutMs ?? 12000
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 12000) throw failure()
@@ -113,6 +118,7 @@ export async function runOwnedBrowserHandoffReview(
       {
         ...input.runtimeEnvironment,
         ...browser.environment,
+        ...applicationTemporary,
         PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
         PHYSICALSYSTEMS_PROVIDER_REVIEW: "",
         PHYSICALSYSTEMS_PROVIDER_REVIEW_NONCE: "",

@@ -171,6 +171,13 @@ Every observed descendant remains a query root after its parent exits, including
 unknown helpers. Reused identities block cleanup, and registration restoration requires
 all retained process IDs to be absent.
 
+Windows packaged reviews retain the application's qualified `TEMP` and `TMP`
+under `application/tmp`, separately from the browser's temporary files. Both
+paths are validated and copied before browser acquisition. Browser HOME/AppData
+routing remains intact. Final cleanup still removes the whole review directory
+after confirmed app and browser shutdown; relocating temporary files cannot
+hide a cleanup failure. Linux launcher routing is unchanged.
+
 Failed or uncertain native startup/cleanup retains private paths and prevents an
 observed-success return. Original browser profiles are never removed. A preserved
 unknown cleanup state belongs only to its disposable runner, which must not be

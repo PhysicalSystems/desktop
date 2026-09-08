@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
 import { createHash, generateKeyPairSync } from "node:crypto"
-import { mkdtemp, readFile, realpath, rm, writeFile, access } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile, access } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
@@ -9,6 +9,7 @@ import { runOwnedProviderBrowserReview, type OwnedProviderReviewSession } from "
 import { ownedReviewBrowserEnvironment, reviewBrowserProcess, startOwnedReviewBrowser } from "./owned-review-browser"
 import { readBrowserObservation } from "./browser-observation"
 import { providerAccountMarker } from "./provider-account"
+import { qualificationEnvironment } from "./qualification"
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 3072 })
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex")
@@ -23,6 +24,7 @@ async function fixture(
     rejectedOpen?: boolean
     targetRead?: "delayed" | "pending"
     credentialRemovalFails?: boolean
+    writeTemporaryFile?: boolean
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "owned-provider-review-")))
@@ -67,7 +69,7 @@ async function fixture(
     sourceRevision: "a".repeat(40),
     artifactSha256: hash("immutable-inert-artifact"),
     releaseInputsSha256: "b".repeat(64),
-    platform: "linux-x64" as const,
+    platform: "linux-x64" as "linux-x64" | "windows-x64",
   }
   const env: NodeJS.ProcessEnv = {
     CI: "true",
@@ -89,11 +91,15 @@ async function fixture(
     root,
     artifact,
     context,
-    runtimeEnvironment: { PHYSICALSYSTEMS_ALLOW_DEVICES: "0", HOME: join(root, "app") },
+    runtimeEnvironment: qualificationEnvironment({}, join(root, "application")) as NodeJS.ProcessEnv,
     async withSession<T>(environment: NodeJS.ProcessEnv, review: (session: OwnedProviderReviewSession) => Promise<T>) {
       state.nativeEnv = environment
       state.lifecycle.push("launch")
       try {
+        if (options.writeTemporaryFile) {
+          await mkdir(environment.TEMP!, { recursive: true })
+          await writeFile(join(environment.TEMP!, "inert-app.tmp"), "inert temporary app data")
+        }
         return await review({
           child: { stderr },
           attachment: {
@@ -116,12 +122,20 @@ async function fixture(
     },
   }
   const io = {
-    platform: "linux" as const,
+    platform: "linux" as "linux" | "win32",
     timeoutMs: 1000,
     pollMs: 1,
     async startBrowser(input: { env: NodeJS.ProcessEnv; root: string }) {
       return {
-        environment: ownedReviewBrowserEnvironment(input.root, input.env),
+        environment:
+          io.platform === "win32"
+            ? {
+                HOME: input.root,
+                APPDATA: join(input.root, "AppData", "Roaming"),
+                TEMP: input.root,
+                TMP: input.root,
+              }
+            : ownedReviewBrowserEnvironment(input.root, input.env),
         async confirmHandoff(_url: string, input: { signal?: AbortSignal } = {}) {
           if (options.targetRead) {
             state.lifecycle.push("target-start")
@@ -265,6 +279,80 @@ test("disabled, unsupported ownership, changed anchors and inherited credentials
     expect(f.state.lifecycle).toEqual([])
   } finally {
     await f.cleanup()
+  }
+})
+
+test("Windows provider review keeps qualified app temp separate and preserves cleanup failures", async () => {
+  for (const browserCleanupFails of [false, true]) {
+    const f = await fixture({ writeTemporaryFile: true, browserCleanupFails })
+    try {
+      f.io.platform = "win32"
+      f.input.env.RUNNER_OS = "Windows"
+      f.input.context.platform = "windows-x64"
+      const temporary = f.input.runtimeEnvironment.TEMP!
+      const start = f.io.startBrowser
+      f.io.startBrowser = async (input) => {
+        const browser = await start(input)
+        f.input.runtimeEnvironment.TEMP = input.root
+        f.input.runtimeEnvironment.TMP = input.root
+        return browser
+      }
+      const outcome = runOwnedProviderBrowserReview(f.input, f.io)
+      if (browserCleanupFails) await expect(outcome).rejects.toThrow("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+      else expect((await outcome).status).toBe("OBSERVED")
+      expect(f.state.nativeEnv.TEMP).toBe(temporary)
+      expect(f.state.nativeEnv.TMP).toBe(temporary)
+      expect(f.state.nativeEnv.TMPDIR).toBe(temporary)
+      expect(f.state.nativeEnv.HOME).toBe(join(f.input.root, "browser"))
+      expect(f.state.nativeEnv.APPDATA).toBe(join(f.input.root, "browser", "AppData", "Roaming"))
+      expect(f.state.lifecycle).toEqual(["launch", "native-stop", "browser-stop"])
+      expect(
+        await access(join(temporary, "inert-app.tmp")).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(browserCleanupFails)
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(browserCleanupFails)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("Windows provider review rejects missing or non-owned app temp before acquiring the browser", async () => {
+  for (const key of ["TEMP", "TMP"] as const) {
+    for (const invalid of [undefined, "", "relative", "browser", "outside", "traversal"]) {
+      const f = await fixture()
+      let acquired = false
+      try {
+        f.io.platform = "win32"
+        f.input.env.RUNNER_OS = "Windows"
+        f.input.context.platform = "windows-x64"
+        f.input.runtimeEnvironment[key] =
+          invalid === "browser"
+            ? join(f.input.root, "browser")
+            : invalid === "outside"
+              ? join(f.input.env.RUNNER_TEMP!, "ambient")
+              : invalid === "traversal"
+                ? f.input.runtimeEnvironment[key] + "/../tmp"
+                : invalid
+        f.io.startBrowser = async () => {
+          acquired = true
+          throw Error("inert unexpected acquisition")
+        }
+        await expect(runOwnedProviderBrowserReview(f.input, f.io)).rejects.toThrow()
+        expect(acquired).toBe(false)
+        expect(f.state.calls).toBe(0)
+        expect(f.state.lifecycle).toEqual([])
+      } finally {
+        await f.cleanup()
+      }
+    }
   }
 })
 

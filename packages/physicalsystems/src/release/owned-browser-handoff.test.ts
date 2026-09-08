@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { access, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
 import { runOwnedBrowserHandoffReview } from "./owned-browser-handoff"
 import type { OwnedProviderReviewSession } from "./owned-provider-review"
 import { validateBrowserProbeURL } from "./owned-review-browser"
-import { qualificationFailureCode } from "./qualification"
+import { qualificationEnvironment, qualificationFailureCode } from "./qualification"
 import { browserObservationError, readBrowserObservation } from "./browser-observation"
 
 async function fixture(
@@ -26,6 +26,7 @@ async function fixture(
     browserCleanupFails?: boolean
     browserStartFails?: boolean
     observedBrowserStartFails?: boolean
+    writeTemporaryFile?: boolean
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "browser-handoff-fixture-")))
@@ -68,11 +69,15 @@ async function fixture(
     root,
     artifact,
     context,
-    runtimeEnvironment: { PHYSICALSYSTEMS_ALLOW_DEVICES: "0" },
+    runtimeEnvironment: qualificationEnvironment({}, join(root, "application")) as NodeJS.ProcessEnv,
     async withSession<T>(environment: NodeJS.ProcessEnv, review: (session: OwnedProviderReviewSession) => Promise<T>) {
       state.nativeStarted = true
       state.nativeEnv = environment
       try {
+        if (options.writeTemporaryFile) {
+          await mkdir(environment.TEMP!, { recursive: true })
+          await writeFile(join(environment.TEMP!, "inert-app.tmp"), "inert temporary app data")
+        }
         return await review({
           child: { stderr: new PassThrough() },
           attachment: {
@@ -127,7 +132,12 @@ async function fixture(
       state.nonce = state.url.slice(state.url.lastIndexOf("/") + 1)
       expect(validateBrowserProbeURL(state.url)).toBe(state.url)
       return {
-        environment: { HOME: value.root },
+        environment: {
+          HOME: value.root,
+          ...(io.platform === "win32"
+            ? { APPDATA: join(value.root, "AppData", "Roaming"), TEMP: value.root, TMP: value.root }
+            : {}),
+        },
         async confirmHandoff(url: string, input: { signal?: AbortSignal } = {}) {
           expect(url).toBe(state.url)
           state.events.push("owned-target")
@@ -233,6 +243,80 @@ test("outer failed acquisition retains the exact safe browser boundary after cle
     expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
   } finally {
     await f.cleanup()
+  }
+})
+
+test("Windows handoff keeps qualified app temp separate and preserves cleanup failures", async () => {
+  for (const browserCleanupFails of [false, true]) {
+    const f = await fixture({ writeTemporaryFile: true, browserCleanupFails })
+    try {
+      f.io.platform = "win32"
+      f.input.env.RUNNER_OS = "Windows"
+      f.input.context.platform = "windows-x64"
+      const temporary = f.input.runtimeEnvironment.TEMP!
+      const start = f.io.startBrowser
+      f.io.startBrowser = async (input) => {
+        const browser = await start(input)
+        // The validated temp lease is captured before asynchronous acquisition.
+        f.input.runtimeEnvironment.TEMP = input.root
+        f.input.runtimeEnvironment.TMP = input.root
+        return browser
+      }
+      const outcome = runOwnedBrowserHandoffReview(f.input, f.io)
+      if (browserCleanupFails) await expect(outcome).rejects.toThrow("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED")
+      else expect((await outcome).status).toBe("OBSERVED")
+      expect(f.state.nativeEnv.TEMP).toBe(temporary)
+      expect(f.state.nativeEnv.TMP).toBe(temporary)
+      expect(f.state.nativeEnv.TMPDIR).toBe(temporary)
+      expect(f.state.nativeEnv.HOME).toBe(join(f.input.root, "browser"))
+      expect(f.state.nativeEnv.APPDATA).toBe(join(f.input.root, "browser", "AppData", "Roaming"))
+      expect(f.state.events).toEqual(["native-open", "owned-target", "native-stop", "browser-stop"])
+      expect(
+        await access(join(temporary, "inert-app.tmp")).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(browserCleanupFails)
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(browserCleanupFails)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("Windows handoff rejects missing or non-owned app temp before acquiring the browser", async () => {
+  for (const key of ["TEMP", "TMP"] as const) {
+    for (const invalid of [undefined, "", "relative", "browser", "outside", "traversal"]) {
+      const f = await fixture()
+      let acquired = false
+      try {
+        f.io.platform = "win32"
+        f.input.env.RUNNER_OS = "Windows"
+        f.input.context.platform = "windows-x64"
+        f.input.runtimeEnvironment[key] =
+          invalid === "browser"
+            ? join(f.input.root, "browser")
+            : invalid === "outside"
+              ? join(f.input.env.RUNNER_TEMP, "ambient")
+              : invalid === "traversal"
+                ? f.input.runtimeEnvironment[key] + "/../tmp"
+                : invalid
+        f.io.startBrowser = async () => {
+          acquired = true
+          throw Error("inert unexpected acquisition")
+        }
+        await expect(runOwnedBrowserHandoffReview(f.input, f.io)).rejects.toThrow()
+        expect(acquired).toBe(false)
+        expect(f.state.nativeStarted).toBe(false)
+      } finally {
+        await f.cleanup()
+      }
+    }
   }
 })
 
