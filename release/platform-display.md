@@ -50,14 +50,13 @@ and [Input protocol](https://chromedevtools.github.io/devtools-protocol/tot/Inpu
 ## Package launcher scope
 
 An installed Debian package exercises its shipped application-specific AppArmor
-policy. The existing AppImage check extracts and verifies the exact artifact,
-then launches its owned `AppRun` with a runner-installed profile scoped to that
-specific extracted executable. Display evidence from this path qualifies that
-payload under the stated prerequisite. It does not establish stock Ubuntu
-double-click/FUSE startup of the original AppImage, nor can it satisfy an
-independent fresh AppImage runtime launch check.
+policy. The AppImage controller executes the exact original artifact with the
+documented `--appimage-extract-and-run` option, after setting up a runner profile
+scoped to its exact extraction path. It separately verifies the actual Electron
+child, payload and runtime cleanup; see [the runtime scope](appimage-runtime.md).
+These new checks still require actual native CI evidence. Historical extracted
+`AppRun` results do not establish original-runtime startup.
 
-AppImage's documented `--appimage-extract-and-run` is a possible separate native
-runtime check, provided the exact original artifact is executed and its actual
-extraction path, sandbox profile, owned process tree and cleanup are verified.
-That path is not currently established by this display probe.
+Display evidence under this explicit Ubuntu prerequisite does not establish
+stock Ubuntu double-click/FUSE startup. The display probe cannot independently
+satisfy the fresh AppImage runtime check.

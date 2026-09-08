@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Tests the executable extracted from the named installer, never a separate build.
 // Profiles, raw logs and private attachment files stay outside repository/artifacts.
-import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath, unlink } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath, unlink, readlink } from "node:fs/promises"
 import { createWriteStream } from "node:fs"
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -16,6 +16,7 @@ import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
 import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { desktopIdentity } from "../src/release/identity.ts"
+import { agentDatabaseName } from "../src/release/agent-channel.ts"
 import { waitForCredentialAttachment } from "../src/release/native-credentials.ts"
 import { createNativeV2CredentialProbe } from "../src/release/native-credentials-v2.ts"
 import { ownedV2CredentialTransport } from "../src/release/native-v2-transport.ts"
@@ -28,6 +29,8 @@ import {
 } from "../src/release/installed-reinstall.ts"
 import { startLinuxSecretService } from "../src/release/linux-secret-service.ts"
 import { qualifyPlatformDisplay } from "../src/release/platform-display.ts"
+import { prepareAppImageRuntime, bindAppImageElectron } from "../src/release/appimage-runtime.ts"
+import { qualifyAppImageReinstall } from "../src/release/appimage-reinstall.ts"
 import {
   packagedQualificationArguments,
   loadPublicQualification,
@@ -50,7 +53,6 @@ import {
   verifyWindowsVersionInfo,
 } from "../src/release/qualification.ts"
 import {
-  appImageSandboxProfile,
   debianCandidatePlan,
   debianProfileIsLoaded,
   profileIsLoaded,
@@ -99,6 +101,9 @@ const reinstallInstallationState = { unconfirmed: false }
 let linuxInstallation
 let linuxSandboxProfile
 let linuxTemporary
+let appImageRuntime
+let appImageRuntimeCleanup = false
+const appImageReplacementState = { unconfirmed: false }
 let secretService
 const credentialProbe = createNativeV2CredentialProbe({ providerID: "openai" })
 const credentialState = {
@@ -375,7 +380,16 @@ try {
           )
         } else {
           if ((await realpath(executable)) !== executable) throw new Error("LINUX_QUALIFICATION_PROFILE_PATH_INVALID")
-          const profile = appImageSandboxProfile(executable, root, identity.kind)
+          linuxTemporary = await allocateLinuxQualificationTemporary(process.env, root)
+          appImageRuntime = await prepareAppImageRuntime({
+            env: process.env,
+            root,
+            temporary: linuxTemporary.path,
+            artifact: join(root, "extractable.AppImage"),
+            artifactSha256,
+            kind: identity.kind,
+          })
+          const profile = appImageRuntime.profile
           await writeFile(profile.file, profile.text, { flag: "wx", mode: 0o600 })
           if (profileIsLoaded(await loadedProfiles(), profile.name))
             throw new Error("LINUX_QUALIFICATION_PROFILE_ALREADY_PRESENT")
@@ -389,11 +403,11 @@ try {
           ]).catch(retainUnconfirmedMutation)
           if (!profileIsLoaded(await loadedProfiles(), profile.name))
             throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
-          entrypoint = join(dirname(executable), "AppRun")
+          entrypoint = appImageRuntime.artifact
           check(
             stage,
             "PASS",
-            "Disposable-runner setup grants user namespaces only to this extracted AppImage executable. This tests the owned AppRun with Chromium sandboxing; default Ubuntu AppImage startup without this prerequisite is not qualified.",
+            "Disposable-runner setup grants user namespaces only to the original AppImage runtime’s exact extraction path. The documented extract-and-run mode requires this explicit Ubuntu AppArmor prerequisite; stock Ubuntu double-click/FUSE startup is not qualified.",
           )
         }
       }
@@ -403,7 +417,7 @@ try {
           if (error?.message === "LINUX_SECRET_SERVICE_CLEANUP_UNCONFIRMED") systemMutationUnconfirmed = true
           throw error
         })
-        linuxTemporary = await allocateLinuxQualificationTemporary(process.env, root)
+        linuxTemporary ||= await allocateLinuxQualificationTemporary(process.env, root)
       }
       for (const phase of ["save", "retrieve-remove", "absent"]) {
         await launch(entrypoint, phase)
@@ -479,6 +493,34 @@ try {
           },
         })
         check("native-reinstall-probe", "PASS", JSON.stringify(result))
+      } else if (appImageRuntime) {
+        stage = "native-reinstall-probe"
+        const closed = !failed && checks.find((item) => item.id === "cleanup")?.status === "PASS"
+        const result = await qualifyAppImageReinstall({
+          env: process.env,
+          root,
+          artifact: options.artifact,
+          artifactSha256,
+          runnable: appImageRuntime.artifact,
+          before: reinstallBefore,
+          replacementState: appImageReplacementState,
+          shutdown: {
+            applicationExited: closed,
+            descendantsExited: closed,
+            runtimeCacheRemoved: appImageRuntimeCleanup,
+          },
+          relaunch: async () => {
+            await launch(entrypoint, "reinstall")
+            const closed = !failed && checks.find((item) => item.id === "cleanup")?.status === "PASS"
+            return {
+              observation: reinstallAfter,
+              applicationExited: closed,
+              descendantsExited: closed,
+              runtimeCacheRemoved: appImageRuntimeCleanup,
+            }
+          },
+        })
+        check("native-reinstall-probe", "PASS", JSON.stringify(result))
       }
     }
   }
@@ -496,7 +538,9 @@ try {
   const safeToRemove =
     !systemMutationUnconfirmed &&
     !reinstallInstallationState.unconfirmed &&
-    (!applicationStarted || checks.find((item) => item.id === "cleanup")?.status === "PASS")
+    !appImageReplacementState.unconfirmed &&
+    (!applicationStarted ||
+      (checks.find((item) => item.id === "cleanup")?.status === "PASS" && (!appImageRuntime || appImageRuntimeCleanup)))
   if (secretService) {
     try {
       const status = await secretService.close({ applicationExited: safeToRemove, descendantsExited: safeToRemove })
@@ -677,6 +721,11 @@ try {
 async function launch(executable, credentialPhase) {
   stage = "launch"
   const profile = join(root, "profile")
+  if (appImageRuntime) {
+    if (executable !== appImageRuntime.artifact) throw new Error("APPIMAGE_RUNTIME_PATH_INVALID")
+    appImageRuntimeCleanup = false
+    await appImageRuntime.beforeLaunch()
+  }
   for (const folder of ["config/opencode", "tmp", "empty-path", "appdata", "localappdata"])
     await mkdir(join(profile, folder), { recursive: true, mode: 0o700 })
   if (credentialPhase !== "save") {
@@ -719,6 +768,7 @@ async function launch(executable, credentialPhase) {
     { mode: 0o600 },
   )
   const launchArguments = [
+    ...(appImageRuntime?.arguments || []),
     "--remote-debugging-port=0",
     "--remote-debugging-address=127.0.0.1",
     `--user-data-dir=${join(profile, "desktop")}`,
@@ -735,6 +785,7 @@ async function launch(executable, credentialPhase) {
     stdio: ["ignore", "pipe", "pipe"],
   })
   applicationStarted = true
+  let electronPid = appImageRuntime ? undefined : child.pid
   const log = createWriteStream(join(root, "application.log"), { mode: 0o600, flags: "a" })
   const privateLog = observePrivateLog(log)
   const stdoutFilter = credentialProbe.logFilter()
@@ -776,7 +827,7 @@ async function launch(executable, credentialPhase) {
     // for a valid record for this process and exact current conversation; no API
     // request may run against a missing, malformed or foreign attachment.
     attached = await waitForCredentialAttachment(join(profile, "desktop", "runtime-attach.json"), {
-      pid: child.pid,
+      pid: electronPid,
       ...expected,
     })
     v2Request = ownedV2CredentialTransport(attached)
@@ -835,8 +886,6 @@ async function launch(executable, credentialPhase) {
     }
   }
   try {
-    if (credentialState.pids.includes(child.pid)) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
-    credentialState.pids.push(child.pid)
     const port = await untilStarted(async () => {
       const announced = startup.debugPort()
       if (announced) return announced
@@ -914,6 +963,36 @@ async function launch(executable, credentialPhase) {
       "PACKAGED_WORKSPACE_UNAVAILABLE",
     )
     startup.dispose()
+    if (appImageRuntime) {
+      const ids = [child.pid, ...(await descendants(child.pid))]
+      const processes = (
+        await Promise.all(
+          ids.map(async (pid) => {
+            try {
+              const status = await readFile(`/proc/${pid}/status`, "utf8")
+              return {
+                pid,
+                ppid: Number(/^PPid:\s+(\d+)/m.exec(status)?.[1]),
+                uid: Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]),
+                executable: await readlink(`/proc/${pid}/exe`),
+              }
+            } catch {
+              return undefined
+            }
+          }),
+        )
+      ).filter(Boolean)
+      electronPid = await bindAppImageElectron({
+        runtimePid: child.pid,
+        uid: process.getuid(),
+        plan: appImageRuntime,
+        payloadSha256: payload.sha256,
+        processes,
+      })
+    }
+    if (!electronPid || credentialState.pids.includes(electronPid))
+      throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+    credentialState.pids.push(electronPid)
     if (process.platform === "linux") {
       verifyLinuxRendererSandbox(
         await Promise.all(
@@ -963,7 +1042,7 @@ async function launch(executable, credentialPhase) {
         reinstallAfter = await preservedState()
         return
       }
-      const stored = await credentialProbe.inspectFiles(profile, { databaseName: "opencode.db" })
+      const stored = await credentialProbe.inspectFiles(profile, { databaseName: agentDatabaseName })
       const expected = credentialPhase === "retrieve-remove" ? credentialState.saved : credentialState.removed
       if (stored.vaultSha256 !== expected.vaultSha256) throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
       await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
@@ -999,7 +1078,7 @@ async function launch(executable, credentialPhase) {
           method: "POST",
           body: { model: { providerID: "fixture", id: "fixture" } },
         })
-        credentialState.removed = await credentialProbe.inspectFiles(profile, { databaseName: "opencode.db" })
+        credentialState.removed = await credentialProbe.inspectFiles(profile, { databaseName: agentDatabaseName })
         if (credentialState.removed.vaultSha256 === credentialState.saved.vaultSha256)
           throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
         const selected = await until(
@@ -1015,7 +1094,8 @@ async function launch(executable, credentialPhase) {
         )
         if (selected !== credentialState.backend) throw new Error("CREDENTIAL_PROBE_BACKEND_UNCONFIRMED")
       }
-      if (credentialPhase === "absent" && (installed || linuxInstallation)) reinstallBefore = await preservedState()
+      if (credentialPhase === "absent" && (installed || linuxInstallation || appImageRuntime))
+        reinstallBefore = await preservedState()
       return
     }
     stage = "synthetic-chat"
@@ -1133,7 +1213,7 @@ async function launch(executable, credentialPhase) {
       "Renderer reload preserved the bound conversation and exactly three recorded trials without replay.",
     )
     stage = "native-v2-credential-probe"
-    if (installed || linuxInstallation) {
+    if (installed || linuxInstallation || appImageRuntime) {
       const preference = await evaluate(
         "window.api.getPinchZoomEnabled().then(async before => { await window.api.setPinchZoomEnabled(!before); return { before, saved: await window.api.getPinchZoomEnabled() } })",
       )
@@ -1144,7 +1224,7 @@ async function launch(executable, credentialPhase) {
     credentialState.sessionId = attached.sessionId
     credentialState.experimentId = completed.id
     await credentialProbe.save(v2Request)
-    credentialState.saved = await credentialProbe.inspectFiles(profile, { databaseName: "opencode.db" })
+    credentialState.saved = await credentialProbe.inspectFiles(profile, { databaseName: agentDatabaseName })
     credentialState.backend = await until(
       () => {
         try {
@@ -1203,6 +1283,7 @@ async function launch(executable, credentialPhase) {
     stage = "cleanup"
     try {
       owned = await descendants(child.pid)
+      if (appImageRuntime && !electronPid) throw new Error("APPIMAGE_RUNTIME_OWNER_UNCONFIRMED")
       if (api) {
         const attachment = JSON.parse(await readFile(join(profile, "desktop", "runtime-attach.json"), "utf8"))
         if (attachment.sessionId) await api(`/session/${attachment.sessionId}/abort`, {})
@@ -1241,6 +1322,25 @@ async function launch(executable, credentialPhase) {
         )
       )
         throw new Error("PACKAGED_ATTACHMENT_RETAINED")
+      if (appImageRuntime) {
+        const runtime = await appImageRuntime.afterShutdown({
+          applicationExited: true,
+          descendantsExited: true,
+          runtimeExitCode: child.exitCode,
+        })
+        appImageRuntimeCleanup = true
+        if (credentialPhase === "save")
+          check(
+            "native-fresh-appimage-probe",
+            "PASS",
+            JSON.stringify({
+              ...runtime,
+              sameExecutableAndResourcesFingerprint: true,
+              apparmorPrerequisite: "exact-executable-userns-profile",
+              stockUbuntuWithoutPrerequisiteTested: false,
+            }),
+          )
+      }
       check(
         stage,
         "PASS",

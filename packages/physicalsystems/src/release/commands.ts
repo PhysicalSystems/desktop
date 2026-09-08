@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+import { agentBuildChannel } from "./agent-channel"
 import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
@@ -84,7 +85,7 @@ export function buildEnvironment(input: NodeJS.ProcessEnv, inputs: ReleaseInputs
       delete env[key]
   return Object.assign(env, {
     OPENCODE_VERSION: inputs.version,
-    OPENCODE_CHANNEL: "dev",
+    OPENCODE_CHANNEL: agentBuildChannel,
     MODELS_DEV_API_JSON: models,
     PHYSICALSYSTEMS_RELEASE_INPUTS: file,
     PHYSICALSYSTEMS_ALLOW_DEVICES: "0",

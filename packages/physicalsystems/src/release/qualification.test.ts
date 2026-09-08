@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
+import { physicalEnvironment } from "../environment"
+import { agentBuildChannel, agentDatabaseName } from "./agent-channel"
 import { afterEach, expect, test } from "bun:test"
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, chmod, lstat } from "node:fs/promises"
 import { join } from "node:path"
@@ -314,7 +316,12 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
   expect(env.HOME).toBe("/owned/profile")
   expect(env.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
   expect(env.PHYSICALSYSTEMS_QUALIFICATION_TRACE).toBe("1")
-  expect(env.OPENCODE_DISABLE_CHANNEL_DB).toBe("1")
+  expect(env.OPENCODE_DISABLE_CHANNEL_DB).toBeUndefined()
+  const actualSidecar = physicalEnvironment(env, "/owned/profile")
+  expect(actualSidecar.OPENCODE_DISABLE_CHANNEL_DB).toBeUndefined()
+  expect(actualSidecar.OPENCODE_DB).toBeUndefined()
+  expect(agentBuildChannel).toBe("dev")
+  expect(agentDatabaseName).toBe("opencode-dev.db")
   expect(env.OPENCODE_DB).toBeUndefined()
   expect(JSON.stringify(env)).not.toContain("credential-private-trap")
   expect(env.DISPLAY).toBe(":44")

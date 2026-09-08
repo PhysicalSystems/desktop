@@ -18,6 +18,15 @@ export type SignatureResult = { status: QualificationStatus; trust: string; sign
 // Only authored diagnostic literals may leave a disposable runner. Native error
 // messages and stacks can contain private paths, provider output or credentials.
 export const qualificationFailureCodes = [
+  "APPIMAGE_REINSTALL_SHUTDOWN_UNCONFIRMED",
+  "APPIMAGE_REINSTALL_STATE_CHANGED",
+  "APPIMAGE_RUNTIME_ARTIFACT_CHANGED",
+  "APPIMAGE_RUNTIME_CACHE_NOT_EMPTY",
+  "APPIMAGE_RUNTIME_CLEANUP_UNCONFIRMED",
+  "APPIMAGE_RUNTIME_OWNER_UNCONFIRMED",
+  "APPIMAGE_RUNTIME_PATH_INVALID",
+  "APPIMAGE_RUNTIME_PAYLOAD_CHANGED",
+  "APPIMAGE_RUNTIME_UNSUPPORTED",
   "V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED",
   "V2_CREDENTIAL_PROBE_STORAGE_UNCONFIRMED",
   "V2_CREDENTIAL_PROBE_REMOVAL_UNCONFIRMED",
@@ -378,7 +387,6 @@ export function qualificationEnvironment(
     PHYSICALSYSTEMS_DATA_DIR: root,
     PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
     PHYSICALSYSTEMS_QUALIFICATION_TRACE: "1",
-    OPENCODE_DISABLE_CHANNEL_DB: "1",
     LANG: "en_US.UTF-8",
     LC_ALL: "en_US.UTF-8",
   })
