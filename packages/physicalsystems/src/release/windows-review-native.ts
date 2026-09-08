@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 import { execFile } from "node:child_process"
 import { win32 } from "node:path"
-import { browserObservationError, readBrowserObservation } from "./browser-observation"
+import { browserObservationError, readBrowserObservation, type BrowserObservation } from "./browser-observation"
 
 /** Parse only the adapter's fixed failure marker; never retain native output. */
-export function windowsReviewNativeFailure(stdout: string) {
-  const phases =
-    stdout.length <= 1024 * 1024
-      ? stdout.split(/\r?\n/).flatMap((line) => {
+export function windowsReviewNativeFailure(
+  stdout: string,
+  stderr = "",
+  outcome?: BrowserObservation["windowsNativeOutcome"],
+) {
+  const parse = (text: string) =>
+    Buffer.byteLength(text, "utf8") <= 1024 * 1024
+      ? text.split(/\r?\n/).flatMap((line) => {
           const match = /^PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_([a-z-]+)$/.exec(line)
           if (!match) return []
           const value = readBrowserObservation({
@@ -16,10 +20,44 @@ export function windowsReviewNativeFailure(stdout: string) {
           return value?.windowsNativePhase ? [value.windowsNativePhase] : []
         })
       : []
+  // Live stderr checkpoints survive a timeout which never reaches the trap.
+  // Stdout remains the successful JSON channel; its single trap marker is a
+  // fallback for already-authored failures. No native text is retained.
+  const live = parse(stderr)
+  const trapped = parse(stdout)
+  const phase = live.at(-1) ?? (trapped.length === 1 ? trapped[0] : undefined)
   return browserObservationError("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED", undefined, {
     browserPhase: "context",
-    ...(phases.length === 1 ? { windowsNativePhase: phases[0] } : {}),
+    ...(phase ? { windowsNativePhase: phase } : {}),
+    ...(outcome ? { windowsNativeOutcome: outcome } : {}),
   })
+}
+
+/** The callback's native output is private; only fixed outcome facts survive. */
+export function windowsReviewNativeResult(input: { stdout: string; stderr: string; error?: unknown }) {
+  if (input.error) {
+    const error = input.error as { code?: unknown; killed?: unknown; signal?: unknown }
+    // This adapter never exposes or manually kills its execFile child. After
+    // excluding the output limit, killed can only be its own 12s timeout.
+    const outcome: NonNullable<BrowserObservation["windowsNativeOutcome"]> =
+      error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+        ? "output-limit"
+        : error.code === "ETIMEDOUT" || error.killed === true
+          ? "timeout"
+          : typeof error.signal === "string"
+            ? "signal"
+            : typeof error.code === "number"
+              ? "exit"
+              : ["ENOENT", "EACCES", "EPERM", "EINVAL"].includes(String(error.code))
+                ? "start"
+                : "unknown"
+    throw windowsReviewNativeFailure(input.stdout, input.stderr, outcome)
+  }
+  try {
+    return JSON.parse(input.stdout.replace(/^\uFEFF/, "")) as unknown
+  } catch {
+    throw windowsReviewNativeFailure(input.stdout, input.stderr, "invalid-json")
+  }
 }
 
 /** Internal controller transport. Native values remain private and are never
@@ -60,6 +98,22 @@ export type WindowsReviewNative = (
     | { operation: "stop"; processes: WindowsReviewProcess[] },
 ) => Promise<unknown>
 
+export function windowsReviewNativeArguments(executable: string) {
+  const args = [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    Buffer.from(windowsReviewNativeScript, "utf16le").toString("base64"),
+  ]
+  // CreateProcess accepts at most 32767 UTF-16 code units including NUL.
+  // Conservatively reserve doubled executable escaping, quotes, separators,
+  // and termination; diagnostic growth must fail before native acquisition.
+  const length = executable.length * 2 + 3 + args.reduce((total, arg) => total + arg.length + 3, 0)
+  if (length > 32767) throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+  return args
+}
+
 export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): WindowsReviewNative {
   const system = env.SystemRoot ?? env.SYSTEMROOT
   if (
@@ -70,6 +124,7 @@ export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): Windo
   )
     throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   const executable = win32.join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  const args = windowsReviewNativeArguments(executable)
   const privateEnv = Object.fromEntries(
     ["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].flatMap(
       (key) => (env[key] ? [[key, env[key]!]] : []),
@@ -81,13 +136,7 @@ export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): Windo
     return await new Promise((resolve, reject) => {
       const child = execFile(
         executable,
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-EncodedCommand",
-          Buffer.from(windowsReviewNativeScript, "utf16le").toString("base64"),
-        ],
+        args,
         {
           cwd: root,
           env: {
@@ -104,12 +153,11 @@ export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): Windo
           maxBuffer: 1024 * 1024,
           timeout: 12000,
         },
-        (error, stdout) => {
-          if (error) return reject(windowsReviewNativeFailure(stdout))
+        (error, stdout, stderr) => {
           try {
-            resolve(JSON.parse(stdout.replace(/^\uFEFF/, "")))
-          } catch {
-            reject(Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED"))
+            resolve(windowsReviewNativeResult({ error, stdout, stderr }))
+          } catch (error) {
+            reject(error)
           }
         },
       )
@@ -126,15 +174,26 @@ export const windowsReviewNativeScript = String.raw`
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
-$script:reviewPhase = 'bootstrap'
+function Set-ReviewPhase([string]$phase) {
+  $script:reviewPhase = $phase
+  [Console]::Error.WriteLine('PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_'+$phase)
+  [Console]::Error.Flush()
+}
+Set-ReviewPhase 'bootstrap'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 trap { [Console]::Out.WriteLine('PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_'+$script:reviewPhase); [Console]::Error.Write('PROVIDER_REVIEW_WINDOWS_UNCONFIRMED'); exit 1 }
-$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+Set-ReviewPhase 'input-read'
+$inputText = [Console]::In.ReadToEnd()
+Set-ReviewPhase 'input-parse'
+$request = $inputText | ConvertFrom-Json
 $paths = @('Software\Policies', 'Software\Policies\Microsoft', 'Software\Policies\Microsoft\Edge')
+Set-ReviewPhase 'registry-open'
 $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
 $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+Set-ReviewPhase 'caller-identity'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+Set-ReviewPhase 'add-type'
 Add-Type -TypeDefinition @'
 using System;
 using System.Text;
@@ -157,7 +216,7 @@ public static class ReviewNative {
 }
 '@
 function Read-Policy {
-  $script:reviewPhase = 'policy-read'
+  Set-ReviewPhase 'policy-read'
   $keys = @($paths | ForEach-Object { $key=$base.OpenSubKey($_); $present=$null -ne $key; if($key){$key.Dispose()}; $present })
   $key=$base.OpenSubKey($paths[-1]); $value=$null
   try {
@@ -176,23 +235,23 @@ function Same-Value($a,$b) {
   return $a.kind -ceq $b.kind -and $a.data -ceq $b.data
 }
 function Require-NoMachineOverride {
-  $script:reviewPhase = 'machine-policy'
+  Set-ReviewPhase 'machine-policy'
   $key=$machine.OpenSubKey($paths[-1]); try {
     if($key -and $key.GetValueNames() -contains 'UserDataDir') { throw 'machine-policy' }
   } finally { if($key){$key.Dispose()} }
 }
 function Association {
-  $script:reviewPhase = 'association-progid'
+  Set-ReviewPhase 'association-progid'
   if($request.scheme -notin @('http','https')) {throw 'scheme'}
   if([ReviewNative]::Association(20,[string]$request.scheme) -cne 'MSEdgeHTM') { throw 'association' }
-  $script:reviewPhase = 'association-executable'
+  Set-ReviewPhase 'association-executable'
   $exe=[IO.Path]::GetFullPath([ReviewNative]::Association(2,[string]$request.scheme))
   $allowed=@($env:ProgramFiles,[Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),$env:ProgramW6432) | Where-Object {$_} | ForEach-Object {[IO.Path]::Combine($_,'Microsoft\Edge\Application\msedge.exe')}
   if($allowed -inotcontains $exe) { throw 'executable' }
   return $exe
 }
 function Processes {
-  $script:reviewPhase = 'process-tree'
+  Set-ReviewPhase 'process-tree'
   # Enumerate only PID/parent/name for ambient processes. Full private identity
   # is requested solely for Edge or descendants of our explicit spawned root.
   $tree=@(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,Name FROM Win32_Process')
@@ -214,7 +273,7 @@ function Processes {
   $items=@($tree | Where-Object {$selected.Contains([int]$_.ProcessId)} | ForEach-Object {Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$_.ProcessId)"})
   if($items.Count -gt 256) { throw 'excessive' }
   @($items | ForEach-Object {
-    $script:reviewPhase = 'process-identity'
+    Set-ReviewPhase 'process-identity'
     $owner=Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid
     if($owner.ReturnValue -ne 0 -or !$_.ExecutablePath -or !$_.CommandLine) { throw 'identity' }
     $process=[Diagnostics.Process]::GetProcessById([int]$_.ProcessId)
@@ -235,7 +294,7 @@ function Observed-Pids {
   })
 }
 function Require-NoEdge {
-  $script:reviewPhase = 'ambient-browser'
+  Set-ReviewPhase 'ambient-browser'
   if(@(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE Name='msedge.exe' OR Name='msedge_crashpad_handler.exe'").Count -ne 0) {throw 'ambient-browser'}
 }
 switch($request.operation) {
@@ -243,7 +302,7 @@ switch($request.operation) {
     Require-NoMachineOverride
     Require-NoEdge
     $exe=Association
-    $script:reviewPhase = 'signature'
+    Set-ReviewPhase 'signature'
     $signature=Get-AuthenticodeSignature -LiteralPath $exe
     if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') { throw 'signature' }
     $result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@()}
@@ -252,31 +311,31 @@ switch($request.operation) {
     Require-NoMachineOverride
     Require-NoEdge
     $current=Read-Policy
-    $script:reviewPhase = 'policy-compare'
+    Set-ReviewPhase 'policy-compare'
     if(!(Same-Value $current.value $request.before.value) -or (($current.keys | ConvertTo-Json -Compress) -cne ($request.before.keys | ConvertTo-Json -Compress))) { throw 'changed' }
-    $script:reviewPhase = 'policy-write'
+    Set-ReviewPhase 'policy-write'
     $key=$base.CreateSubKey($paths[-1]); try {$key.SetValue('UserDataDir',[string]$request.profile,[Microsoft.Win32.RegistryValueKind]::String)} finally {$key.Dispose()}
     if(!(Same-Value (Read-Policy).value @{kind='String';data=[string]$request.profile})) { throw 'unconfirmed' }
     $result=@{written=$true}
   }
   'restore' {
     Require-NoEdge
-    $script:reviewPhase = 'process-tree'
+    Set-ReviewPhase 'process-tree'
     # Any surviving or reused observed PID prevents restoring policy/removing
     # the private profile. Unknown descendants are never termination targets.
     foreach($pidValue in (Observed-Pids)) {
       if(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE ProcessId=$pidValue"){throw 'observed-process-alive'}
     }
     $current=Read-Policy
-    $script:reviewPhase = 'policy-compare'
+    Set-ReviewPhase 'policy-compare'
     if(!(Same-Value $current.value @{kind='String';data=[string]$request.profile}) -and !(Same-Value $current.value $request.before.value)) { throw 'changed' }
-    $script:reviewPhase = 'policy-restore'
+    Set-ReviewPhase 'policy-restore'
     $key=$base.OpenSubKey($paths[-1],$true)
     if($key) { try {
       if($null -eq $request.before.value) {$key.DeleteValue('UserDataDir',$false)}
       else {$key.SetValue('UserDataDir',[string]$request.before.value.data,[Enum]::Parse([Microsoft.Win32.RegistryValueKind],[string]$request.before.value.kind))}
     } finally {$key.Dispose()} }
-    $script:reviewPhase = 'policy-keys'
+    Set-ReviewPhase 'policy-keys'
     for($index=$paths.Count-1;$index -ge 0;$index--) {
       if($request.before.keys[$index]) {continue}
       $key=$base.OpenSubKey($paths[$index]); if(!$key){continue}
@@ -285,7 +344,7 @@ switch($request.operation) {
       $base.DeleteSubKey($paths[$index],$false)
     }
     $after=Read-Policy
-    $script:reviewPhase = 'policy-readback'
+    Set-ReviewPhase 'policy-readback'
     if(!(Same-Value $after.value $request.before.value) -or (($after.keys | ConvertTo-Json -Compress) -cne ($request.before.keys | ConvertTo-Json -Compress))) {throw 'restore-unconfirmed'}
     $result=@{restored=$true}
   }
@@ -294,7 +353,7 @@ switch($request.operation) {
     $null=Association
     $listening=@()
     if($request.port) {
-      $script:reviewPhase = 'listener'
+      Set-ReviewPhase 'listener'
       $listening=@(Get-NetTCPConnection -LocalPort ([int]$request.port) -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
         if($_.LocalAddress -notin @('127.0.0.1','::1')){throw 'non-loopback'}
         [int]$_.OwningProcess
@@ -305,7 +364,7 @@ switch($request.operation) {
   'stop' {
     if(@($request.processes).Count -gt 256){throw 'excessive'}
     foreach($expected in $request.processes) {
-      $script:reviewPhase = 'process-identity'
+      Set-ReviewPhase 'process-identity'
       $native=Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$expected.pid)"
       if(!$native){continue}
       $owner=Invoke-CimMethod -InputObject $native -MethodName GetOwnerSid
@@ -316,9 +375,9 @@ switch($request.operation) {
           [Math]::Abs(($native.CreationDate.ToUniversalTime().ToFileTimeUtc()-[long]$expected.birth)) -ge 10 -or
           $native.ExecutablePath -ine $expected.executable -or $native.SessionId -ne $expected.session -or
           $owner.ReturnValue -ne 0 -or $owner.Sid -cne $expected.sid -or $owner.Sid -cne $sid) {throw 'identity-changed'}
-        $script:reviewPhase = 'process-signal'
+        Set-ReviewPhase 'process-signal'
         $process.Kill()
-        $script:reviewPhase = 'process-wait'
+        Set-ReviewPhase 'process-wait'
         if(!$process.WaitForExit(5000)){throw 'retained'}
       } finally {$process.Dispose()}
     }
@@ -326,6 +385,6 @@ switch($request.operation) {
   }
   default {throw 'operation'}
 }
-$script:reviewPhase = 'output'
+Set-ReviewPhase 'output'
 [Console]::Out.Write(($result | ConvertTo-Json -Depth 12 -Compress))
 `

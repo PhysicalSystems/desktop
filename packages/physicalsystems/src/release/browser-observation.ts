@@ -25,6 +25,11 @@ const phases = [
 ] as const
 const windowsPhases = [
   "bootstrap",
+  "input-read",
+  "input-parse",
+  "registry-open",
+  "caller-identity",
+  "add-type",
   "machine-policy",
   "ambient-browser",
   "association-progid",
@@ -82,6 +87,7 @@ export type BrowserObservation = {
   syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "OTHER"
   windowsNativePhase?: (typeof windowsPhases)[number]
   failedWindowsNativePhase?: (typeof windowsPhases)[number]
+  windowsNativeOutcome?: "timeout" | "signal" | "exit" | "start" | "output-limit" | "invalid-json" | "unknown"
   policyOwned?: boolean
   sidMatched?: boolean
   observedProcesses?: number
@@ -131,17 +137,19 @@ function validate(value: unknown): BrowserObservation | undefined {
         ? phases
         : ["reviewPhase", "failedReviewPhase"].includes(key)
           ? reviews
-          : key === "syscallFailure"
-            ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
-            : key === "processState"
-              ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
-              : key === "termination"
-                ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
-                : key === "stderrCategory"
-                  ? ["sandbox", "display", "dbus", "other"]
-                  : key === "inspectPhase"
-                    ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
-                    : undefined
+          : key === "windowsNativeOutcome"
+            ? ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]
+            : key === "syscallFailure"
+              ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
+              : key === "processState"
+                ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
+                : key === "termination"
+                  ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
+                  : key === "stderrCategory"
+                    ? ["sandbox", "display", "dbus", "other"]
+                    : key === "inspectPhase"
+                      ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
+                      : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)

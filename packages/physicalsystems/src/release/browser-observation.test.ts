@@ -54,6 +54,8 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
     { browserPhase: "identity-argv", stderrCategory: "PRIVATE" },
     { browserPhase: "cleanup-observe", inspectPhase: "PRIVATE" },
     { browserPhase: "cleanup-observe", sameSession: "PRIVATE" },
+    { browserPhase: "windows-preflight", windowsNativePhase: "PRIVATE" },
+    { browserPhase: "windows-preflight", windowsNativeOutcome: "PRIVATE" },
     {},
     [],
     null,

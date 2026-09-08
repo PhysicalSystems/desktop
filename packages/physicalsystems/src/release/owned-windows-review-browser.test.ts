@@ -12,7 +12,13 @@ import {
   windowsReviewProcesses,
 } from "./owned-windows-review-browser"
 import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
-import { windowsReviewNative, windowsReviewNativeFailure } from "./windows-review-native"
+import {
+  windowsReviewNative,
+  windowsReviewNativeFailure,
+  windowsReviewNativeResult,
+  windowsReviewNativeArguments,
+  windowsReviewNativeScript,
+} from "./windows-review-native"
 import { browserObservationError, readBrowserObservation } from "./browser-observation"
 import { qualificationFailureCode } from "./qualification"
 
@@ -404,4 +410,91 @@ test("native phase parser accepts only one authored marker, never raw native err
     "x".repeat(1024 * 1024 + 1),
   ])
     expect(readBrowserObservation(windowsReviewNativeFailure(value))?.windowsNativePhase).toBeUndefined()
+})
+
+test("native timeout preserves the last live checkpoint through the actual result decoder and cleanup wrapper", () => {
+  const privateValue = "PRIVATE-SID-PATH-TOKEN"
+  const stderr = [
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_bootstrap",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-read",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-parse",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_add-type",
+    privateValue,
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_add-type PRIVATE",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_unrecognized",
+  ].join("\r\n")
+  let failure: unknown
+  try {
+    windowsReviewNativeResult({
+      stdout: "",
+      stderr,
+      error: { killed: true, signal: "SIGTERM", code: null, message: privateValue },
+    })
+  } catch (error) {
+    failure = error
+  }
+  expect(failure).toBeInstanceOf(Error)
+  const wrapped = browserObservationError("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED", failure, {
+    browserPhase: "windows-preflight",
+    failedBrowserPhase: "windows-preflight",
+    reviewPhase: "browser-cleanup",
+  })
+  expect(readBrowserObservation(wrapped)).toEqual({
+    browserPhase: "windows-preflight",
+    failedBrowserPhase: "windows-preflight",
+    reviewPhase: "browser-cleanup",
+    windowsNativePhase: "add-type",
+    windowsNativeOutcome: "timeout",
+  })
+  expect(JSON.stringify(readBrowserObservation(wrapped))).not.toContain(privateValue)
+  expect(
+    readBrowserObservation(windowsReviewNativeFailure("", "x".repeat(1024 * 1024) + stderr))?.windowsNativePhase,
+  ).toBeUndefined()
+  expect(
+    readBrowserObservation(windowsReviewNativeFailure("", "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-read\n"))
+      ?.windowsNativePhase,
+  ).toBe("input-read")
+})
+
+test("native result decoder keeps success JSON unchanged and classifies only fixed callback outcomes", () => {
+  const value = { private: "PRIVATE-NATIVE-RETURN-VALUE", values: [1, 2] }
+  expect(
+    windowsReviewNativeResult({
+      stdout: `\uFEFF${JSON.stringify(value)}`,
+      stderr: "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_output\n",
+    }),
+  ).toEqual(value)
+  for (const [error, outcome] of [
+    [{ code: "ETIMEDOUT" }, "timeout"],
+    [{ signal: "SIGKILL" }, "signal"],
+    [{ code: 1 }, "exit"],
+    [{ code: "ENOENT", path: "PRIVATE" }, "start"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "output-limit"],
+    [{ message: "PRIVATE" }, "unknown"],
+    [undefined, "invalid-json"],
+  ] as const) {
+    let failure: unknown
+    try {
+      windowsReviewNativeResult({
+        stdout: "PRIVATE invalid JSON",
+        stderr: "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-parse\nPRIVATE",
+        error,
+      })
+    } catch (error) {
+      failure = error
+    }
+    const observation = readBrowserObservation(failure)
+    expect(observation?.windowsNativeOutcome).toBe(outcome)
+    expect(observation?.windowsNativePhase).toBe("input-parse")
+    expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+  }
+})
+
+test("the real encoded diagnostic script fits CreateProcess including executable and argument overhead", () => {
+  const args = windowsReviewNativeArguments("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+  expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+  expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).toBe(windowsReviewNativeScript)
+  expect(() => windowsReviewNativeArguments(`C:\\${"x".repeat(2048)}\\powershell.exe`)).toThrow(
+    "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+  )
 })
