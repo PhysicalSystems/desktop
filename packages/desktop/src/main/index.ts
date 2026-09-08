@@ -28,6 +28,7 @@ import { setupAutoUpdater, showUpdaterDialog } from "./updater"
 import { safeWebContentsURL } from "./window-state"
 import {
   getLastFocusedWindow,
+  initializeExternalURLOpener,
   registerRendererProtocol,
   setRelaunchHandler,
   setAppQuitting,
@@ -104,6 +105,7 @@ function ensureLoopbackNoProxy() {
 
 const main = Effect.gen(function* () {
   startupTrace("MAIN_ENTER")
+  initializeExternalURLOpener(process.env)
   const identity = desktopIdentity(import.meta.env.PHYSICALSYSTEMS_BUILD_IDENTITY)
   const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), identity.profileDirectory)
   const scoped = physicalEnvironment(process.env, physicalRoot)
