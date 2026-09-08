@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-import { spawn } from "node:child_process"
+import { spawn, type ChildProcess } from "node:child_process"
 import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
+import { browserObservationError, browserSyscallFailure, type BrowserObservation } from "./browser-observation"
 
 const failure = () => new Error("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
 const cleanupFailure = () => new Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
@@ -12,6 +13,20 @@ export type OwnedReviewBrowser = {
   environment: NodeJS.ProcessEnv
   confirmHandoff(url: string): Promise<boolean>
   stop(options?: { retainProfile?: boolean }): Promise<void>
+}
+
+/** A retained browser must not retain the qualification controller itself.
+ * This releases only our ignored-stdio child handle, without signaling a
+ * process, deleting a profile, or converting failed cleanup into success. */
+export async function settleReviewBrowserCleanup<T>(
+  child: Pick<ChildProcess, "unref">,
+  cleanup: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await cleanup()
+  } finally {
+    child.unref()
+  }
 }
 
 export function validateBrowserProbeURL(value: string) {
@@ -187,9 +202,34 @@ export async function startOwnedReviewBrowser(input: {
   root: string
   probeURL?: string
 }): Promise<OwnedReviewBrowser> {
+  await requireDisposablePublicRunner(input.env, input.root)
+  const observation: BrowserObservation = {
+    browserPhase: "context",
+    pidObserved: false,
+    birthVerified: false,
+    cdpReady: false,
+  }
+  try {
+    return await startLinuxReviewBrowser(input, observation)
+  } catch (error) {
+    observation.failedBrowserPhase ??= observation.browserPhase
+    observation.syscallFailure ??= browserSyscallFailure(error)
+    throw browserObservationError(
+      (error as Error)?.message === "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED"
+        ? "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED"
+        : "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
+      error,
+      observation,
+    )
+  }
+}
+
+async function startLinuxReviewBrowser(
+  input: { env: NodeJS.ProcessEnv; root: string; probeURL?: string },
+  observation: BrowserObservation,
+): Promise<OwnedReviewBrowser> {
   const expectedURL =
     input.probeURL === undefined ? "https://auth.openai.com/codex/device" : validateBrowserProbeURL(input.probeURL)
-  await requireDisposablePublicRunner(input.env, input.root)
   if (process.platform !== "linux" || !input.env.DISPLAY) throw failure()
   const root = await realpath(input.root)
   if ((await readdir(root)).length) throw failure()
@@ -202,6 +242,7 @@ export async function startOwnedReviewBrowser(input: {
   const database = reviewBrowserCrashDatabase(root)
   const profile = join(root, "profile")
   const env = ownedReviewBrowserEnvironment(root, input.env)
+  observation.browserPhase = "directories"
   await Promise.all([
     mkdir(profile, { mode: 0o700 }),
     mkdir(join(root, "config"), { mode: 0o700 }),
@@ -233,6 +274,7 @@ export async function startOwnedReviewBrowser(input: {
     "[Default Applications]\nx-scheme-handler/http=physical-review.desktop\nx-scheme-handler/https=physical-review.desktop\n",
     { mode: 0o600, flag: "wx" },
   )
+  observation.browserPhase = "spawn"
   const child = spawn(
     executable,
     [...args, "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "about:blank"],
@@ -244,6 +286,7 @@ export async function startOwnedReviewBrowser(input: {
       stdio: "ignore",
     },
   )
+  observation.pidObserved = Boolean(child.pid)
   let childError = false
   child.on("error", () => {
     childError = true
@@ -277,63 +320,74 @@ export async function startOwnedReviewBrowser(input: {
         members.push(value)
       } catch (error) {
         if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) continue
+        observation.syscallFailure ??= browserSyscallFailure(error)
         throw failure()
       }
     }
+    observation.ownedProcesses = members.length
     return members
   }
-  const stop = async (options: { retainProfile?: boolean } = {}) => {
-    if (stopped) return
-    // Recheck birth immediately before signaling each member; never kill an
-    // ambient browser or a reused PID. The session was created by our spawn.
-    // An acquisition failure before identity verification cannot authorize a
-    // signal or deletion. The caller retains the entire isolated review root.
-    if (!birth) throw cleanupFailure()
-    try {
-      for (const signal of ["SIGTERM", "SIGKILL"] as const) {
-        for (const member of await inspect()) {
-          const now = await readFile(`/proc/${member.pid}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT" || error.code === "ESRCH") return undefined
-            throw failure()
-          })
-          if (!now) continue
-          const current = reviewBrowserProcess(now)
-          reviewBrowserSignalIdentity(member, current, await readFile(`/proc/${member.pid}/status`, "utf8"), uid)
-          if (
-            current.session !== child.pid &&
-            !reviewBrowserCrashpad({
-              command: await readFile(`/proc/${member.pid}/cmdline`, "utf8"),
-              executable: await readlink(`/proc/${member.pid}/exe`),
-              database,
+  const stop = async (options: { retainProfile?: boolean } = {}) =>
+    settleReviewBrowserCleanup(child, async () => {
+      if (stopped) return
+      // Recheck birth immediately before signaling each member; never kill an
+      // ambient browser or a reused PID. The session was created by our spawn.
+      // An acquisition failure before identity verification cannot authorize a
+      // signal or deletion. The caller retains the entire isolated review root.
+      try {
+        observation.browserPhase = "cleanup-identity"
+        if (!birth) throw cleanupFailure()
+        for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+          observation.browserPhase = "cleanup-observe"
+          for (const member of await inspect()) {
+            observation.browserPhase = "cleanup-signal"
+            const now = await readFile(`/proc/${member.pid}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT" || error.code === "ESRCH") return undefined
+              throw failure()
             })
+            if (!now) continue
+            const current = reviewBrowserProcess(now)
+            reviewBrowserSignalIdentity(member, current, await readFile(`/proc/${member.pid}/status`, "utf8"), uid)
+            if (
+              current.session !== child.pid &&
+              !reviewBrowserCrashpad({
+                command: await readFile(`/proc/${member.pid}/cmdline`, "utf8"),
+                executable: await readlink(`/proc/${member.pid}/exe`),
+                database,
+              })
+            )
+              throw failure()
+            try {
+              process.kill(member.pid, signal)
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw failure()
+            }
+          }
+          const until = Date.now() + 5000
+          observation.browserPhase = "cleanup-wait"
+          while ((await inspect()).length && Date.now() < until) await pause(50)
+          if (!(await inspect()).length) break
+        }
+        if ((await inspect()).length) throw failure()
+        if (!options.retainProfile) {
+          observation.browserPhase = "cleanup-profile"
+          await rm(root, { recursive: true })
+          if (
+            await lstat(root).then(
+              () => true,
+              (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+            )
           )
             throw failure()
-          try {
-            process.kill(member.pid, signal)
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw failure()
-          }
         }
-        const until = Date.now() + 5000
-        while ((await inspect()).length && Date.now() < until) await pause(50)
-        if (!(await inspect()).length) break
+        stopped = true
+        observation.browserPhase = "stopped"
+      } catch (error) {
+        observation.cleanupFailurePhase = observation.browserPhase
+        observation.syscallFailure ??= browserSyscallFailure(error)
+        throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", error, observation)
       }
-      if ((await inspect()).length) throw failure()
-      if (!options.retainProfile) {
-        await rm(root, { recursive: true })
-        if (
-          await lstat(root).then(
-            () => true,
-            (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
-          )
-        )
-          throw failure()
-      }
-      stopped = true
-    } catch {
-      throw cleanupFailure()
-    }
-  }
+    })
   const targets = async () => {
     if (!origin || stopped || childError || child.exitCode !== null) throw failure()
     return await reviewBrowserTargets(origin)
@@ -344,18 +398,21 @@ export async function startOwnedReviewBrowser(input: {
     while (Date.now() < until) {
       if (!child.pid || childError || child.exitCode !== null) throw failure()
       if (!birth) {
+        observation.browserPhase = "identity-stat"
         const stat = reviewBrowserProcess(await readFile(`/proc/${child.pid}/stat`, "utf8"))
-        if (
-          stat.group !== child.pid ||
-          stat.session !== child.pid ||
-          (await readlink(`/proc/${child.pid}/exe`)) !== executable
-        )
-          throw failure()
+        observation.browserPhase = "identity-session"
+        if (stat.group !== child.pid || stat.session !== child.pid) throw failure()
+        observation.browserPhase = "identity-executable"
+        if ((await readlink(`/proc/${child.pid}/exe`)) !== executable) throw failure()
+        observation.browserPhase = "identity-uid"
         reviewBrowserUid(await readFile(`/proc/${child.pid}/status`, "utf8"), uid)
+        observation.browserPhase = "identity-argv"
         const command = (await readFile(`/proc/${child.pid}/cmdline`, "utf8")).split("\0")
         if (!command.includes(`--user-data-dir=${profile}`)) throw failure()
         birth = stat.birth
+        observation.birthVerified = true
       }
+      observation.browserPhase = "port-file"
       const portFile = join(profile, "DevToolsActivePort")
       const port = await lstat(portFile).then(
         async (stat) => {
@@ -368,17 +425,23 @@ export async function startOwnedReviewBrowser(input: {
       )
       if (port && /^[1-9]\d{0,4}$/.test(port) && Number(port) <= 65535) {
         origin = `http://127.0.0.1:${port}`
-        if ((await targets())?.some((target) => target.type === "page" && target.url === "about:blank")) {
+        observation.browserPhase = "cdp-targets"
+        const observed = await targets()
+        observation.targetCount = observed?.length ?? 0
+        if (observed?.some((target) => target.type === "page" && target.url === "about:blank")) {
           ready = true
+          observation.cdpReady = true
           break
         }
       }
       await pause(100)
     }
     if (!ready) throw failure()
+    observation.browserPhase = "ready"
     return {
       environment: env,
       async confirmHandoff(url: string) {
+        observation.browserPhase = "handoff-targets"
         if (url !== expectedURL) throw failure()
         const until = Date.now() + 4000
         while (Date.now() < until) {
@@ -398,8 +461,10 @@ export async function startOwnedReviewBrowser(input: {
       },
       stop,
     }
-  } catch {
+  } catch (error) {
+    observation.failedBrowserPhase ??= observation.browserPhase
+    observation.syscallFailure ??= browserSyscallFailure(error)
     await stop()
-    throw failure()
+    throw browserObservationError("PROVIDER_REVIEW_BROWSER_UNCONFIRMED", error, observation)
   }
 }

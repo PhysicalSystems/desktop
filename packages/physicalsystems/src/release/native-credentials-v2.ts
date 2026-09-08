@@ -12,6 +12,18 @@ export type V2CredentialProbeRequest = (
   init: { method: "GET" | "POST" | "DELETE"; body?: { key: string; label: string }; signal: AbortSignal },
 ) => Promise<unknown>
 
+type IntegrationBoundary =
+  | "idle"
+  | "integration-request"
+  | "integration-envelope"
+  | "integration-data"
+  | "integration-id"
+  | "integration-connections"
+  | "integration-methods"
+  | "preexisting-connection"
+  | "integration-pending"
+  | "integration-ready"
+
 /** Inert transport/storage observations, not native encryption qualification.
  * The caller independently proves artifact identity and actual process restarts.
  * Uses the same V2 integration/credential routes as the rendered provider dialog. */
@@ -24,6 +36,9 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
   const state: { canary?: string; credentialID?: string; observed: boolean; removed: boolean } = {
     observed: false,
     removed: false,
+  }
+  let integrationState: { boundary: IntegrationBoundary; shape?: ReturnType<typeof integrationShape> } = {
+    boundary: "idle",
   }
 
   async function request(
@@ -51,10 +66,16 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
   }
 
   async function integration(run: V2CredentialProbeRequest, allowPending = false) {
+    integrationState = { boundary: "integration-request" }
     const result = await request(run, `/api/integration/${providerID}`, { method: "GET" })
+    integrationState = { boundary: "integration-envelope", shape: integrationShape(result, providerID) }
     if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error()
+    integrationState.boundary = "integration-data"
     const data = "data" in result ? result.data : undefined
-    if (allowPending && data === undefined) {
+    // HttpApiEndpoint's JSON codec encodes UndefinedOr as null. An absent
+    // integration is pending only during the explicitly read-only preflight;
+    // post-write readback and removal still require an actual integration.
+    if (allowPending && (data === undefined || data === null)) {
       if (
         !("location" in result) ||
         !result.location ||
@@ -64,17 +85,14 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
         !result.location.directory
       )
         throw new Error()
+      integrationState.boundary = "integration-pending"
       return undefined
     }
-    if (
-      !data ||
-      typeof data !== "object" ||
-      !("id" in data) ||
-      data.id !== providerID ||
-      !("connections" in data) ||
-      !Array.isArray(data.connections)
-    )
-      throw new Error()
+    if (!data || typeof data !== "object") throw new Error()
+    integrationState.boundary = "integration-id"
+    if (!("id" in data) || data.id !== providerID) throw new Error()
+    integrationState.boundary = "integration-connections"
+    if (!("connections" in data) || !Array.isArray(data.connections)) throw new Error()
     const ids = data.connections.map((connection: unknown) => {
       if (
         !connection ||
@@ -88,6 +106,7 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
         throw new Error()
       return connection.id
     })
+    integrationState.boundary = "integration-ready"
     return { ids, methods: "methods" in data ? data.methods : undefined }
   }
   const connections = async (run: V2CredentialProbeRequest) => {
@@ -101,6 +120,8 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
   return {
     providerID,
     saveCheckpoint: () => ({ ...saveState }),
+    /** Fixed shape and counts only; never retain server data, IDs or labels. */
+    integrationCheckpoint: () => structuredClone(integrationState),
     logFilter: probe.logFilter,
     beginObservation(expected: "present" | "absent") {
       const prompt = probe.beginObservation(expected)
@@ -125,6 +146,18 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
         throw new Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
       }
     },
+    /** Registration may lag after restart; absence is never inferred from it. */
+    async removedConnectionReady(run: V2CredentialProbeRequest) {
+      try {
+        if (!state.removed || !state.credentialID) throw new Error()
+        const current = await integration(run, true)
+        if (!current) return false
+        if (current.ids.length) throw new Error()
+        return true
+      } catch {
+        throw new Error("V2_CREDENTIAL_PROBE_REMOVAL_UNCONFIRMED")
+      }
+    },
     /** A nonce-matched request arrived; finishObservation still validates auth. */
     observationReady: () => state.observed,
     finishObservation: probe.finishObservation,
@@ -143,8 +176,10 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
             await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now()))))
             continue
           }
+          integrationState.boundary = "preexisting-connection"
+          if (current.ids.length) throw new Error()
+          integrationState.boundary = "integration-methods"
           if (
-            current.ids.length ||
             !Array.isArray(current.methods) ||
             current.methods.some((method) => !method || typeof method !== "object" || !("type" in method))
           )
@@ -302,6 +337,55 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
       } catch {
         throw new Error("V2_CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
       }
+    },
+  }
+}
+
+/** Diagnostics inspect at most 256 entries per array; validation above remains
+ * independent. This deliberately copies no names, IDs, labels or arbitrary keys. */
+function integrationShape(result: unknown, providerID: string) {
+  const kind = (value: unknown) =>
+    value === undefined ? "missing" : value === null ? "null" : Array.isArray(value) ? "array" : typeof value
+  const envelope = result !== null && typeof result === "object" && !Array.isArray(result)
+  const data = envelope && "data" in result ? result.data : undefined
+  const object = data !== null && typeof data === "object" && !Array.isArray(data)
+  const connections = object && "connections" in data ? data.connections : undefined
+  const methods = object && "methods" in data ? data.methods : undefined
+  const connectionCounts = { credential: 0, env: 0, invalid: 0, invalidCredentialIds: 0 }
+  const methodCounts = { key: 0, env: 0, oauth: 0, invalid: 0 }
+  if (Array.isArray(connections))
+    for (const item of connections.slice(0, 256)) {
+      const type = item !== null && typeof item === "object" && !Array.isArray(item) ? item.type : undefined
+      if (type === "credential") {
+        connectionCounts.credential++
+        if (typeof item.id !== "string" || !/^cred_[a-zA-Z0-9]{1,128}$/.test(item.id))
+          connectionCounts.invalidCredentialIds++
+      } else if (type === "env") connectionCounts.env++
+      else connectionCounts.invalid++
+    }
+  if (Array.isArray(methods))
+    for (const item of methods.slice(0, 256)) {
+      const type = item !== null && typeof item === "object" && !Array.isArray(item) ? item.type : undefined
+      if (type === "key") methodCounts.key++
+      else if (type === "env") methodCounts.env++
+      else if (type === "oauth") methodCounts.oauth++
+      else methodCounts.invalid++
+    }
+  return {
+    envelopeKind: kind(result),
+    dataKind: kind(data),
+    idMatches: object && "id" in data && data.id === providerID,
+    connections: {
+      kind: kind(connections),
+      count: Array.isArray(connections) ? Math.min(connections.length, 256) : 0,
+      truncated: Array.isArray(connections) && connections.length > 256,
+      ...connectionCounts,
+    },
+    methods: {
+      kind: kind(methods),
+      count: Array.isArray(methods) ? Math.min(methods.length, 256) : 0,
+      truncated: Array.isArray(methods) && methods.length > 256,
+      ...methodCounts,
     },
   }
 }

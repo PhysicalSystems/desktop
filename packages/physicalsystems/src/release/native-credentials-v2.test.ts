@@ -172,6 +172,113 @@ test("V2 probe rejects preexisting/environment/wrong integration connections, un
   ).rejects.toThrow("V2_CREDENTIAL_PROBE_SAVE_WRITE_UNCONFIRMED")
 })
 
+test("integration checkpoints identify the exact rejected boundary without retaining server values", async () => {
+  const privateValue = "PRIVATE-INTEGRATION-CANARY"
+  const valid = { id: "openai", name: privateValue, methods: [{ type: "key", label: privateValue }], connections: [] }
+  for (const [result, boundary] of [
+    [privateValue, "integration-envelope"],
+    [{ data: null }, "integration-data"],
+    [{ data: { ...valid, id: privateValue } }, "integration-id"],
+    [{ data: { ...valid, connections: privateValue } }, "integration-connections"],
+    [{ data: { ...valid, connections: [{ type: "env", name: privateValue }] } }, "integration-connections"],
+    [{ data: { ...valid, connections: [{ type: "credential", id: privateValue }] } }, "integration-connections"],
+    [
+      { data: { ...valid, connections: [{ type: "credential", id: "cred_existing", label: privateValue }] } },
+      "preexisting-connection",
+    ],
+    [{ data: { ...valid, methods: privateValue } }, "integration-methods"],
+    [{ data: { ...valid, methods: [{ type: "oauth", id: privateValue }, privateValue] } }, "integration-methods"],
+  ] as const) {
+    const probe = createNativeV2CredentialProbe({ providerID: "openai" })
+    let writes = 0
+    await expect(
+      probe.save(async (_route, init) => {
+        if (init.method !== "GET") writes++
+        return result
+      }),
+    ).rejects.toThrow("SAVE_PREFLIGHT_UNCONFIRMED")
+    expect(probe.integrationCheckpoint().boundary).toBe(boundary)
+    expect(writes).toBe(0)
+    expect(JSON.stringify(probe.integrationCheckpoint())).not.toContain(privateValue)
+    expect(JSON.stringify(probe.integrationCheckpoint())).not.toContain("cred_existing")
+  }
+})
+
+test("integration shape counts are bounded, exclude labels and IDs, and return independent snapshots", async () => {
+  const probe = createNativeV2CredentialProbe({ providerID: "openai" })
+  const privateValue = "PRIVATE-BOUNDED-SHAPE"
+  await expect(
+    probe.save(async () => ({
+      data: {
+        id: "openai",
+        name: privateValue,
+        methods: [
+          { type: "key", label: privateValue },
+          { type: "env", names: [privateValue] },
+          { type: "oauth", id: privateValue },
+          { type: privateValue },
+        ],
+        connections: Array.from({ length: 400 }, () => ({ type: "credential", id: privateValue, label: privateValue })),
+      },
+    })),
+  ).rejects.toThrow("SAVE_PREFLIGHT_UNCONFIRMED")
+  const checkpoint = probe.integrationCheckpoint()
+  expect(checkpoint).toEqual({
+    boundary: "integration-connections",
+    shape: {
+      envelopeKind: "object",
+      dataKind: "object",
+      idMatches: true,
+      connections: {
+        kind: "array",
+        count: 256,
+        truncated: true,
+        credential: 256,
+        env: 0,
+        invalid: 0,
+        invalidCredentialIds: 256,
+      },
+      methods: { kind: "array", count: 4, truncated: false, key: 1, env: 1, oauth: 1, invalid: 1 },
+    },
+  })
+  expect(JSON.stringify(checkpoint)).not.toContain(privateValue)
+  checkpoint.boundary = "idle"
+  checkpoint.shape!.connections.count = 0
+  expect(probe.integrationCheckpoint().boundary).toBe("integration-connections")
+  expect(probe.integrationCheckpoint().shape!.connections.count).toBe(256)
+})
+
+test("null integration is pending only in owned preflight, never post-write readback or removal", async () => {
+  const f = await fixture()
+  try {
+    await f.probe.save(f.request)
+    const absent = async () => ({ location: { directory: f.root }, data: null })
+    expect(await f.probe.savedConnectionReady(absent)).toBe(false)
+    expect(f.probe.integrationCheckpoint().boundary).toBe("integration-pending")
+    await expect(f.probe.remove(absent)).rejects.toThrow("AUTH_UNCONFIRMED")
+    expect(f.probe.integrationCheckpoint().boundary).toBe("integration-data")
+    expect(f.state.calls.filter((call) => call.method === "DELETE")).toEqual([])
+  } finally {
+    await f.close()
+  }
+  const probe = createNativeV2CredentialProbe({ providerID: "openai" })
+  let writes = 0
+  await expect(
+    probe.save(async (_route, init) => {
+      if (init.method === "POST") {
+        writes++
+        return undefined
+      }
+      return {
+        location: { directory: "/owned/fixture" },
+        data: writes ? null : { id: "openai", methods: [{ type: "key" }], connections: [] },
+      }
+    }),
+  ).rejects.toThrow("SAVE_READBACK_UNCONFIRMED")
+  expect(writes).toBe(1)
+  expect(probe.integrationCheckpoint().boundary).toBe("integration-data")
+})
+
 test("V2 inspection detects complete and chunk-split plaintext canaries in SQLite, WAL and rollback journal", async () => {
   const f = await fixture()
   try {

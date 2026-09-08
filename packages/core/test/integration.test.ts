@@ -1,16 +1,55 @@
-import { describe, expect } from "bun:test"
-import { Duration, Effect, Exit, Fiber, Scope, Stream } from "effect"
+import { describe, expect, test } from "bun:test"
+import { Duration, Effect, Exit, Fiber, Schema, Scope, Stream } from "effect"
 import * as TestClock from "effect/testing/TestClock"
 import { Credential } from "@opencode-ai/core/credential"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Integration } from "@opencode-ai/core/integration"
+import { Location } from "@opencode-ai/core/location"
+import { IntegrationGroup } from "../../protocol/src/groups/integration"
+import { createNativeV2CredentialProbe } from "../../physicalsystems/src/release/native-credentials-v2"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Integration.node, Credential.node, EventV2.node])))
 
 describe("Integration", () => {
+  test("actual endpoint JSON codec exposes pending as null to the native probe before exactly one key write", async () => {
+    // HttpApiEndpoint transforms the source schema with toCodecJson; raw
+    // JSON.stringify of Location.response would miss this null wire value.
+    // The endpoint collection erases EncodingServices to unknown; this concrete
+    // JSON response schema has no service dependencies.
+    const codec = [...IntegrationGroup.endpoints["integration.get"].success][0]! as Schema.Encoder<unknown>
+    const location = Schema.decodeUnknownSync(Location.Info)({
+      directory: process.cwd(),
+      project: { id: "global", directory: process.cwd() },
+    })
+    const encode = (data: Integration.Info | undefined) =>
+      JSON.parse(JSON.stringify(Schema.encodeUnknownSync(codec)({ location, data })))
+    expect(encode(undefined).data).toBeNull()
+    const probe = createNativeV2CredentialProbe({ providerID: "openai" })
+    let reads = 0,
+      writes = 0
+    await probe.save(async (_route, init) => {
+      if (init.method === "POST") {
+        writes++
+        return undefined
+      }
+      if (++reads <= 2) return encode(undefined)
+      return encode(
+        new Integration.Info({
+          id: Integration.ID.make("openai"),
+          name: "Inert endpoint-codec fixture",
+          methods: [{ type: "key" }],
+          connections: writes ? [{ type: "credential", id: Credential.ID.make("cred_inert"), label: "Inert" }] : [],
+        }),
+      )
+    })
+    expect(probe.saveCheckpoint()).toEqual({ phase: "complete", readinessReads: 3, readbackReads: 1, writes: 1 })
+    expect(probe.integrationCheckpoint().shape?.dataKind).toBe("object")
+    expect(writes).toBe(1)
+  })
+
   it.effect("registers integrations through the editor", () =>
     Effect.gen(function* () {
       const integrations = yield* Integration.Service

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
-import { emptyOutput, run } from "../packages/physicalsystems/src/release/commands"
+import { DesktopCommandFailure, emptyOutput, run } from "../packages/physicalsystems/src/release/commands"
 import { verifyInventory } from "../packages/physicalsystems/src/release/artifacts"
 import { verifyReleaseInputs } from "../packages/physicalsystems/src/release/inputs"
 import type { ReleaseHistory } from "../packages/physicalsystems/src/release/inputs"
@@ -98,9 +98,13 @@ try {
       root,
       process.env,
       process.env.PS_PROVIDER_REVIEW === "openai-device" ? 1_200_000 : 600_000,
-    ).catch(() => {
+    ).catch((error: unknown) => {
       // A public smoke returns nonzero even when its implemented checks pass.
-      // Only its exact receipt may authorize continuing to another format.
+      // An ordinary exit may be reconciled with its exact receipt. A timeout,
+      // signal, startup failure or unknown outcome cannot authorize advancing,
+      // even if an earlier receipt exists. Leave all existing evidence intact.
+      if (!(error instanceof DesktopCommandFailure) || error.outcome !== "exit")
+        throw new Error("Public smoke completion is unconfirmed; remaining installers were not started")
     })
     const report = await read(reportFile)
     const native = publicNativeReceipt({

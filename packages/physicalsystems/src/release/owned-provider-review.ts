@@ -15,6 +15,7 @@ import {
 import { providerBrowserReviewTransport } from "./provider-browser-transport"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { sha256File } from "./qualification"
+import { browserObservationError, type BrowserObservation } from "./browser-observation"
 
 type ArtifactUploader = (
   name: string,
@@ -70,8 +71,11 @@ export async function runOwnedProviderBrowserReview(
   let cleanupFailed = false
   let acquiring = false
   let openerUnconfirmed = false
+  const observation: BrowserObservation = { reviewPhase: "context", openerAcknowledged: false }
+  let observedError: unknown
   try {
     acquiring = true
+    observation.reviewPhase = "browser-acquisition"
     browser = await (
       io.startBrowser ?? (platform === "win32" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser)
     )({ env: input.env, root: browserRoot })
@@ -79,6 +83,7 @@ export async function runOwnedProviderBrowserReview(
     // Runtime starts from the qualifier's scrubbed env. Never copy controller
     // env wholesale: Actions upload credentials stay exclusively in this process.
     acquiring = true
+    observation.reviewPhase = "app-session"
     const outcome = await input.withSession(
       {
         ...input.runtimeEnvironment,
@@ -103,10 +108,13 @@ export async function runOwnedProviderBrowserReview(
               // False includes the product opener's own OS-handoff timeout;
               // only true acknowledgment settles this possible mutation.
               openerUnconfirmed = true
+              observation.reviewPhase = "opener"
               const opened = await session.openBrowser(url)
+              observation.openerAcknowledged = opened === true
               if (opened !== true) return false
               openerUnconfirmed = false
               if (reviewFinished) return false
+              observation.reviewPhase = "target"
               return await browser!.confirmHandoff(url)
             },
             timeoutMs: io.timeoutMs,
@@ -133,7 +141,9 @@ export async function runOwnedProviderBrowserReview(
               uploaded = { artifactId: result.id!, archiveSha256: result.digest! }
             },
           })
-        } catch {
+        } catch (error) {
+          observedError = error
+          observation.failedReviewPhase ??= observation.reviewPhase
           return { status: "REVIEW_FAILED" as const }
         } finally {
           reviewFinished = true
@@ -144,8 +154,10 @@ export async function runOwnedProviderBrowserReview(
     const observed = outcome
     if (observed.status !== "OBSERVED" || !uploaded) throw failure()
     return { ...observed, challengeArtifact: uploaded, ownedBrowserProcessAndProfileCleanup: true as const }
-  } catch {
-    throw failure()
+  } catch (error) {
+    observedError ??= error
+    observation.failedReviewPhase ??= observation.reviewPhase
+    throw browserObservationError("PROVIDER_REVIEW_UNCONFIRMED", observedError, observation)
   } finally {
     // A factory may have spawned before throwing. With no returned owner there
     // is no shutdown proof; preserve paths even if that factory tried cleanup.
@@ -153,15 +165,18 @@ export async function runOwnedProviderBrowserReview(
     // withSession owns native shutdown. On rejection its cleanup is uncertain;
     // stop the browser, but retain the shared private QA paths.
     try {
+      observation.reviewPhase = "browser-cleanup"
       await browser?.stop({ retainProfile: cleanupFailed })
-    } catch {
+    } catch (error) {
+      observedError = error
+      observation.failedReviewPhase ??= observation.reviewPhase
       cleanupFailed = true
     }
     if (!cleanupFailed)
       await rm(root, { recursive: true }).catch(() => {
         cleanupFailed = true
       })
-    if (cleanupFailed) throw new Error("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+    if (cleanupFailed) throw browserObservationError("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED", observedError, observation)
   }
 }
 

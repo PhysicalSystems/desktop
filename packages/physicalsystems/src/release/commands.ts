@@ -16,7 +16,13 @@ import {
   verifyQualification,
   verifyPlatformReport,
 } from "./artifacts"
-import type { CandidatePlatform, Qualification, PlatformReport } from "./artifacts"
+import type {
+  CandidateArtifact,
+  CandidateInventory,
+  CandidatePlatform,
+  Qualification,
+  PlatformReport,
+} from "./artifacts"
 
 const sourceRoot = resolve(import.meta.dir, "../../../..")
 const sha = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex")
@@ -95,14 +101,140 @@ export function buildEnvironment(input: NodeJS.ProcessEnv, inputs: ReleaseInputs
   })
 }
 
+export class DesktopCommandFailure extends Error {
+  constructor(readonly outcome: "exit" | "timeout" | "signal" | "start") {
+    super(`Desktop candidate command failed (${outcome})`)
+  }
+}
+
 export async function run(executable: string, args: string[], cwd: string, env = process.env, timeoutMs = 600_000) {
   const child = spawn(executable, args, { cwd, env, stdio: "inherit", shell: false })
-  const timer = setTimeout(() => child.kill(), timeoutMs)
-  const code = await new Promise<number | null>((accept, reject) => {
-    child.once("exit", accept)
-    child.once("error", reject)
-  }).finally(() => clearTimeout(timer))
-  if (code !== 0) throw new Error(`Desktop candidate command failed: ${basename(executable)} (exit ${code})`)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await new Promise<void>((accept, reject) => {
+      timer = setTimeout(() => {
+        child.kill()
+        child.unref()
+        // A signal request is not shutdown proof, even if a receipt was written
+        // before the controller stalled. Never advance on this outcome.
+        reject(new DesktopCommandFailure("timeout"))
+      }, timeoutMs)
+      child.once("exit", (code, signal) => {
+        if (signal || code === null) reject(new DesktopCommandFailure("signal"))
+        else if (code !== 0) reject(new DesktopCommandFailure("exit"))
+        else accept()
+      })
+      child.once("error", () => reject(new DesktopCommandFailure("start")))
+    })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** This permits collecting the next format's evidence, never release eligibility.
+ * A failed test can continue only after all relevant teardown is confirmed. */
+function candidateTeardownConfirmed(report: Qualification, inventory: CandidateInventory, artifact: CandidateArtifact) {
+  if (
+    !report ||
+    report.schemaVersion !== 1 ||
+    report.artifact?.name !== artifact.name ||
+    report.artifact.sha256 !== artifact.sha256 ||
+    report.artifact.bytes !== artifact.bytes ||
+    report.inputsSha256 !== inventory.inputsSha256 ||
+    report.sourceRevision !== inventory.sourceRevision ||
+    report.version !== inventory.version ||
+    report.platform !== inventory.platform ||
+    report.simulationOnly !== true ||
+    report.deviceConnectionsAllowed !== false ||
+    report.publicDistribution?.status !== "BLOCKED" ||
+    !["PASS", "FAIL", "NOT_TESTED", "BLOCKED"].includes(report.result) ||
+    !Array.isArray(report.checks) ||
+    report.checks.length > 256 ||
+    report.checks.some(
+      (check) =>
+        !check || typeof check.id !== "string" || !["PASS", "FAIL", "NOT_TESTED", "BLOCKED"].includes(check.status),
+    ) ||
+    new Set(report.checks.map((check) => check.id)).size !== report.checks.length
+  )
+    return false
+  const required = [
+    "cleanup",
+    artifact.format === "AppImage" ? "linux-sandbox-cleanup" : "uninstall",
+    ...(artifact.format === "nsis" ? [] : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
+  ]
+  return (
+    required.every((id) => report.checks.find((check) => check.id === id)?.status === "PASS") &&
+    !report.checks.some(
+      (check) =>
+        (/cleanup|teardown|uninstall/.test(check.id) && check.status !== "PASS") ||
+        (check.status === "FAIL" &&
+          /CLEANUP_UNCONFIRMED|SHUTDOWN_UNCONFIRMED|PROCESS_RETAINED/.test(check.failureCode ?? "")),
+    )
+  )
+}
+
+/** Inventory/output ownership is verified by the CLI before entering this loop.
+ * Receipts stay untouched on failure, including when continuation is forbidden. */
+export async function qualifyCandidateArtifacts(
+  input: {
+    inventory: CandidateInventory
+    artifacts: string
+    output: string
+    evidence: string
+    env: NodeJS.ProcessEnv
+  },
+  execute: typeof run = run,
+) {
+  let failed = false
+  for (const artifact of input.inventory.files) {
+    const receipt = join(input.output, artifact.name + ".qualification.json")
+    // The CLI already owns an empty output directory. Recheck each pathname
+    // immediately before launch so a reused helper invocation cannot consume a
+    // stale successful receipt after a new runner fails to write one.
+    const existing = await lstat(receipt).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error
+      return undefined
+    })
+    if (existing) throw new Error("Candidate receipt already exists; no installer was started")
+    try {
+      await execute(
+        process.execPath,
+        [
+          join(sourceRoot, "packages/physicalsystems/test/packaged-smoke.mjs"),
+          "--artifact",
+          join(input.artifacts, artifact.name),
+          "--evidence",
+          input.evidence,
+          "--report",
+          receipt,
+          "--version",
+          input.inventory.version,
+        ],
+        sourceRoot,
+        input.env,
+        input.env.PS_PROVIDER_REVIEW === "openai-device" ? 1_200_000 : 600_000,
+      )
+    } catch (error) {
+      failed = true
+      if (!(error instanceof DesktopCommandFailure) || error.outcome !== "exit")
+        throw new Error("Candidate teardown is unconfirmed; remaining installers were not started")
+    }
+    let report: Qualification
+    try {
+      const stat = await lstat(receipt)
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 1024 * 1024) throw new Error()
+      report = JSON.parse(await readFile(receipt, "utf8")) as Qualification
+      if (!candidateTeardownConfirmed(report, input.inventory, artifact)) throw new Error()
+    } catch {
+      throw new Error("Candidate teardown is unconfirmed; remaining installers were not started")
+    }
+    try {
+      verifyQualification(artifact, input.inventory, report)
+    } catch {
+      failed = true
+    }
+  }
+  if (failed) throw new Error("Packaged candidate qualification failed; inspect the bounded receipts")
 }
 
 async function readInputs(file: string) {
@@ -239,30 +371,7 @@ export async function desktopRelease(args: string[]) {
   if (command === "qualify") {
     const inventory = await verifyInventory(options.artifacts, inputs)
     const evidence = await mkdtemp(join(dirname(output), "desktop-qualification-"))
-    let failed = false
-    for (const file of inventory.files) {
-      await run(
-        process.execPath,
-        [
-          join(sourceRoot, "packages/physicalsystems/test/packaged-smoke.mjs"),
-          "--artifact",
-          join(options.artifacts, file.name),
-          "--evidence",
-          evidence,
-          "--report",
-          join(output, file.name + ".qualification.json"),
-          "--version",
-          inputs.version,
-        ],
-        sourceRoot,
-        process.env,
-        process.env.PS_PROVIDER_REVIEW === "openai-device" ? 1_200_000 : 600_000,
-      ).catch(() => {
-        failed = true
-      })
-    }
-    if (failed) throw new Error("Packaged candidate qualification failed; inspect the bounded receipts")
-    return
+    return qualifyCandidateArtifacts({ inventory, artifacts: options.artifacts, output, evidence, env: process.env })
   }
   if (command === "verify-artifacts") {
     const inventory = await verifyInventory(options.artifacts, inputs)

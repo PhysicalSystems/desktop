@@ -1,5 +1,5 @@
 name: Prepare desktop candidate (no publication)
-run-name: Desktop ${{ inputs.channel }} candidate from ${{ inputs.source_sha || github.sha }}
+run-name: ${{ inputs.browser_factory_diagnostic && 'Linux browser factory diagnostic' || format('Desktop {0} candidate', inputs.channel) }} from ${{ inputs.source_sha || github.sha }}
 
 on:
   workflow_dispatch:
@@ -24,6 +24,11 @@ on:
         required: false
       browser_review:
         description: Verify the native browser handoff against an owned loopback fixture; no provider sign-in
+        type: boolean
+        default: false
+        required: false
+      browser_factory_diagnostic:
+        description: Linux browser startup and cleanup only; skips desktop build, candidate and provider qualification
         type: boolean
         default: false
         required: false
@@ -61,8 +66,55 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  browser-diagnostic:
+    name: Linux browser acquisition and cleanup diagnostic
+    if: inputs.browser_factory_diagnostic
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      CI: "true"
+      BROWSER_DIAGNOSTIC_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      OPENCODE_DISABLE_MODELS_FETCH: "1"
+    steps:
+      - name: Require the exact dispatched workflow revision before checkout
+        run: |
+          node --input-type=module <<'NODE'
+          const source = process.env.BROWSER_DIAGNOSTIC_SOURCE_SHA;
+          if (process.env.GITHUB_REPOSITORY !== 'PhysicalSystems/desktop' ||
+              process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
+              !/^[a-f0-9]{40}$/.test(source || '') || source !== process.env.GITHUB_SHA)
+            throw new Error('Browser diagnostic requires the exact owned workflow revision');
+          NODE
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+        with:
+          install-dependencies: "false"
+      - name: Verify the hosted runner browser and display prerequisites
+        run: |
+          for executable in /usr/bin/Xvfb /usr/bin/xvfb-run /usr/bin/xauth /opt/google/chrome/chrome; do
+            if [ ! -x "$executable" ]; then
+              echo 'BROWSER_DIAGNOSTIC_PREREQUISITE_UNAVAILABLE' >&2
+              exit 1
+            fi
+          done
+      - name: Start and stop the actual owned browser factory
+        run: timeout --signal=TERM --kill-after=10s 90s xvfb-run -a bun script/desktop-browser-diagnostic.ts
+      - name: Retain only the sanitized browser diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-browser-diagnostic-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-browser-diagnostic-report/browser-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 7
+
   prepare:
     name: Freeze source and release inputs
+    if: ${{ !inputs.browser_factory_diagnostic }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:

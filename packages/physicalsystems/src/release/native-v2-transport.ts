@@ -84,9 +84,10 @@ export function ownedV2CredentialTransport(
         await reader.cancel().catch(() => {})
       }
       const result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)))
-      // integration.get is Location.response(UndefinedOr(Integration.Info)).
-      // HttpApiBuilder uses JSON.stringify, which omits its undefined data field.
-      // This is a legitimate registration state only for this scoped GET.
+      // integration.get is Location.response(UndefinedOr(Integration.Info));
+      // the endpoint JSON codec represents undefined as null. The probe admits
+      // that pending state only for its scoped save/restart preflight. Keep
+      // compatibility with an omitted data field on this GET as well.
       if (
         !result ||
         typeof result !== "object" ||

@@ -32,7 +32,7 @@ import { agentDatabaseName } from "../src/release/agent-channel.ts"
 import { waitForCredentialAttachment } from "../src/release/native-credentials.ts"
 import { createNativeV2CredentialProbe } from "../src/release/native-credentials-v2.ts"
 import { ownedV2CredentialTransport } from "../src/release/native-v2-transport.ts"
-import { createV2CredentialReadiness } from "../src/release/native-v2-readiness.ts"
+import { createV2CredentialReadiness, createV2RemovalReadiness } from "../src/release/native-v2-readiness.ts"
 import { createV2TransportObservation } from "../src/release/native-v2-observation.ts"
 import { observeCredentialBackend } from "../src/release/credential-backend.ts"
 import {
@@ -54,6 +54,7 @@ import { prepareAppImageReplacement } from "../src/release/appimage-replacement.
 import { qualifyAppImageReinstall } from "../src/release/appimage-reinstall.ts"
 import { runOwnedProviderBrowserReview } from "../src/release/owned-provider-review.ts"
 import { runOwnedBrowserHandoffReview } from "../src/release/owned-browser-handoff.ts"
+import { readBrowserObservation } from "../src/release/browser-observation.ts"
 import {
   loadPublicQualification,
   requireDisposablePublicRunner,
@@ -555,6 +556,8 @@ try {
   }
 } catch (error) {
   failed = error
+  const browserObservation = readBrowserObservation(error)
+  if (browserObservation) check("native-browser-observation", "NOT_TESTED", JSON.stringify(browserObservation))
   // Fixed diagnostic codes only; raw app output and provider credentials never enter receipts.
   check(
     stage,
@@ -950,6 +953,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
   let attached
   let v2Request
   let credentialReadiness
+  let removalReadiness
   const credentialTransportObservation = createV2TransportObservation()
   const attach = async () => {
     const expected = await evaluate(
@@ -1197,6 +1201,8 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         probe.finishObservation()
       } else {
         const requestsBefore = provider.calls.length
+        removalReadiness = createV2RemovalReadiness({ request: v2Request, probe, endpoint: provider.url })
+        await removalReadiness.wait()
         state.absence = await probe.assertRemoved(v2Request)
         if (!(await v2Idle()) || provider.calls.length !== requestsBefore)
           throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
@@ -1411,7 +1417,9 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         "NOT_TESTED",
         JSON.stringify({
           save: probe.saveCheckpoint(),
+          integration: probe.integrationCheckpoint(),
           readiness: credentialReadiness?.checkpoint(),
+          removalReadiness: removalReadiness?.checkpoint(),
           transport,
           credentialRequests: provider.calls.filter((call) => call.credential === true).length,
           otherFixtureRequests: provider.calls.filter((call) => call.credential !== true).length,

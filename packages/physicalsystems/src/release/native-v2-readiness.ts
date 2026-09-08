@@ -114,3 +114,70 @@ export function createV2CredentialReadiness(input: {
     },
   }
 }
+
+/** Third-process readiness before the separate strict removal assertion. Only
+ * read-only registration/catalog absence is retryable; no auth mutation occurs. */
+export function createV2RemovalReadiness(input: {
+  request: ReturnType<typeof ownedV2CredentialTransport>
+  probe: ReturnType<typeof createNativeV2CredentialProbe>
+  endpoint: string
+  timeoutMs?: number
+  pollMs?: number
+}) {
+  const timeoutMs = input.timeoutMs ?? 15000
+  const pollMs = input.pollMs ?? 50
+  if (
+    input.probe.providerID !== "openai" ||
+    !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/v1$/.test(input.endpoint) ||
+    Number(input.endpoint.split(":")[2]?.split("/")[0]) > 65535 ||
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 15000 ||
+    !Number.isInteger(pollMs) ||
+    pollMs < 1 ||
+    pollMs > 100
+  )
+    throw fail("REMOVAL")
+  const state = { integrationReads: 0, catalogReads: 0, disconnectedReady: false, catalogReady: false }
+  return {
+    checkpoint: () => ({ ...state }),
+    async wait() {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        state.integrationReads++
+        state.disconnectedReady = await input.probe.removedConnectionReady(input.request)
+        state.catalogReady = false
+        if (state.disconnectedReady) {
+          state.catalogReads++
+          const result = await input.request("/api/model", { method: "GET" })
+          if (!record(result) || !Array.isArray(result.data)) throw fail("REMOVAL")
+          const matches = result.data.filter((value: unknown) => {
+            if (
+              !record(value) ||
+              typeof value.id !== "string" ||
+              typeof value.providerID !== "string" ||
+              value.providerID === "openai"
+            )
+              throw fail("REMOVAL")
+            return value.id === "fixture" && value.providerID === "fixture"
+          })
+          if (matches.length > 1) throw fail("REMOVAL")
+          if (matches.length) {
+            const model = matches[0]
+            if (
+              model.api?.type !== "aisdk" ||
+              model.api.package !== "@ai-sdk/openai-compatible" ||
+              model.api.id !== "fixture" ||
+              model.api.url !== input.endpoint
+            )
+              throw fail("REMOVAL")
+            state.catalogReady = true
+            return
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))))
+      }
+      throw fail("REMOVAL")
+    },
+  }
+}

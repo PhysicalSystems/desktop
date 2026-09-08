@@ -7,6 +7,7 @@ import { startOwnedReviewBrowser } from "./owned-review-browser"
 import { startOwnedWindowsReviewBrowser } from "./owned-windows-review-browser"
 import { verifyOwnedReviewContext, type OwnedProviderReviewSession } from "./owned-provider-review"
 import { validateProviderBrowserReviewContext, type ProviderBrowserReviewContext } from "./provider-browser-review"
+import { browserObservationError, type BrowserObservation } from "./browser-observation"
 
 const failure = () => Error("BROWSER_HANDOFF_UNCONFIRMED")
 
@@ -80,6 +81,8 @@ export async function runOwnedBrowserHandoffReview(
   let browser: Awaited<ReturnType<typeof startOwnedReviewBrowser>> | undefined
   let uncertain = false
   let acquiring = false
+  const observation: BrowserObservation = { reviewPhase: "context", openerAcknowledged: false, requestObserved: false }
+  let observedError: unknown
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", () => reject(failure()))
@@ -91,11 +94,13 @@ export async function runOwnedBrowserHandoffReview(
     const probeURL = `http://${host}${path}`
     await mkdir(browserRoot, { mode: 0o700 })
     acquiring = true
+    observation.reviewPhase = "browser-acquisition"
     browser = await (
       io.startBrowser ?? (platform === "win32" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser)
     )({ env: input.env, root: browserRoot, probeURL })
     acquiring = false
     acquiring = true
+    observation.reviewPhase = "app-session"
     const observed = await input.withSession(
       {
         ...input.runtimeEnvironment,
@@ -111,13 +116,18 @@ export async function runOwnedBrowserHandoffReview(
         try {
           return await Promise.race([
             (async () => {
+              observation.reviewPhase = "opener"
               const opened = await session.openBrowser(probeURL)
               // The product opener can itself return false on its deadline
               // while the underlying OS handoff remains unresolved.
               openerAcknowledged = opened === true
+              observation.openerAcknowledged = openerAcknowledged
               if (!openerAcknowledged) uncertain = true
               if (expired || !openerAcknowledged) return false
-              return (await browser!.confirmHandoff(probeURL)) && (await requestArrived.then(() => true))
+              observation.reviewPhase = "target"
+              if (!(await browser!.confirmHandoff(probeURL))) return false
+              observation.reviewPhase = "request"
+              return await requestArrived.then(() => true)
             })(),
             new Promise<false>((resolve) => {
               timer = setTimeout(() => {
@@ -129,7 +139,9 @@ export async function runOwnedBrowserHandoffReview(
               }, timeoutMs)
             }),
           ])
-        } catch {
+        } catch (error) {
+          observedError = error
+          observation.failedReviewPhase ??= observation.reviewPhase
           if (!openerAcknowledged) uncertain = true
           return false
         } finally {
@@ -149,13 +161,19 @@ export async function runOwnedBrowserHandoffReview(
       probeNonceSha256: createHash("sha256").update(nonce).digest("hex"),
       providerSignIn: "NOT_TESTED" as const,
     }
-  } catch {
-    throw failure()
+  } catch (error) {
+    observedError ??= error
+    observation.failedReviewPhase ??= observation.reviewPhase
+    throw browserObservationError("BROWSER_HANDOFF_UNCONFIRMED", observedError, observation)
   } finally {
+    observation.requestObserved = requestObserved
     if (acquiring) uncertain = true
     try {
+      observation.reviewPhase = "browser-cleanup"
       await browser?.stop({ retainProfile: uncertain })
-    } catch {
+    } catch (error) {
+      observedError = error
+      observation.failedReviewPhase ??= observation.reviewPhase
       uncertain = true
     }
     server.closeAllConnections()
@@ -170,10 +188,11 @@ export async function runOwnedBrowserHandoffReview(
     ])
     clearTimeout(timer)
     if (!closed) uncertain = true
+    if (!uncertain) observation.reviewPhase = "review-cleanup"
     if (!uncertain)
       await rm(root, { recursive: true }).catch(() => {
         uncertain = true
       })
-    if (uncertain) throw Error("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED")
+    if (uncertain) throw browserObservationError("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED", observedError, observation)
   }
 }

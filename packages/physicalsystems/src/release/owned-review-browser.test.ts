@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
+import { spawn } from "node:child_process"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   reviewBrowserCrashDatabase,
   reviewBrowserCrashpad,
@@ -7,9 +11,10 @@ import {
   reviewBrowserSignalIdentity,
   reviewBrowserTargets,
   reviewBrowserUid,
+  settleReviewBrowserCleanup,
 } from "./owned-review-browser"
 
-// Only inert /proc strings and fake HTTP responses. No native browser, process
+// Only inert /proc strings, fake HTTP and timer-only subprocesses. No native browser, process
 // signaling, credential store or device is started by these regressions.
 const status = "Name:\tchrome\nUid:\t1001\t1001\t1001\t1001\n"
 const identity = { pid: 400, state: "S", group: 400, session: 400, birth: "123456" }
@@ -126,3 +131,84 @@ test("discovery rejects unowned endpoints and malformed or excessive target meta
       }),
     ).toBeUndefined()
 })
+
+test("cleanup releases only its controller handle while preserving the original failure", async () => {
+  let unrefs = 0
+  const child = {
+    unref() {
+      unrefs++
+    },
+  }
+  const original = Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+  await expect(
+    settleReviewBrowserCleanup(child, async () => {
+      throw original
+    }),
+  ).rejects.toBe(original)
+  expect(unrefs).toBe(1)
+  expect(await settleReviewBrowserCleanup(child, async () => "stopped")).toBe("stopped")
+  expect(unrefs).toBe(2)
+})
+
+test("failed controller writes its receipt and exits while the inert retained child/profile remain", async () => {
+  const helper = new URL("./owned-review-browser.ts", import.meta.url).href
+  for (const corrected of [false, true]) {
+    const root = await mkdtemp(join(tmpdir(), "retained-review-fixture-"))
+    const receipt = join(root, "receipt.json")
+    const retained = join(root, "profile.txt")
+    const finished = join(root, "inert-child-finished")
+    const childCode = `import { writeFileSync } from 'node:fs'; setTimeout(() => writeFileSync(${JSON.stringify(finished)}, 'finished'), 1200);`
+    const script = `
+      import { spawn } from 'node:child_process';
+      import { writeFile } from 'node:fs/promises';
+      import { settleReviewBrowserCleanup } from ${JSON.stringify(helper)};
+      await writeFile(${JSON.stringify(retained)}, 'retained inert profile');
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], { detached:true, stdio:'ignore' });
+      await new Promise((resolve,reject) => { child.once('spawn',resolve); child.once('error',reject); });
+      const cleanup = async () => { throw Error('PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED'); };
+      try { ${corrected ? "await settleReviewBrowserCleanup(child, cleanup)" : "await cleanup()"}; }
+      catch { await writeFile(${JSON.stringify(receipt)}, JSON.stringify({ result:'FAIL', cleanup:'UNCONFIRMED', retained:true })); process.exitCode=1; }
+    `
+    const controller = spawn(process.execPath, ["-e", script], { stdio: "ignore" })
+    try {
+      const code = await new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error("INERT_CONTROLLER_TIMEOUT")), 5000)
+        controller.once("exit", (code) => {
+          clearTimeout(timer)
+          resolve(code)
+        })
+        controller.once("error", () => {
+          clearTimeout(timer)
+          reject(Error("INERT_CONTROLLER_START_FAILED"))
+        })
+      })
+      expect(code).toBe(1)
+      expect(JSON.parse(await readFile(receipt, "utf8"))).toEqual({
+        result: "FAIL",
+        cleanup: "UNCONFIRMED",
+        retained: true,
+      })
+      expect(await readFile(retained, "utf8")).toBe("retained inert profile")
+      // The old referenced controller cannot exit until the child self-finishes.
+      // The corrected controller finishes with no process signal or file removal.
+      expect(
+        await readFile(finished).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(!corrected)
+      const until = Date.now() + 2500
+      while (
+        !(await readFile(finished).then(
+          () => true,
+          () => false,
+        )) &&
+        Date.now() < until
+      )
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(await readFile(finished, "utf8")).toBe("finished")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+}, 10000)

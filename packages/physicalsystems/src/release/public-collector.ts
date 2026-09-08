@@ -423,6 +423,7 @@ function checkMap(value: unknown, native: boolean) {
           "startup-phase",
           "startup-observation",
           "synthetic-observation",
+          "native-browser-observation",
         ]
     if (
       typeof check.id !== "string" ||

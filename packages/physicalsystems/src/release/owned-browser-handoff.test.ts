@@ -9,6 +9,7 @@ import { runOwnedBrowserHandoffReview } from "./owned-browser-handoff"
 import type { OwnedProviderReviewSession } from "./owned-provider-review"
 import { validateBrowserProbeURL } from "./owned-review-browser"
 import { qualificationFailureCode } from "./qualification"
+import { browserObservationError, readBrowserObservation } from "./browser-observation"
 
 async function fixture(
   options: {
@@ -21,6 +22,7 @@ async function fixture(
     nativeCleanupFails?: boolean
     browserCleanupFails?: boolean
     browserStartFails?: boolean
+    observedBrowserStartFails?: boolean
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "browser-handoff-fixture-")))
@@ -105,6 +107,15 @@ async function fixture(
     platform: "linux" as "linux" | "win32",
     timeoutMs: 100,
     async startBrowser(value: { env: NodeJS.ProcessEnv; root: string; probeURL?: string }) {
+      if (options.observedBrowserStartFails)
+        throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", Error("PRIVATE"), {
+          browserPhase: "cleanup-identity",
+          failedBrowserPhase: "identity-executable",
+          cleanupFailurePhase: "cleanup-identity",
+          pidObserved: true,
+          birthVerified: false,
+          cdpReady: false,
+        })
       if (options.browserStartFails) throw Error("private-partial-start")
       expect(value.probeURL).toBeDefined()
       state.url = value.probeURL!
@@ -160,6 +171,33 @@ test("browser-only fixture requires actual local HTTP and owned target; returns 
     } finally {
       await f.cleanup()
     }
+  }
+})
+
+test("outer failed acquisition retains the exact safe browser boundary after cleanup wrapping", async () => {
+  const f = await fixture({ observedBrowserStartFails: true })
+  try {
+    const error = await runOwnedBrowserHandoffReview(f.input, f.io).then(
+      () => undefined,
+      (error) => error,
+    )
+    expect(error.message).toBe("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED")
+    expect(readBrowserObservation(error)).toEqual({
+      browserPhase: "cleanup-identity",
+      failedBrowserPhase: "identity-executable",
+      cleanupFailurePhase: "cleanup-identity",
+      pidObserved: true,
+      birthVerified: false,
+      cdpReady: false,
+      reviewPhase: "browser-cleanup",
+      failedReviewPhase: "browser-acquisition",
+      openerAcknowledged: false,
+      requestObserved: false,
+    })
+    expect(f.state.nativeStarted).toBe(false)
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+  } finally {
+    await f.cleanup()
   }
 })
 
