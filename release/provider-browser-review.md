@@ -137,11 +137,59 @@ Chrome's [profile argument](https://chromium.googlesource.com/chromium/src/+/HEA
 and its separate Linux Crash Reports directory are accounted for. Raw browser
 output, profiles and arbitrary process command lines are never uploaded.
 
-Windows returns `BLOCKED / BROWSER_OWNERSHIP_UNAVAILABLE` before any provider call.
-The Windows default-browser handoff currently lacks reviewed ownership/profile
-cleanup; an OS acknowledgment alone is insufficient. Failed or uncertain native
-startup/cleanup retains private paths and prevents an observed-success return.
-No original profile or OS default-browser registry entry is modified.
+Windows now has a separate owner in
+[`owned-windows-review-browser.ts`](../packages/physicalsystems/src/release/owned-windows-review-browser.ts)
+with a bounded native adapter. Its runtime proof is still pending. It resolves the
+actual protocol association using Windows' current-user association API and
+requires signed, installed Microsoft Edge with no existing Edge process. For the
+local probe it checks HTTP; for real sign-in it checks HTTPS. It never changes
+default-association hashes or substitutes a browser acknowledgment.
+
+On the disposable runner only, the owner snapshots the exact existing HKCU
+`UserDataDir` value/type and key existence, rejects a machine policy override, and
+temporarily sets the policy to its exclusive profile. Microsoft's
+[policy documentation](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-browser-policies/userdatadir)
+states that it controls the profile location and requires a browser restart.
+Edge is prelaunched with its separate profile and
+[DevTools endpoint](https://learn.microsoft.com/en-us/microsoft-edge/devtools/protocol/).
+The owner binds that endpoint to the actual browser PID, creation time, Windows
+session, user SID and executable. It checks process handles again before stopping
+owned processes, restores the exact prior policy with readback, and then removes
+the profile. PID reuse, an unexpected helper, another browser or concurrent policy
+changes prevent a cleanup claim. Ambient process command lines are not collected;
+only PID/parent metadata is used to find the owned descendants.
+Every observed descendant remains a query root after its parent exits, including
+unknown helpers. Reused identities block cleanup, and policy restoration requires
+all retained process IDs to be absent.
+
+Failed or uncertain native startup/cleanup retains private paths and prevents an
+observed-success return. Original browser profiles are never removed. A preserved
+unknown cleanup state belongs only to its disposable runner, which must not be
+reused for another qualification.
+An unresolved, rejected or false native opener result also retains private paths:
+the product's own timeout cannot prove that the OS handoff will never finish.
+After a true opener acknowledgment, a failed read-only target/request check can
+still complete ordinary verified cleanup.
+
+## Browser transport review without an account
+
+`browser_review: true` sets `PS_BROWSER_REVIEW=1` and invokes
+[`runOwnedBrowserHandoffReview`](../packages/physicalsystems/src/release/owned-browser-handoff.ts)
+through the same anchored `withSession` lifecycle. It creates an exclusive
+loopback HTTP server with a fresh random path. The actual renderer's native opener
+must return success, the owned browser's CDP target must show that exact URL, and
+the server must receive the corresponding request. Both observations are awaited
+within one deadline; the opener is called once. The server has no external
+resources, provider endpoints or sign-in operation.
+
+This produces only `native-browser-handoff-probe` evidence. Its returned record
+explicitly states `providerSignIn: NOT_TESTED`; it cannot satisfy
+`native-provider-browser-probe`. The independent `provider_qa` choice remains
+disabled until a real account is selected. Linux and Windows browser/profile,
+native app and fixture-server cleanup are required before returning observed
+transport facts. Current unit tests use inert process/registry adapters and a
+local HTTP fixture; no native browser proof or real-provider result follows from
+those tests.
 
 ## Timing and current evidence
 

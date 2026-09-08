@@ -18,9 +18,10 @@ export function providerReviewRuntimeCommand(env, platform = process.platform) {
     throw Error("PROVIDER_REVIEW_RUNTIME_INVALID")
   if (env.PS_PROVIDER_REVIEW && !["disabled", "openai-device"].includes(env.PS_PROVIDER_REVIEW))
     throw Error("PROVIDER_REVIEW_RUNTIME_INVALID")
+  if (env.PS_BROWSER_REVIEW && !["0", "1"].includes(env.PS_BROWSER_REVIEW))
+    throw Error("PROVIDER_REVIEW_RUNTIME_INVALID")
   if (
     env.PS_PROVIDER_REVIEW === "openai-device" &&
-    platform === "linux" &&
     (!env.ACTIONS_RUNTIME_TOKEN ||
       !env.ACTIONS_RESULTS_URL ||
       !/^[a-f0-9]{40}$/.test(env.PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA ?? "") ||

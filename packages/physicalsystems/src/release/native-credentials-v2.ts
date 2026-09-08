@@ -50,10 +50,22 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
     }
   }
 
-  async function connections(run: V2CredentialProbeRequest) {
+  async function integration(run: V2CredentialProbeRequest, allowPending = false) {
     const result = await request(run, `/api/integration/${providerID}`, { method: "GET" })
-    if (!result || typeof result !== "object" || !("data" in result)) throw new Error()
-    const data = result.data
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error()
+    const data = "data" in result ? result.data : undefined
+    if (allowPending && data === undefined) {
+      if (
+        !("location" in result) ||
+        !result.location ||
+        typeof result.location !== "object" ||
+        !("directory" in result.location) ||
+        typeof result.location.directory !== "string" ||
+        !result.location.directory
+      )
+        throw new Error()
+      return undefined
+    }
     if (
       !data ||
       typeof data !== "object" ||
@@ -63,7 +75,7 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
       !Array.isArray(data.connections)
     )
       throw new Error()
-    return data.connections.map((connection: unknown) => {
+    const ids = data.connections.map((connection: unknown) => {
       if (
         !connection ||
         typeof connection !== "object" ||
@@ -76,10 +88,19 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
         throw new Error()
       return connection.id
     })
+    return { ids, methods: "methods" in data ? data.methods : undefined }
   }
+  const connections = async (run: V2CredentialProbeRequest) => {
+    const current = await integration(run)
+    if (!current) throw new Error()
+    return current.ids
+  }
+  const saveState = { phase: "idle", readinessReads: 0, readbackReads: 0, writes: 0 }
+  let saveAttempted = false
 
   return {
     providerID,
+    saveCheckpoint: () => ({ ...saveState }),
     logFilter: probe.logFilter,
     beginObservation(expected: "present" | "absent") {
       const prompt = probe.beginObservation(expected)
@@ -91,12 +112,53 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
       state.observed ||= matched
       return matched
     },
+    /** Read-only restart readiness; never accepts a different or extra credential. */
+    async savedConnectionReady(run: V2CredentialProbeRequest) {
+      try {
+        if (!state.credentialID || state.removed) throw new Error()
+        const current = await integration(run, true)
+        if (!current) return false
+        const ids = current.ids
+        if (ids.length > 1 || (ids.length && ids[0] !== state.credentialID)) throw new Error()
+        return ids.length === 1
+      } catch {
+        throw new Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+      }
+    },
     /** A nonce-matched request arrived; finishObservation still validates auth. */
     observationReady: () => state.observed,
     finishObservation: probe.finishObservation,
     async save(run: V2CredentialProbeRequest) {
+      if (saveAttempted) throw new Error("V2_CREDENTIAL_PROBE_SAVE_WRITE_UNCONFIRMED")
+      saveAttempted = true
       try {
-        if (state.credentialID || (await connections(run)).length) throw new Error()
+        saveState.phase = "preflight"
+        if (state.credentialID) throw new Error()
+        let ready = false
+        const deadline = Date.now() + timeoutMs
+        while (Date.now() < deadline) {
+          saveState.readinessReads++
+          const current = await integration(run, true)
+          if (!current) {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now()))))
+            continue
+          }
+          if (
+            current.ids.length ||
+            !Array.isArray(current.methods) ||
+            current.methods.some((method) => !method || typeof method !== "object" || !("type" in method))
+          )
+            throw new Error()
+          saveState.phase = "method"
+          if (current.methods.some((method) => method.type === "key")) {
+            ready = true
+            break
+          }
+          await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now()))))
+        }
+        if (!ready) throw new Error()
+        saveState.phase = "write"
+        saveState.writes++
         await probe.save(async (_route, init) => {
           state.canary = init.body!.key
           const result = await request(run, `/api/integration/${providerID}/connect/key`, {
@@ -106,11 +168,22 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
           if (result !== undefined) throw new Error()
           return true
         })
-        const ids = await connections(run)
-        if (ids.length !== 1) throw new Error()
-        state.credentialID = ids[0]
+        saveState.phase = "readback"
+        const until = Date.now() + timeoutMs
+        while (Date.now() < until) {
+          saveState.readbackReads++
+          const ids = await connections(run)
+          if (ids.length > 1) throw new Error()
+          if (ids.length === 1) {
+            state.credentialID = ids[0]
+            saveState.phase = "complete"
+            return
+          }
+          await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(1, until - Date.now()))))
+        }
+        throw new Error()
       } catch {
-        throw new Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+        throw new Error(`V2_CREDENTIAL_PROBE_SAVE_${saveState.phase.toUpperCase()}_UNCONFIRMED`)
       }
     },
     async remove(run: V2CredentialProbeRequest) {

@@ -32,6 +32,8 @@ import { agentDatabaseName } from "../src/release/agent-channel.ts"
 import { waitForCredentialAttachment } from "../src/release/native-credentials.ts"
 import { createNativeV2CredentialProbe } from "../src/release/native-credentials-v2.ts"
 import { ownedV2CredentialTransport } from "../src/release/native-v2-transport.ts"
+import { createV2CredentialReadiness } from "../src/release/native-v2-readiness.ts"
+import { createV2TransportObservation } from "../src/release/native-v2-observation.ts"
 import { observeCredentialBackend } from "../src/release/credential-backend.ts"
 import {
   nsisInstallArguments,
@@ -51,6 +53,7 @@ import {
 import { prepareAppImageReplacement } from "../src/release/appimage-replacement.ts"
 import { qualifyAppImageReinstall } from "../src/release/appimage-reinstall.ts"
 import { runOwnedProviderBrowserReview } from "../src/release/owned-provider-review.ts"
+import { runOwnedBrowserHandoffReview } from "../src/release/owned-browser-handoff.ts"
 import {
   loadPublicQualification,
   requireDisposablePublicRunner,
@@ -546,7 +549,8 @@ try {
         check("native-reinstall-probe", "PASS", JSON.stringify(result))
       }
       if (publicUpgrade) await qualifyPublicUpgrade(entrypoint, extension)
-      await qualifyProviderBrowser(entrypoint)
+      await qualifyBrowserReview(entrypoint, "handoff")
+      await qualifyBrowserReview(entrypoint, "provider")
     }
   }
 } catch (error) {
@@ -745,10 +749,17 @@ try {
   if (failed || publicMode) process.exitCode = 1
 }
 
-async function qualifyProviderBrowser(entrypoint) {
-  if (!process.env.PS_PROVIDER_REVIEW || process.env.PS_PROVIDER_REVIEW === "disabled") return
-  stage = "native-provider-browser-probe"
-  const reviewRoot = join(root, "provider-review")
+async function qualifyBrowserReview(entrypoint, mode) {
+  const handoff = mode === "handoff"
+  if (
+    handoff
+      ? process.env.PS_BROWSER_REVIEW !== "1"
+      : !process.env.PS_PROVIDER_REVIEW || process.env.PS_PROVIDER_REVIEW === "disabled"
+  )
+    return
+  const probeID = handoff ? "native-browser-handoff-probe" : "native-provider-browser-probe"
+  stage = probeID
+  const reviewRoot = join(root, handoff ? "browser-handoff-review" : "provider-review")
   await mkdir(reviewRoot, { mode: 0o700 })
   const lab = {
     profile: join(reviewRoot, "application"),
@@ -758,7 +769,8 @@ async function qualifyProviderBrowser(entrypoint) {
     payload,
   }
   try {
-    const result = await runOwnedProviderBrowserReview({
+    const reviewController = handoff ? runOwnedBrowserHandoffReview : runOwnedProviderBrowserReview
+    const result = await reviewController({
       env: process.env,
       root: reviewRoot,
       artifact: options.artifact,
@@ -781,6 +793,8 @@ async function qualifyProviderBrowser(entrypoint) {
         try {
           await launch(entrypoint, "provider-review", lab, {
             environment,
+            probeID,
+            projectName: handoff ? "Browser handoff qualification" : "Provider sign-in qualification",
             async review(session) {
               observed = await review(session)
             },
@@ -796,12 +810,15 @@ async function qualifyProviderBrowser(entrypoint) {
         return observed
       },
     })
-    stage = "native-provider-browser-probe"
+    stage = probeID
+    if (handoff && result.status === "OBSERVED" && result.providerSignIn !== "NOT_TESTED")
+      throw new Error("PROVIDER_REVIEW_UNCONFIRMED")
     if (result.status === "OBSERVED") check(stage, "PASS", JSON.stringify(result))
     else check(stage, result.status, result.reason)
   } catch (error) {
-    stage = "native-provider-browser-probe"
-    if (error?.message === "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED") providerReviewCleanupUnconfirmed = true
+    stage = probeID
+    if (["PROVIDER_REVIEW_CLEANUP_UNCONFIRMED", "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED"].includes(error?.message))
+      providerReviewCleanupUnconfirmed = true
     throw error
   }
 }
@@ -932,6 +949,8 @@ async function launch(executable, credentialPhase, lab, providerReview) {
   let owned = []
   let attached
   let v2Request
+  let credentialReadiness
+  const credentialTransportObservation = createV2TransportObservation()
   const attach = async () => {
     const expected = await evaluate(
       "window.api.physicalSystems.snapshot().then(s => ({ sessionId: s.conversation?.sessionId, directory: s.projects.find(p => p.id === s.activeProjectId)?.cwd }))",
@@ -944,7 +963,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       pid: electronPid,
       ...expected,
     })
-    v2Request = ownedV2CredentialTransport(attached)
+    v2Request = ownedV2CredentialTransport(attached, undefined, credentialTransportObservation)
     api = async (path, body, init = {}) =>
       fetch(`${attached.url}${path}?directory=${encodeURIComponent(attached.directory)}`, {
         method: init.method || (body === undefined ? "GET" : "POST"),
@@ -1125,7 +1144,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       stage,
       "PASS",
       providerReview
-        ? "The separate provider review loaded the actual renderer with its owned OS browser handler. Empty-PATH operation was qualified earlier."
+        ? "The separate browser review loaded the actual renderer with its owned OS browser handler. Empty-PATH operation was qualified earlier."
         : "Installed/extracted Electron payload loaded the actual renderer with no Node or Bun on its PATH.",
     )
     stage = "device-isolation"
@@ -1166,15 +1185,13 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       if (stored.vaultSha256 !== expected.vaultSha256) throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
       await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
       if (credentialPhase === "retrieve-remove") {
-        const prompt = probe.beginObservation("present")
-        await v2Request(`/api/session/${attached.sessionId}/model`, {
-          method: "POST",
-          body: { model: { providerID: probe.providerID, id: "fixture" } },
+        credentialReadiness = createV2CredentialReadiness({
+          request: v2Request,
+          probe,
+          sessionId: attached.sessionId,
+          endpoint: provider.credentialURL,
         })
-        await v2Request(`/api/session/${attached.sessionId}/prompt`, {
-          method: "POST",
-          body: { prompt: { text: prompt } },
-        })
+        await credentialReadiness.dispatch()
         await until(() => probe.observationReady(), "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED", 30000)
         await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED", 30000)
         probe.finishObservation()
@@ -1219,10 +1236,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       () => evaluate('Boolean(document.querySelector("dialog[open] input"))'),
       "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
     )
-    await type(
-      "dialog[open] input",
-      providerReview ? "Provider sign-in qualification" : "Packaged synthetic qualification",
-    )
+    await type("dialog[open] input", providerReview ? providerReview.projectName : "Packaged synthetic qualification")
     await click('dialog[open] button[type="submit"]')
     await until(
       () => evaluate('Boolean(document.querySelector("[data-ps-project-row]"))'),
@@ -1255,7 +1269,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     }
     await waitForComposer()
     if (providerReview) {
-      stage = "native-provider-browser-probe"
+      stage = providerReview.probeID
       await attach()
       await providerReview.review({
         child,
@@ -1388,6 +1402,27 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         "startup-observation",
         "NOT_TESTED",
         await startupCheckpointDetail(profile, lines).catch(() => "Startup observations unavailable."),
+      )
+    }
+    if (stage === "native-v2-credential-probe") {
+      const transport = credentialTransportObservation.snapshot()
+      check(
+        "native-v2-credential-observation",
+        "NOT_TESTED",
+        JSON.stringify({
+          save: probe.saveCheckpoint(),
+          readiness: credentialReadiness?.checkpoint(),
+          transport,
+          credentialRequests: provider.calls.filter((call) => call.credential === true).length,
+          otherFixtureRequests: provider.calls.filter((call) => call.credential !== true).length,
+          nonceObserved: probe.observationReady(),
+          sessionActive: v2Request
+            ? await v2Idle().then(
+                (idle) => !idle,
+                () => null,
+              )
+            : null,
+        }),
       )
     }
     if (stage === "synthetic-chat") {

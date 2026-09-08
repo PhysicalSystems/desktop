@@ -34,3 +34,34 @@ test("Node action only runs fixed candidate/public commands and never serializes
   ])
     expect(() => providerReviewRuntimeCommand({ ...env, ...bad }, "linux")).toThrow("PROVIDER_REVIEW_RUNTIME_INVALID")
 })
+
+test("both native platforms require encrypted challenge runtime inputs before real sign-in", () => {
+  const required = {
+    ACTIONS_RUNTIME_TOKEN: "INERT-UPLOAD-CANARY",
+    ACTIONS_RESULTS_URL: "https://example.invalid/owned-artifacts",
+    PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA: "a".repeat(40),
+    PS_PROVIDER_REVIEW_KEY_SHA256: "b".repeat(64),
+    PS_PROVIDER_REVIEW_PUBLIC_KEY_PEM: "INERT-KEY-TRANSPORT",
+  }
+  for (const platform of ["linux", "win32"]) {
+    const env = {
+      CI: "true",
+      GITHUB_ACTIONS: "true",
+      RUNNER_ENVIRONMENT: "github-hosted",
+      RUNNER_TEMP: tmpdir(),
+      RUNNER_OS: platform === "linux" ? "Linux" : "Windows",
+      INPUT_MODE: "candidate",
+      PS_PROVIDER_REVIEW: "openai-device",
+      ...required,
+    }
+    expect(JSON.stringify(providerReviewRuntimeCommand(env, platform))).not.toContain("INERT-")
+    for (const key of Object.keys(required))
+      expect(() => providerReviewRuntimeCommand({ ...env, [key]: undefined }, platform)).toThrow(
+        "PROVIDER_REVIEW_RUNTIME_INVALID",
+      )
+    expect(() => providerReviewRuntimeCommand({ ...env, PS_BROWSER_REVIEW: "yes" }, platform)).toThrow(
+      "PROVIDER_REVIEW_RUNTIME_INVALID",
+    )
+    expect(providerReviewRuntimeCommand({ ...env, PS_BROWSER_REVIEW: "1" }, platform)).toBeDefined()
+  }
+})

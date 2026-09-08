@@ -22,6 +22,11 @@ on:
         description: Optional RSA public PEM (3072+ bits) for encrypted bounded startup logs; never provide a private key
         type: string
         required: false
+      browser_review:
+        description: Verify the native browser handoff against an owned loopback fixture; no provider sign-in
+        type: boolean
+        default: false
+        required: false
       provider_qa:
         description: Optional real account review; selected device grant must be authorized by its reviewer
         type: choice
@@ -172,7 +177,7 @@ jobs:
       - uses: ./.github/actions/setup-desktop-build
       - name: Verify native source archive staging
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts
+        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/native-upgrade-process.test.ts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: desktop-inputs-${{ github.run_id }}-${{ github.run_attempt }}
@@ -200,6 +205,7 @@ jobs:
           PS_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
           PS_DIAGNOSTIC_DIRECTORY: ${{ runner.temp }}/desktop-release/sealed-diagnostics
           PS_PROVIDER_REVIEW: ${{ inputs.provider_qa }}
+          PS_BROWSER_REVIEW: ${{ inputs.browser_review && '1' || '0' }}
           PS_PROVIDER_REVIEW_PUBLIC_KEY_PEM: ${{ inputs.provider_qa_public_key }}
           PS_PROVIDER_REVIEW_KEY_SHA256: ${{ inputs.provider_qa_key_sha256 }}
           PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}

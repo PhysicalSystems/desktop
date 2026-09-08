@@ -17,6 +17,11 @@ on:
         type: string
         required: false
 
+      browser_review:
+        description: Verify the native browser handoff against an owned loopback fixture; no provider sign-in
+        type: boolean
+        default: false
+        required: false
       provider_qa:
         description: Optional owned provider sign-in qualification
         type: choice
@@ -147,6 +152,7 @@ jobs:
       baseline_version: ${{ needs.prepare.outputs.baseline_version }}
       upgrade_plan_sha256: ${{ needs.prepare.outputs.upgrade_plan_sha256 }}
       platform: windows-x64
+      browser_review: ${{ inputs.browser_review }}
       provider_qa: ${{ inputs.provider_qa }}
       provider_qa_public_key: ${{ inputs.provider_qa_public_key }}
       provider_qa_key_sha256: ${{ inputs.provider_qa_key_sha256 }}
@@ -171,6 +177,7 @@ jobs:
       baseline_version: ${{ needs.prepare.outputs.baseline_version }}
       upgrade_plan_sha256: ${{ needs.prepare.outputs.upgrade_plan_sha256 }}
       platform: linux-x64
+      browser_review: ${{ inputs.browser_review }}
       provider_qa: ${{ inputs.provider_qa }}
       provider_qa_public_key: ${{ inputs.provider_qa_public_key }}
       provider_qa_key_sha256: ${{ inputs.provider_qa_key_sha256 }}

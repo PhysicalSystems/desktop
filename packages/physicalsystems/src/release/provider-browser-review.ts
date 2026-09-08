@@ -48,7 +48,7 @@ export async function runProviderBrowserReview(input: {
 }) {
   if (input.provider === undefined) return { status: "NOT_TESTED" as const, reason: "NO_SELECTED_PROVIDER" as const }
   if (input.provider !== "openai-device" || !/^[a-f0-9]{64}$/.test(input.nonce)) throw fail()
-  const context = validateContext(input.context)
+  const context = validateProviderBrowserReviewContext(input.context)
   const key = (() => {
     try {
       if (
@@ -267,7 +267,7 @@ async function bounded<A>(operation: (signal: AbortSignal) => Promise<A>, timeou
   }
 }
 
-function validateContext(value: ProviderBrowserReviewContext) {
+export function validateProviderBrowserReviewContext(value: ProviderBrowserReviewContext) {
   if (
     !value ||
     Object.keys(value).sort().join(",") !==

@@ -8,6 +8,18 @@ const failure = () => new Error("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
 const cleanupFailure = () => new Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
+export type OwnedReviewBrowser = {
+  environment: NodeJS.ProcessEnv
+  confirmHandoff(url: string): Promise<boolean>
+  stop(options?: { retainProfile?: boolean }): Promise<void>
+}
+
+export function validateBrowserProbeURL(value: string) {
+  const match = /^http:\/\/127\.0\.0\.1:([1-9][0-9]{0,4})\/physicalsystems-browser-review\/[a-f0-9]{64}$/.exec(value)
+  if (!match || Number(match[1]) > 65535) throw failure()
+  return value
+}
+
 /** Read only fixed ownership fields; process command lines never enter evidence. */
 export function reviewBrowserProcess(stat: string) {
   const match = /^(\d+) \(.*\) ([A-Za-z]) (.*)$/.exec(stat.trim())
@@ -170,7 +182,13 @@ export function ownedReviewBrowserEnvironment(root: string, base: NodeJS.Process
 /** Actual headed Chrome, its own Linux session and exclusive profile. The XDG
  * handler reuses this exact profile when Electron invokes shell.openExternal.
  * No registry/default-browser mutations or unowned Windows launch is attempted. */
-export async function startOwnedReviewBrowser(input: { env: NodeJS.ProcessEnv; root: string }) {
+export async function startOwnedReviewBrowser(input: {
+  env: NodeJS.ProcessEnv
+  root: string
+  probeURL?: string
+}): Promise<OwnedReviewBrowser> {
+  const expectedURL =
+    input.probeURL === undefined ? "https://auth.openai.com/codex/device" : validateBrowserProbeURL(input.probeURL)
   await requireDisposablePublicRunner(input.env, input.root)
   if (process.platform !== "linux" || !input.env.DISPLAY) throw failure()
   const root = await realpath(input.root)
@@ -361,12 +379,16 @@ export async function startOwnedReviewBrowser(input: { env: NodeJS.ProcessEnv; r
     return {
       environment: env,
       async confirmHandoff(url: string) {
-        if (url !== "https://auth.openai.com/codex/device") throw failure()
+        if (url !== expectedURL) throw failure()
         const until = Date.now() + 4000
         while (Date.now() < until) {
           if (
             (await targets())?.some(
-              (target) => target.type === "page" && /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url),
+              (target) =>
+                target.type === "page" &&
+                (input.probeURL === undefined
+                  ? /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url)
+                  : target.url === expectedURL),
             )
           )
             return true

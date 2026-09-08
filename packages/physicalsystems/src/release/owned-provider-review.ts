@@ -6,7 +6,12 @@ import { join } from "node:path"
 import { createRequire } from "node:module"
 import { pathToFileURL } from "node:url"
 import { startOwnedReviewBrowser } from "./owned-review-browser"
-import { runProviderBrowserReview, type ProviderBrowserReviewContext } from "./provider-browser-review"
+import { startOwnedWindowsReviewBrowser } from "./owned-windows-review-browser"
+import {
+  runProviderBrowserReview,
+  validateProviderBrowserReviewContext,
+  type ProviderBrowserReviewContext,
+} from "./provider-browser-review"
 import { providerBrowserReviewTransport } from "./provider-browser-transport"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { sha256File } from "./qualification"
@@ -54,25 +59,7 @@ export async function runOwnedProviderBrowserReview(
     return { status: "NOT_TESTED" as const, reason: "NO_SELECTED_PROVIDER" as const }
   if (selection !== "openai-device") throw failure()
   const platform = io.platform ?? process.platform
-  await requireDisposablePublicRunner(input.env, input.root, platform)
-  if (platform !== "linux") return { status: "BLOCKED" as const, reason: "BROWSER_OWNERSHIP_UNAVAILABLE" as const }
-  if (
-    input.context.platform !== "linux-x64" ||
-    input.context.runId !== input.env.GITHUB_RUN_ID ||
-    String(input.context.runAttempt) !== input.env.GITHUB_RUN_ATTEMPT ||
-    input.context.sourceRevision !== input.env.PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA ||
-    input.context.releaseInputsSha256 !== input.env.PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256 ||
-    input.runtimeEnvironment.PHYSICALSYSTEMS_ALLOW_DEVICES !== "0" ||
-    Object.keys(input.runtimeEnvironment).some((key) =>
-      /^(GITHUB_|ACTIONS_)|SECRET|TOKEN|PASSWORD|CREDENTIAL|^(NODE_OPTIONS|BUN_OPTIONS|NODE_PATH)$/.test(key),
-    ) ||
-    !(await lstat(input.artifact)).isFile() ||
-    (await lstat(input.artifact)).isSymbolicLink() ||
-    (await sha256File(input.artifact)) !== input.context.artifactSha256
-  )
-    throw failure()
-  const root = await realpath(input.root)
-  if ((await readdir(root)).length) throw failure()
+  const root = await verifyOwnedReviewContext(input, platform)
   const nonce = randomBytes(32).toString("hex")
   const nonceSha256 = createHash("sha256").update(nonce).digest("hex")
   const browserRoot = join(root, "browser")
@@ -82,9 +69,12 @@ export async function runOwnedProviderBrowserReview(
   let uploaded: { artifactId: number; archiveSha256: string } | undefined
   let cleanupFailed = false
   let acquiring = false
+  let openerUnconfirmed = false
   try {
     acquiring = true
-    browser = await (io.startBrowser ?? startOwnedReviewBrowser)({ env: input.env, root: browserRoot })
+    browser = await (
+      io.startBrowser ?? (platform === "win32" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser)
+    )({ env: input.env, root: browserRoot })
     acquiring = false
     // Runtime starts from the qualifier's scrubbed env. Never copy controller
     // env wholesale: Actions upload credentials stay exclusively in this process.
@@ -99,6 +89,7 @@ export async function runOwnedProviderBrowserReview(
         PHYSICALSYSTEMS_PROVIDER_REVIEW_NONCE: nonce,
       },
       async (session) => {
+        let reviewFinished = false
         try {
           return await runProviderBrowserReview({
             provider: "openai-device",
@@ -108,15 +99,23 @@ export async function runOwnedProviderBrowserReview(
             reviewerKeySha256: input.env.PS_PROVIDER_REVIEW_KEY_SHA256 ?? "",
             child: session.child,
             request: providerBrowserReviewTransport(session.attachment, io.fetcher),
-            openBrowser: async (url) =>
-              (await session.openBrowser(url)) === true && (await browser!.confirmHandoff(url)),
+            openBrowser: async (url) => {
+              // False includes the product opener's own OS-handoff timeout;
+              // only true acknowledgment settles this possible mutation.
+              openerUnconfirmed = true
+              const opened = await session.openBrowser(url)
+              if (opened !== true) return false
+              openerUnconfirmed = false
+              if (reviewFinished) return false
+              return await browser!.confirmHandoff(url)
+            },
             timeoutMs: io.timeoutMs,
             pollMs: io.pollMs,
             async publishChallenge(bytes) {
               if (uploaded || bytes.byteLength < 128 || bytes.byteLength > 65536) throw failure()
               const file = join(challengeRoot, "provider-review.sealed.json")
               await writeFile(file, bytes, { mode: 0o600, flag: "wx" })
-              const name = `provider-review-${input.context.runId}-${input.context.runAttempt}-linux-x64-${input.context.artifactSha256.slice(0, 12)}-${nonceSha256.slice(0, 12)}`
+              const name = `provider-review-${input.context.runId}-${input.context.runAttempt}-${input.context.platform}-${input.context.artifactSha256.slice(0, 12)}-${nonceSha256.slice(0, 12)}`
               const upload =
                 io.uploadArtifact ??
                 (async (...args: Parameters<ArtifactUploader>) => {
@@ -136,6 +135,8 @@ export async function runOwnedProviderBrowserReview(
           })
         } catch {
           return { status: "REVIEW_FAILED" as const }
+        } finally {
+          reviewFinished = true
         }
       },
     )
@@ -148,7 +149,7 @@ export async function runOwnedProviderBrowserReview(
   } finally {
     // A factory may have spawned before throwing. With no returned owner there
     // is no shutdown proof; preserve paths even if that factory tried cleanup.
-    if (acquiring) cleanupFailed = true
+    if (acquiring || openerUnconfirmed) cleanupFailed = true
     // withSession owns native shutdown. On rejection its cleanup is uncertain;
     // stop the browser, but retain the shared private QA paths.
     try {
@@ -162,4 +163,36 @@ export async function runOwnedProviderBrowserReview(
       })
     if (cleanupFailed) throw new Error("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
   }
+}
+
+export async function verifyOwnedReviewContext(
+  input: {
+    env: NodeJS.ProcessEnv
+    root: string
+    artifact: string
+    context: ProviderBrowserReviewContext
+    runtimeEnvironment: NodeJS.ProcessEnv
+  },
+  platform: NodeJS.Platform,
+) {
+  validateProviderBrowserReviewContext(input.context)
+  await requireDisposablePublicRunner(input.env, input.root, platform)
+  if (
+    input.context.platform !== (platform === "win32" ? "windows-x64" : "linux-x64") ||
+    input.context.runId !== input.env.GITHUB_RUN_ID ||
+    String(input.context.runAttempt) !== input.env.GITHUB_RUN_ATTEMPT ||
+    input.context.sourceRevision !== input.env.PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA ||
+    input.context.releaseInputsSha256 !== input.env.PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256 ||
+    input.runtimeEnvironment.PHYSICALSYSTEMS_ALLOW_DEVICES !== "0" ||
+    Object.keys(input.runtimeEnvironment).some((key) =>
+      /^(GITHUB_|ACTIONS_)|SECRET|TOKEN|PASSWORD|CREDENTIAL|^(NODE_OPTIONS|BUN_OPTIONS|NODE_PATH)$/.test(key),
+    ) ||
+    !(await lstat(input.artifact)).isFile() ||
+    (await lstat(input.artifact)).isSymbolicLink() ||
+    (await sha256File(input.artifact)) !== input.context.artifactSha256
+  )
+    throw failure()
+  const root = await realpath(input.root)
+  if ((await readdir(root)).length) throw failure()
+  return root
 }

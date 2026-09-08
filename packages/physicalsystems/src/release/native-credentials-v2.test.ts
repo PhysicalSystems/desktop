@@ -34,6 +34,7 @@ async function fixture() {
         location: { directory: root },
         data: {
           id: probe.providerID,
+          methods: [{ type: "key" }],
           connections: state.ids.map((id) => ({ type: "credential", id, label: "Fixture" })),
         },
       }
@@ -57,6 +58,12 @@ test("V2 probe saves through integration/key and removes only the same sanitized
   const f = await fixture()
   try {
     await f.probe.save(f.request)
+    expect(await f.probe.savedConnectionReady(f.request)).toBe(true)
+    f.state.ids = []
+    expect(await f.probe.savedConnectionReady(f.request)).toBe(false)
+    f.state.ids = ["cred_foreign"]
+    await expect(f.probe.savedConnectionReady(f.request)).rejects.toThrow("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+    f.state.ids = ["cred_fixture123"]
     const text = f.probe.beginObservation("present")
     expect(f.probe.observationReady()).toBe(false)
     expect(
@@ -144,7 +151,7 @@ test("V2 probe rejects preexisting/environment/wrong integration connections, un
         if (init.method !== "GET") writes++
         return { data }
       }),
-    ).rejects.toThrow("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+    ).rejects.toThrow("V2_CREDENTIAL_PROBE_SAVE_PREFLIGHT_UNCONFIRMED")
     expect(writes).toBe(0)
   }
   const probe = createNativeV2CredentialProbe({ timeoutMs: 5 })
@@ -154,13 +161,15 @@ test("V2 probe rejects preexisting/environment/wrong integration connections, un
       aborted = init.signal
       return new Promise(() => {})
     }),
-  ).rejects.toThrow("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+  ).rejects.toThrow("V2_CREDENTIAL_PROBE_SAVE_PREFLIGHT_UNCONFIRMED")
   expect(aborted?.aborted).toBe(true)
   await expect(
     createNativeV2CredentialProbe().save(async (_, init) =>
-      init.method === "GET" ? { data: { id: "physicalsystems-v2-vault-fixture", connections: [] } } : false,
+      init.method === "GET"
+        ? { data: { id: "physicalsystems-v2-vault-fixture", methods: [{ type: "key" }], connections: [] } }
+        : false,
     ),
-  ).rejects.toThrow("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+  ).rejects.toThrow("V2_CREDENTIAL_PROBE_SAVE_WRITE_UNCONFIRMED")
 })
 
 test("V2 inspection detects complete and chunk-split plaintext canaries in SQLite, WAL and rollback journal", async () => {
@@ -208,4 +217,106 @@ test("V2 inspection fails closed on missing/oversized databases and symlinked WA
   } finally {
     await f.close()
   }
+})
+
+test("first save waits for registered key method and delayed readback without duplicating its write", async () => {
+  const probe = createNativeV2CredentialProbe({ timeoutMs: 500, providerID: "openai" })
+  let beforeReads = 0,
+    afterReads = 0,
+    writes = 0
+  await probe.save(async (_route, init) => {
+    if (init.method === "POST") {
+      writes++
+      return undefined
+    }
+    if (!writes) beforeReads++
+    else afterReads++
+    return {
+      data: {
+        id: "openai",
+        methods: beforeReads >= 3 ? [{ type: "key" }] : [],
+        connections: writes && afterReads >= 2 ? [{ type: "credential", id: "cred_inert" }] : [],
+      },
+    }
+  })
+  expect(writes).toBe(1)
+  expect(probe.saveCheckpoint()).toEqual({ phase: "complete", readinessReads: 3, readbackReads: 2, writes: 1 })
+  await expect(
+    probe.save(async () => {
+      writes++
+      return undefined
+    }),
+  ).rejects.toThrow("SAVE_WRITE_UNCONFIRMED")
+  expect(writes).toBe(1)
+})
+
+test("missing key method, failed write and stored-but-unobserved readback retain distinct failed save phases", async () => {
+  for (const kind of ["method", "write", "readback"]) {
+    const probe = createNativeV2CredentialProbe({ timeoutMs: 20, providerID: "openai" })
+    let writes = 0
+    await expect(
+      probe.save(async (_route, init) => {
+        if (init.method === "POST") {
+          writes++
+          if (kind === "write") throw new Error("PRIVATE-HTTP-504")
+          return undefined
+        }
+        return { data: { id: "openai", methods: kind === "method" ? [] : [{ type: "key" }], connections: [] } }
+      }),
+    ).rejects.toThrow(`V2_CREDENTIAL_PROBE_SAVE_${kind.toUpperCase()}_UNCONFIRMED`)
+    expect(writes).toBe(kind === "method" ? 0 : 1)
+    expect(probe.saveCheckpoint().phase).toBe(kind)
+    await expect(
+      probe.save(async () => {
+        writes++
+        return undefined
+      }),
+    ).rejects.toThrow("SAVE_WRITE_UNCONFIRMED")
+    expect(writes).toBe(kind === "method" ? 0 : 1)
+  }
+})
+
+test("only legitimate integration registration absence is retryable before the single save", async () => {
+  const probe = createNativeV2CredentialProbe({ timeoutMs: 300, providerID: "openai" })
+  let reads = 0,
+    writes = 0
+  const request: V2CredentialProbeRequest = async (_route, init) => {
+    if (init.method === "POST") {
+      writes++
+      return
+    }
+    reads++
+    return JSON.parse(
+      JSON.stringify({
+        location: { directory: "/owned/inert-fixture" },
+        data:
+          reads < 3
+            ? undefined
+            : {
+                id: "openai",
+                methods: [{ type: "key" }],
+                connections: writes ? [{ type: "credential", id: "cred_inert" }] : [],
+              },
+      }),
+    )
+  }
+  await probe.save(request)
+  expect(writes).toBe(1)
+  expect(probe.saveCheckpoint()).toEqual({ phase: "complete", readinessReads: 3, readbackReads: 1, writes: 1 })
+  expect(await probe.savedConnectionReady(async () => ({ location: { directory: "/owned/inert-fixture" } }))).toBe(
+    false,
+  )
+  await expect(probe.remove(async () => ({ location: { directory: "/owned/inert-fixture" } }))).rejects.toThrow(
+    "AUTH_UNCONFIRMED",
+  )
+  for (const value of [{}, { location: { directory: "/owned" }, data: null }, { data: {} }]) {
+    await expect(
+      createNativeV2CredentialProbe({ timeoutMs: 20, providerID: "openai" }).save(async () => value),
+    ).rejects.toThrow("SAVE_PREFLIGHT_UNCONFIRMED")
+  }
+  const never = createNativeV2CredentialProbe({ timeoutMs: 20, providerID: "openai" })
+  await expect(never.save(async () => ({ location: { directory: "/owned/inert-fixture" } }))).rejects.toThrow(
+    "SAVE_PREFLIGHT_UNCONFIRMED",
+  )
+  expect(never.saveCheckpoint().writes).toBe(0)
 })

@@ -18,6 +18,8 @@ async function fixture(
     browserCleanupFails?: boolean
     nativeCleanupFails?: boolean
     handoff?: boolean
+    opened?: boolean
+    rejectedOpen?: boolean
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "owned-provider-review-")))
@@ -27,6 +29,7 @@ async function fixture(
   const state = {
     nativeStopped: false,
     browserStopped: false,
+    retained: false,
     removed: false,
     uploaded: false,
     calls: 0,
@@ -96,7 +99,8 @@ async function fixture(
           },
           async openBrowser(url: string) {
             expect(url).toBe("https://auth.openai.com/codex/device")
-            return true
+            if (options.rejectedOpen) throw Error("PRIVATE-OPENER-OUTCOME-LOST")
+            return options.opened !== false
           },
         })
       } finally {
@@ -118,6 +122,7 @@ async function fixture(
         },
         async stop(stop: { retainProfile?: boolean } = {}) {
           state.lifecycle.push("browser-stop")
+          state.retained = stop.retainProfile === true
           if (options.browserCleanupFails) throw Error("PRIVATE-BROWSER-STOP")
           if (options.nativeCleanupFails) expect(stop.retainProfile).toBe(true)
           state.browserStopped = true
@@ -133,7 +138,7 @@ async function fixture(
     ) {
       expect(state.nativeStopped).toBe(false)
       expect(state.browserStopped).toBe(false)
-      expect(name).toMatch(/^provider-review-123-2-linux-x64-[a-f0-9]{12}-[a-f0-9]{12}$/)
+      expect(name).toMatch(/^provider-review-123-2-(?:linux|windows)-x64-[a-f0-9]{12}-[a-f0-9]{12}$/)
       expect(files).toEqual([join(directory, "provider-review.sealed.json")])
       expect(options).toEqual({ retentionDays: 1, compressionLevel: 0 })
       state.sealed = await readFile(files[0]!, "utf8")
@@ -215,12 +220,12 @@ test("disabled, unsupported ownership, changed anchors and inherited credentials
       status: "NOT_TESTED",
       reason: "NO_SELECTED_PROVIDER",
     })
-    expect(
-      await runOwnedProviderBrowserReview(
+    await expect(
+      runOwnedProviderBrowserReview(
         { ...f.input, env: { ...f.input.env, RUNNER_OS: "Windows" } },
         { ...f.io, platform: "win32" },
       ),
-    ).toEqual({ status: "BLOCKED", reason: "BROWSER_OWNERSHIP_UNAVAILABLE" })
+    ).rejects.toThrow("PROVIDER_REVIEW_UNCONFIRMED")
     for (const input of [
       { ...f.input, context: { ...f.input.context, sourceRevision: "f".repeat(40) } },
       { ...f.input, runtimeEnvironment: { ...f.input.runtimeEnvironment, ACTIONS_RUNTIME_TOKEN: "PRIVATE" } },
@@ -231,6 +236,21 @@ test("disabled, unsupported ownership, changed anchors and inherited credentials
     expect(f.state.lifecycle).toEqual([])
   } finally {
     await f.cleanup()
+  }
+})
+
+test("actual-provider wrapper retains private paths when the OS opener outcome is unconfirmed", async () => {
+  for (const options of [{ opened: false }, { rejectedOpen: true }]) {
+    const f = await fixture(options)
+    try {
+      await expect(runOwnedProviderBrowserReview(f.input, f.io)).rejects.toThrow("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+      expect(f.state.nativeStopped).toBe(true)
+      expect(f.state.browserStopped).toBe(true)
+      expect(f.state.retained).toBe(true)
+      await access(f.input.root)
+    } finally {
+      await f.cleanup()
+    }
   }
 })
 

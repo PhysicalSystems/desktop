@@ -18,6 +18,8 @@ export const publicNativeProbeIds = [
   "native-upgrade-probe",
   "native-failed-upgrade-recovery-probe",
   "native-provider-browser-probe",
+  // Optional loopback handoff observation; never establishes provider sign-in.
+  "native-browser-handoff-probe",
   "native-platform-display-probe",
   "native-fresh-appimage-probe",
 ] as const
@@ -121,9 +123,14 @@ export function publicNativeReceipt(input: {
     ...(windows ? ["public-signing"] : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
   ]
   const installed = input.artifact.format !== "AppImage"
+  const handoff = checks.get("native-browser-handoff-probe")
   const observed: Record<(typeof unimplementedPublicChecks)[number], QualificationStatus> = {
     "native-credential-storage": status(["native-v2-credential-probe", ...cleanup]),
-    "provider-browser-sign-in": status(["native-provider-browser-probe", ...cleanup]),
+    "provider-browser-sign-in": status([
+      "native-provider-browser-probe",
+      ...(handoff === "FAIL" || handoff === "BLOCKED" ? ["native-browser-handoff-probe"] : []),
+      ...cleanup,
+    ]),
     "fresh-install": status(
       installed
         ? [

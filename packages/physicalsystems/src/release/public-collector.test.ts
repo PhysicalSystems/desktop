@@ -279,6 +279,30 @@ test("passing auxiliary smoke probes cannot replace any of the eight separate pu
   await expect(collectPublicDistribution(substituted.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
 })
 
+test("optional browser-only handoff is accepted as auxiliary evidence but never replaces provider qualification", async () => {
+  for (const status of ["PASS", "NOT_TESTED", "FAIL", "BLOCKED"] as const) {
+    const f = await fixture()
+    await f.edit("smokeSha256", (record) => {
+      checks(record).push({ id: "native-browser-handoff-probe", status, detail: "SIMULATED LOOPBACK FIXTURE ONLY" })
+    })
+    if (status === "FAIL" || status === "BLOCKED") {
+      await expect(collectPublicDistribution(f.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+      expect(await readdir(f.root)).not.toContain("collected")
+      continue
+    }
+    expect((await collectPublicDistribution(f.input())).record.facts.assets).toHaveLength(3)
+  }
+  const substituted = await fixture()
+  await substituted.edit("smokeSha256", (record) => {
+    checks(record).push({ id: "native-browser-handoff-probe", status: "PASS", detail: "SIMULATED FIXTURE ONLY" })
+  })
+  await substituted.edit("nativeSha256", (record) => {
+    checks(record).find((check) => check.id === "provider-browser-sign-in")!.status = "NOT_TESTED"
+  })
+  await expect(collectPublicDistribution(substituted.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+  expect(await readdir(substituted.root)).not.toContain("collected")
+})
+
 test("independent anchors, all formats and native run/source/input/identity bindings are mandatory", async () => {
   const f = await fixture()
   for (const overrides of [

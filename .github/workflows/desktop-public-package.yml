@@ -30,6 +30,10 @@ on:
       platform:
         type: string
         required: true
+      browser_review:
+        type: boolean
+        required: false
+        default: false
       provider_qa:
         type: string
         required: false
@@ -152,6 +156,7 @@ jobs:
           mode: public
         env:
           PS_PROVIDER_REVIEW: ${{ inputs.provider_qa }}
+          PS_BROWSER_REVIEW: ${{ inputs.browser_review && '1' || '0' }}
           PS_PROVIDER_REVIEW_PUBLIC_KEY_PEM: ${{ inputs.provider_qa_public_key }}
           PS_PROVIDER_REVIEW_KEY_SHA256: ${{ inputs.provider_qa_key_sha256 }}
           PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA: ${{ inputs.source_sha }}

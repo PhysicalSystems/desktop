@@ -40,6 +40,21 @@ test("fixed actual probe IDs can complete the receipt while failures and uncerta
   }
 })
 
+test("optional loopback browser handoff cannot establish provider sign-in and cannot hide a failed handoff", () => {
+  const complete = simulatedPublicNativeFixture("windows-x64", 0, true)
+  const login = (input: typeof complete) =>
+    publicNativeReceipt(input).checks.find((check) => check.id === "provider-browser-sign-in")!.status
+  for (const status of ["PASS", "NOT_TESTED", "FAIL", "BLOCKED"] as const) {
+    const changed = structuredClone(complete)
+    changed.report.checks.find((check) => check.id === "native-browser-handoff-probe")!.status = status
+    expect(login(changed)).toBe(status === "FAIL" || status === "BLOCKED" ? status : "PASS")
+    changed.report.checks = changed.report.checks.filter((check) => check.id !== "native-provider-browser-probe")
+    expect(login(changed)).toBe(status === "FAIL" || status === "BLOCKED" ? status : "NOT_TESTED")
+  }
+  complete.report.checks = complete.report.checks.filter((check) => check.id !== "native-browser-handoff-probe")
+  expect(login(complete)).toBe("PASS")
+})
+
 test("candidate, foreign artifact/source, missing compiled identity and inconsistent signing never author native PASS", () => {
   const f = simulatedPublicNativeFixture("windows-x64", 0, true)
   for (const report of [
