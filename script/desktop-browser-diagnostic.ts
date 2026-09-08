@@ -12,6 +12,7 @@ import {
 import { startOwnedReviewBrowser } from "../packages/physicalsystems/src/release/owned-review-browser"
 import { startOwnedWindowsReviewBrowser } from "../packages/physicalsystems/src/release/owned-windows-review-browser"
 import { runWindowsLoopbackDiagnostic } from "../packages/physicalsystems/src/release/windows-loopback-diagnostic"
+import { createBrowserPrivateDiagnostic } from "../packages/physicalsystems/src/release/browser-private-diagnostic"
 import { requireDisposablePublicRunner } from "../packages/physicalsystems/src/release/public-qualification"
 
 try {
@@ -27,6 +28,10 @@ try {
     }).trim(),
   })
   const mode = browserDiagnosticMode(process.env, context)
+  const privateDiagnostic =
+    mode === "windows-os-loopback"
+      ? createBrowserPrivateDiagnostic({ context, publicKeyPem: process.env.BROWSER_DIAGNOSTIC_PUBLIC_KEY_PEM })
+      : undefined
   const temporary = await realpath(process.env.RUNNER_TEMP!)
   const reports = join(temporary, "desktop-browser-diagnostic-report")
   await mkdir(reports, { mode: 0o700 })
@@ -42,14 +47,28 @@ try {
   const acquire = context.platform === "windows-x64" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser
   const result =
     mode === "windows-os-loopback"
-      ? await runWindowsLoopbackDiagnostic(context, { env: process.env, root })
+      ? await runWindowsLoopbackDiagnostic(context, {
+          env: process.env,
+          root,
+          ...(privateDiagnostic ? { unknownExecutableSink: privateDiagnostic.unknownExecutableSink } : {}),
+        })
       : await runBrowserFactoryDiagnostic(context, () =>
           acquire({ env: process.env, root, probeURL: browserDiagnosticProbeURL }),
         )
   const completed = join(reports, "browser-diagnostic.next.json")
-  await writeFile(completed, JSON.stringify(result, null, 2) + "\n", { mode: 0o600, flag: "wx" })
+  const receipt = Buffer.from(JSON.stringify(result, null, 2) + "\n")
+  await writeFile(completed, receipt, { mode: 0o600, flag: "wx" })
   await rename(completed, report)
   console.log(JSON.stringify(result))
+  if (privateDiagnostic) {
+    const outputDirectory = join(temporary, "desktop-browser-sealed-diagnostics")
+    await mkdir(outputDirectory, { mode: 0o700 })
+    const sealed = await privateDiagnostic.seal({ temporary, outputDirectory, receipt })
+    console.log(
+      JSON.stringify({ encryptedDiagnostic: sealed.status, ...("reason" in sealed ? { reason: sealed.reason } : {}) }),
+    )
+    if (sealed.status === "FAILED") process.exitCode = 1
+  }
   if (result.result !== "COMPLETE") process.exitCode = 1
 } catch {
   // Filesystem and native errors can contain private paths or transport data.

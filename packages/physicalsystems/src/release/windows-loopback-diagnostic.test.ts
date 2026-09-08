@@ -375,3 +375,42 @@ test("confirmed browser cleanup cannot delete a replaced outer diagnostic direct
   expect(await readFile(join(f.root, "foreign-marker"), "utf8")).toBe("preserve")
   expect(f.events).toEqual(["acquire", "open", "confirm", "stop"])
 })
+
+test("private executable collection is optional and never copied into the public diagnostic", async () => {
+  for (const enabled of [false, true]) {
+    const f = await fixture()
+    let received = 0
+    const snapshot = [
+      {
+        executable: "C:\\PRIVATE-EXECUTABLE\\unowned.exe",
+        pid: 321,
+        parent: 123,
+        parentOwned: true,
+        sameSid: true,
+        sameSession: true,
+        validBirth: true,
+        exactProfile: false,
+      },
+    ]
+    const sink = () => {
+      received++
+    }
+    const result = await runWindowsLoopbackDiagnostic(
+      context,
+      { env: f.env, root: f.root, ...(enabled ? { unknownExecutableSink: sink } : {}) },
+      {
+        platform: "win32",
+        open: f.open,
+        acquire: async (input) => {
+          expect(input.unknownExecutableSink).toBe(enabled ? sink : undefined)
+          input.unknownExecutableSink?.(snapshot)
+          return f.acquire(input)
+        },
+      },
+    )
+    expect(received).toBe(enabled ? 1 : 0)
+    expect(JSON.stringify(result)).not.toContain("PRIVATE-EXECUTABLE")
+    expect(JSON.stringify(result)).not.toContain('"pid":321')
+    expect(result.qualification).toBe(false)
+  }
+})

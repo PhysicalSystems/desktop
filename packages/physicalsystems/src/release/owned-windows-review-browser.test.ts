@@ -15,6 +15,7 @@ import {
   windowsReviewPolicy,
   windowsReviewDebugPolicyObservation,
   windowsReviewProcesses,
+  type WindowsUnknownExecutableSnapshot,
 } from "./owned-windows-review-browser"
 import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
 import {
@@ -645,6 +646,94 @@ test("fixed executable basename counts partition only executable mismatches and 
     result.rejected.executable,
   )
   expect(JSON.stringify(result.executableShapes)).not.toMatch(/PRIVATE|910[0-7]|9200|4100|\.exe|--/)
+})
+
+test("private unknown-executable sink is bounded and once-only, and sink failures cannot change ownership or cleanup", async () => {
+  for (const mode of ["collect", "throw", "reject"] as const) {
+    const f = await fixture()
+    const native = f.io.native
+    const expectedPids = [4100, 4101, ...Array.from({ length: 9 }, (_, i) => 9300 + i)]
+    let calls = 0
+    let snapshot: WindowsUnknownExecutableSnapshot | undefined
+    f.io.native = async (request) => {
+      if (request.operation === "restore") {
+        expect(request.observedPids).toEqual(expectedPids)
+        expect(f.state.running).toBe(false)
+        f.state.restored = true
+        return { restored: true }
+      }
+      const result = await native(request)
+      if (request.operation !== "observe" || !f.state.handoff) return result
+      const value = result as { processes: WindowsReviewProcess[] }
+      return {
+        ...value,
+        processes: [
+          ...value.processes,
+          ...Array.from({ length: 9 }, (_, i) => ({
+            ...processRecord(f.state.profile),
+            pid: 9300 + i,
+            parent: i === 1 ? 9999 : 4101,
+            session: i === 1 ? 99 : 2,
+            sid: i === 1 ? "S-1-5-21-999-222-333-1001" : processRecord("").sid,
+            birth: i === 1 ? "134000000000000000" : "134000000000000020",
+            executable: `C:\\PRIVATE-UNKNOWN-${i}.exe`,
+            args: i === 1 ? ["PRIVATE-ARGUMENT"] : [`--user-data-dir=${f.state.profile}`, "PRIVATE-URL-ARGUMENT"],
+          })),
+        ],
+      }
+    }
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(
+        {
+          ...f.input,
+          unknownExecutableSink(value) {
+            calls++
+            snapshot = value
+            if (mode === "throw") throw Error("PRIVATE-SINK-FAILURE")
+            if (mode === "reject") return Promise.reject(Error("PRIVATE-ASYNC-SINK-FAILURE"))
+          },
+        },
+        f.io,
+      )
+      expect(calls).toBe(0)
+      const targetQueries = f.state.targetQueries
+      f.state.handoff = true
+      expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(false)
+      expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(false)
+      expect(calls).toBe(1)
+      expect(f.state.targetQueries).toBe(targetQueries)
+      expect(snapshot).toHaveLength(8)
+      expect(Object.isFrozen(snapshot)).toBe(true)
+      expect(snapshot!.every(Object.isFrozen)).toBe(true)
+      expect(snapshot![0]).toEqual({
+        executable: "C:\\PRIVATE-UNKNOWN-0.exe",
+        pid: 9300,
+        parent: 4101,
+        parentOwned: true,
+        sameSid: true,
+        sameSession: true,
+        validBirth: true,
+        exactProfile: true,
+      })
+      expect(snapshot![1]).toMatchObject({
+        parentOwned: false,
+        sameSid: false,
+        sameSession: false,
+        validBirth: false,
+        exactProfile: false,
+      })
+      expect(JSON.stringify(snapshot)).not.toMatch(/PRIVATE-ARGUMENT|PRIVATE-URL|S-1-5/)
+      f.state.handoff = false
+      await browser.stop()
+      expect(f.state.restored).toBe(true)
+      const publicObservation = readBrowserObservation({ browserObservation: browser.observation!() })
+      expect(publicObservation).toMatchObject({ observedProcesses: 0, handoffUnknownExecutableProcesses: 9 })
+      expect(JSON.stringify(publicObservation)).not.toMatch(/PRIVATE|930[0-8]|S-1-5|9999/)
+      expect(calls).toBe(1)
+    } finally {
+      await f.cleanup()
+    }
+  }
 })
 
 test("loopback review checks the actual HTTP association and permits only its exact owned URL", async () => {

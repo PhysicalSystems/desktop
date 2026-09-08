@@ -130,10 +130,12 @@ jobs:
       - name: Verify Windows process lifecycle regressions with inert callbacks
         if: runner.os == 'Windows'
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/windows-review-native.test.ts ./src/release/windows-review-transport.test.ts ./src/release/windows-loopback-diagnostic.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
+        run: bun test ./src/release/windows-review-native.test.ts ./src/release/windows-review-transport.test.ts ./src/release/windows-loopback-diagnostic.test.ts ./src/release/browser-private-diagnostic.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
       - name: Diagnose the owned Windows browser with optional OS loopback handoff
         if: runner.os == 'Windows'
         timeout-minutes: 4
+        env:
+          BROWSER_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
         run: bun script/desktop-browser-diagnostic.ts
       - name: Retain only the sanitized browser diagnostic
         if: always()
@@ -143,6 +145,15 @@ jobs:
           path: ${{ runner.temp }}/desktop-browser-diagnostic-report/browser-diagnostic.json
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Retain only optional encrypted executable diagnostics
+        if: always() && inputs.browser_factory_loopback && inputs.diagnostic_public_key != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-browser-sealed-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-browser-sealed-diagnostics/*.sealed.json
+          if-no-files-found: warn
+          retention-days: 3
 
   prepare:
     name: Freeze source and release inputs

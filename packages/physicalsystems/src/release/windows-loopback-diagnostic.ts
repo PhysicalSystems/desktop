@@ -9,7 +9,7 @@ import { browserObservationError, readBrowserObservation, type BrowserObservatio
 import { createBrowserHandoffTask } from "./browser-handoff-task"
 import { captureOwnedBrowserDirectory, removeOwnedBrowserDirectory } from "./owned-browser-directory"
 import { validateBrowserProbeURL, type OwnedReviewBrowser } from "./owned-review-browser"
-import { startOwnedWindowsReviewBrowser } from "./owned-windows-review-browser"
+import { startOwnedWindowsReviewBrowser, type WindowsUnknownExecutableSnapshot } from "./owned-windows-review-browser"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import {
   createWindowsReviewRequestTransport,
@@ -106,9 +106,18 @@ export async function openWindowsLoopbackURL(
  * installer or qualified distribution is created by this controller. */
 export async function runWindowsLoopbackDiagnostic(
   context: BrowserDiagnosticContext,
-  input: { env: NodeJS.ProcessEnv; root: string },
+  input: {
+    env: NodeJS.ProcessEnv
+    root: string
+    unknownExecutableSink?: (snapshot: WindowsUnknownExecutableSnapshot) => void
+  },
   io: {
-    acquire?: (input: { env: NodeJS.ProcessEnv; root: string; probeURL: string }) => Promise<OwnedReviewBrowser>
+    acquire?: (input: {
+      env: NodeJS.ProcessEnv
+      root: string
+      probeURL: string
+      unknownExecutableSink?: (snapshot: WindowsUnknownExecutableSnapshot) => void
+    }) => Promise<OwnedReviewBrowser>
     open?: typeof openWindowsLoopbackURL
     timeoutMs?: number
     quiescenceTimeoutMs?: number
@@ -194,7 +203,12 @@ export async function runWindowsLoopbackDiagnostic(
     await mkdir(browserRoot, { mode: 0o700 })
     await mkdir(openerRoot, { mode: 0o700 })
     acquiring = true
-    browser = await (io.acquire ?? startOwnedWindowsReviewBrowser)({ env: input.env, root: browserRoot, probeURL: url })
+    browser = await (io.acquire ?? startOwnedWindowsReviewBrowser)({
+      env: input.env,
+      root: browserRoot,
+      probeURL: url,
+      ...(input.unknownExecutableSink ? { unknownExecutableSink: input.unknownExecutableSink } : {}),
+    })
     acquiring = false
     report.acquisition = "READY"
     report.osLoopbackHandoff = "UNCONFIRMED"

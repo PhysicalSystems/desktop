@@ -129,3 +129,24 @@ retained profile itself. No browser profile, raw log, process command line,
 credential, URL or environment dump is uploaded. GitHub destroys the disposable
 runner afterward. Do not run this native command on an operator computer or
 self-hosted runner; local regressions use inert factory/child callbacks and owned loopback sockets only.
+
+For a Windows OS-loopback diagnostic, the existing optional
+`diagnostic_public_key` input can enable one encrypted snapshot of an unknown
+executable. The strict existing RSA-SPKI recipient validator runs before any
+private collector is enabled. No key means no snapshot collection. The factory
+provides at most eight executable paths and PID/parent pairs with fixed ownership
+booleans; it provides no arguments, URLs, SID strings, environment, credentials
+or profile contents. These fields never enter the sanitized report or raw logs.
+
+After the final sanitized `browser-diagnostic.json` is written, the controller
+uses the existing `sealDiagnostics` AES-GCM/RSA-OAEP implementation to encrypt the
+snapshot. Its authenticated `artifactSha256` is the SHA-256 of those exact
+**sanitized receipt bytes**, not an installer digest. The envelope also binds the
+source revision, run and attempt. Independently hash the downloaded receipt and
+verify all bindings before decryption. The output is named
+`<receipt-sha256>.sealed.json` and uploaded only in the separate
+`desktop-browser-sealed-windows-<run>-<attempt>` artifact, retained for three days.
+The exclusive temporary `diagnostic.txt` is removed after sealing, including
+failed sealing. Only ciphertext and fixed status metadata are uploaded or logged.
+No private key reaches the runner, and this optional diagnostic adds no
+qualification or publication authority.

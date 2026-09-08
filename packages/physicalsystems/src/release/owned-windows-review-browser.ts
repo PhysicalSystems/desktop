@@ -26,6 +26,19 @@ const failure = () => Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
 const cleanupFailure = () => Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 const pathEqual = (a: string, b: string) => win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase()
+
+/** Private diagnostic input only. The caller must configure encrypted storage
+ * before supplying the sink; none of these records enter public observations. */
+export type WindowsUnknownExecutableSnapshot = readonly Readonly<{
+  executable: string
+  pid: number
+  parent: number
+  parentOwned: boolean
+  sameSid: boolean
+  sameSession: boolean
+  validBirth: boolean
+  exactProfile: boolean
+}>[]
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw failure()
   return value as Record<string, unknown>
@@ -289,7 +302,12 @@ export async function startOwnedWindowsReviewBrowser(
 }
 
 async function acquireWindowsReviewBrowser(
-  input: { env: NodeJS.ProcessEnv; root: string; probeURL?: string },
+  input: {
+    env: NodeJS.ProcessEnv
+    root: string
+    probeURL?: string
+    unknownExecutableSink?: (snapshot: WindowsUnknownExecutableSnapshot) => void
+  },
   io: {
     native?: WindowsReviewNative
     spawn?: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess
@@ -386,6 +404,7 @@ async function acquireWindowsReviewBrowser(
   let stopped = false
   let cleanupStarted = false
   let handoffPending = false
+  let unknownExecutableCaptured = false
   let handoffCancellation: AbortController | undefined
   const observe = async () => {
     observation.windowsObservePhase = "native"
@@ -677,6 +696,38 @@ async function acquireWindowsReviewBrowser(
               observation.handoffUnknownWerFaultExecutableProcesses = Math.min(current.executableShapes.werFault, 65536)
               observation.handoffUnknownProxyExecutableProcesses = Math.min(current.executableShapes.proxy, 65536)
               observation.handoffUnknownOtherExecutableProcesses = Math.min(current.executableShapes.other, 65536)
+            }
+            if (input.unknownExecutableSink && !unknownExecutableCaptured) {
+              const rejected = current.unknown.filter((item) => !pathEqual(item.executable, baseline.executable))
+              if (rejected.length) {
+                unknownExecutableCaptured = true
+                const anchor = main
+                const snapshot = Object.freeze(
+                  rejected.slice(0, 8).map((item) => {
+                    const parent = current.owned.get(item.parent)
+                    return Object.freeze({
+                      executable: item.executable,
+                      pid: item.pid,
+                      parent: item.parent,
+                      parentOwned: Boolean(parent),
+                      sameSid: item.sid === baseline.sid,
+                      sameSession: item.session === anchor.session,
+                      validBirth:
+                        BigInt(item.birth) >= BigInt(anchor.birth) &&
+                        (!parent || BigInt(item.birth) >= BigInt(parent.birth)),
+                      exactProfile: item.args.some(
+                        (arg) => arg.startsWith("--user-data-dir=") && pathEqual(arg.slice(16), profile),
+                      ),
+                    })
+                  }),
+                )
+                // Synchronous buffering only; never await diagnostics or let a
+                // faulty sink change the ownership/CDP/cleanup decision. Also
+                // absorb an accidentally returned rejected Promise.
+                try {
+                  void Promise.resolve(input.unknownExecutableSink(snapshot)).catch(() => {})
+                } catch {}
+              }
             }
             // A canceled native read may complete, but must not schedule CDP or
             // another native read while the caller is waiting for quiescence.
