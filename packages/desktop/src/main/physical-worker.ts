@@ -30,6 +30,15 @@ let closed = false
 let statusTask: Promise<void> | undefined
 let statusTimer: ReturnType<typeof setTimeout> | undefined
 const statusCache = new Map<string, string>()
+// Background polls and action preflights share ordering. A late response must
+// not replace a newer observation or allow an action using another request's state.
+const statusRequests = new Map<string, bigint>()
+let statusGeneration = 0n
+
+function requireCurrentStatus(sessionId: string, generation: bigint) {
+  if (statusRequests.get(sessionId) !== generation)
+    throw new Error("The assistant status changed while checking. Wait a moment, then try again.")
+}
 
 function syncStatus(): Promise<void> {
   if (statusTask) return statusTask
@@ -38,12 +47,17 @@ function syncStatus(): Promise<void> {
   statusTask = (async () => {
     const groups = Map.groupBy([...bindings.values()], (binding) => binding.directory)
     for (const [directory, owners] of groups) {
+      const generation = ++statusGeneration
+      for (const owner of owners) statusRequests.set(owner.sessionId, generation)
       const status = await modelRequest("/session/status", directory).then((response) => response.json()).catch(() => undefined)
       for (const owner of owners) {
+        if (statusRequests.get(owner.sessionId) !== generation) continue
         const next = agentState(status, owner.sessionId)
         const key = JSON.stringify(next)
         if (statusCache.get(owner.sessionId) === key) continue
-        await service!.command("session.agentState", { projectId: owner.projectId, conversationId: owner.conversationId, serverId: owner.serverId, sessionId: owner.sessionId, ...next }).then(() => statusCache.set(owner.sessionId, key)).catch(() => {})
+        await service!.command("session.agentState", { projectId: owner.projectId, conversationId: owner.conversationId, serverId: owner.serverId, sessionId: owner.sessionId, ...next }).then(() => {
+          if (statusRequests.get(owner.sessionId) === generation) statusCache.set(owner.sessionId, key)
+        }).catch(() => {})
       }
     }
   })().finally(() => {
@@ -148,9 +162,13 @@ async function command(request: Record<string, unknown>) {
   if (type === "experiment.approveAndContinue" || type === "experiment.continue") {
     const owner = [...bindings.values()].find((binding) => binding.projectId === payload.projectId && binding.conversationId === payload.conversationId)
     if (!owner) throw new Error("MODEL_SESSION_SCOPE_MISMATCH")
+    const generation = ++statusGeneration
+    statusRequests.set(owner.sessionId, generation)
     const status = await modelRequest("/session/status", owner.directory, { signal: AbortSignal.timeout(1000) }).then((response) => response.json()).catch(() => undefined)
+    requireCurrentStatus(owner.sessionId, generation)
     const next = agentState(status, owner.sessionId)
     await service.command("session.agentState", { projectId: owner.projectId, conversationId: owner.conversationId, serverId: owner.serverId, sessionId: owner.sessionId, ...next })
+    requireCurrentStatus(owner.sessionId, generation)
     statusCache.set(owner.sessionId, JSON.stringify(next))
   }
   const result = await service.command(type, payload)

@@ -68,7 +68,7 @@ jobs:
 
       - name: Desktop startup diagnostic regression tests
         working-directory: packages/desktop
-        run: bun test ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/external-url.test.ts ./src/main/provider-account-trace.test.ts
+        run: bun test ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/external-url.test.ts ./src/main/provider-account-trace.test.ts
 
       - name: Typecheck integration
         working-directory: packages/physicalsystems
