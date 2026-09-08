@@ -100,7 +100,7 @@ $cases++
     let closed = false
     try {
       const result = await new Promise<string>((resolve, reject) => {
-        execFile(
+        const child = execFile(
           executable,
           args,
           {
@@ -113,11 +113,15 @@ $cases++
             timeout: 12000,
           },
           (error, stdout) => {
-            closed = true
-            if (error) reject(Error("INERT_IDENTITY_FIXTURE_FAILED"))
-            else resolve(stdout)
+            if (error) {
+              child.unref()
+              reject(Error("INERT_IDENTITY_FIXTURE_FAILED"))
+            } else resolve(stdout)
           },
         )
+        child.once("close", () => {
+          closed = true
+        })
       })
       let value: unknown
       try {
