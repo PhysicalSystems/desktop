@@ -198,12 +198,23 @@ export function windowsReviewOwnership(input: {
   const unknown = input.processes.filter((item) => !owned.has(item.pid))
   const rejected = { executable: 0, sid: 0, session: 0, birth: 0, profileOrAncestry: 0 }
   const crashpad = { type: 0, database: 0 }
+  const executableShapes = { crashpad: 0, console: 0, werFault: 0, proxy: 0, other: 0 }
   // Diagnose the unchanged ownership result. Partition reasons in this fixed
   // order; one process can violate several rules but contributes only once.
   for (const item of unknown) {
     const parent = owned.get(item.parent)
-    if (!pathEqual(item.executable, input.executable)) rejected.executable++
-    else if (item.sid !== input.sid) rejected.sid++
+    if (!pathEqual(item.executable, input.executable)) {
+      rejected.executable++
+      // Native discovery explicitly includes Edge Crashpad and all selected
+      // descendants. These basename buckets explain rejection only: names do
+      // not establish binary identity, signature, ancestry or kill authority.
+      const name = win32.basename(item.executable).toLowerCase()
+      if (name === "msedge_crashpad_handler.exe") executableShapes.crashpad++
+      else if (name === "conhost.exe" || name === "openconsole.exe") executableShapes.console++
+      else if (name === "werfault.exe") executableShapes.werFault++
+      else if (name === "msedge_proxy.exe") executableShapes.proxy++
+      else executableShapes.other++
+    } else if (item.sid !== input.sid) rejected.sid++
     else if (item.session !== input.root.session) rejected.session++
     else if (BigInt(item.birth) < BigInt(input.root.birth) || (parent && BigInt(item.birth) < BigInt(parent.birth)))
       rejected.birth++
@@ -221,7 +232,7 @@ export function windowsReviewOwnership(input: {
     if (database.length === 1 && database[0] === `--database=${win32.join(input.profile, "Crashpad")}`)
       crashpad.database++
   }
-  return { owned, unknown, rejected, crashpad }
+  return { owned, unknown, rejected, crashpad, executableShapes }
 }
 
 /** These four Registry64 observations are not a claim about effective policy. */
@@ -419,6 +430,7 @@ async function acquireWindowsReviewBrowser(
         owned: new Map<number, WindowsReviewProcess>(),
         rejected: undefined,
         crashpad: undefined,
+        executableShapes: undefined,
       }
     observation.windowsObservePhase = "ownership"
     const ownership = windowsReviewOwnership({
@@ -658,6 +670,13 @@ async function acquireWindowsReviewBrowser(
             if (current.crashpad) {
               observation.handoffUnknownCrashpadTypeProcesses = Math.min(current.crashpad.type, 65536)
               observation.handoffUnknownCrashpadDatabaseProcesses = Math.min(current.crashpad.database, 65536)
+            }
+            if (current.executableShapes) {
+              observation.handoffUnknownCrashpadExecutableProcesses = Math.min(current.executableShapes.crashpad, 65536)
+              observation.handoffUnknownConsoleExecutableProcesses = Math.min(current.executableShapes.console, 65536)
+              observation.handoffUnknownWerFaultExecutableProcesses = Math.min(current.executableShapes.werFault, 65536)
+              observation.handoffUnknownProxyExecutableProcesses = Math.min(current.executableShapes.proxy, 65536)
+              observation.handoffUnknownOtherExecutableProcesses = Math.min(current.executableShapes.other, 65536)
             }
             // A canceled native read may complete, but must not schedule CDP or
             // another native read while the caller is waiting for quiescence.

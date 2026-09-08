@@ -546,6 +546,11 @@ test("handoff freezes unknown-reason counts before cleanup and never queries CDP
       handoffUnknownProfileOrAncestryProcesses: 0,
       handoffUnknownCrashpadTypeProcesses: 1,
       handoffUnknownCrashpadDatabaseProcesses: 1,
+      handoffUnknownCrashpadExecutableProcesses: 0,
+      handoffUnknownConsoleExecutableProcesses: 0,
+      handoffUnknownWerFaultExecutableProcesses: 0,
+      handoffUnknownProxyExecutableProcesses: 0,
+      handoffUnknownOtherExecutableProcesses: 1,
     })
     f.state.handoff = false
     await browser.stop()
@@ -557,6 +562,7 @@ test("handoff freezes unknown-reason counts before cleanup and never queries CDP
       handoffUnknownExecutableProcesses: 1,
       handoffUnknownCrashpadTypeProcesses: 1,
       handoffUnknownCrashpadDatabaseProcesses: 1,
+      handoffUnknownOtherExecutableProcesses: 1,
     })
     expect(JSON.stringify(final)).not.toMatch(/PRIVATE|410[012]/)
   } finally {
@@ -601,6 +607,44 @@ test("Crashpad diagnostic flags require exact single arguments and never grant o
     expect(result.crashpad).toEqual({ type: value.type, database: value.database })
     expect(JSON.stringify(result.crashpad)).not.toMatch(/PRIVATE|9000|4100|--/)
   }
+})
+
+test("fixed executable basename counts partition only executable mismatches and never authorize a known name", () => {
+  const main = processRecord("C:\\PRIVATE-PROFILE")
+  const names = [
+    "msedge_crashpad_handler.exe",
+    "conhost.exe",
+    "OpenConsole.exe",
+    "WerFault.exe",
+    "msedge_proxy.exe",
+    "PRIVATE-OTHER.exe",
+    "msedge.exe",
+    "conhost.exe.PRIVATE",
+  ]
+  const others = names.map((name, index) => ({
+    ...main,
+    pid: 9100 + index,
+    parent: main.pid,
+    birth: "134000000000000020",
+    executable: `C:\\PRIVATE-FOREIGN\\${name}`,
+  }))
+  const sidMismatch = { ...main, pid: 9200, sid: "S-1-PRIVATE" }
+  const result = windowsReviewOwnership({
+    processes: [main, ...others, sidMismatch],
+    known: new Map([[main.pid, main]]),
+    root: main,
+    executable,
+    profile: "C:\\PRIVATE-PROFILE",
+    sid: main.sid,
+  })
+  expect([...result.owned.keys()]).toEqual([main.pid])
+  expect(result.unknown).toEqual([...others, sidMismatch])
+  expect(result.rejected).toEqual({ executable: 8, sid: 1, session: 0, birth: 0, profileOrAncestry: 0 })
+  expect(result.executableShapes).toEqual({ crashpad: 1, console: 2, werFault: 1, proxy: 1, other: 3 })
+  expect(Object.values(result.executableShapes).reduce((total, count) => total + count, 0)).toBe(
+    result.rejected.executable,
+  )
+  expect(JSON.stringify(result.executableShapes)).not.toMatch(/PRIVATE|910[0-7]|9200|4100|\.exe|--/)
 })
 
 test("loopback review checks the actual HTTP association and permits only its exact owned URL", async () => {
