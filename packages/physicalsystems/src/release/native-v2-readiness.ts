@@ -68,7 +68,11 @@ export function createV2CredentialReadiness(input: {
   let started = false
   const route = `/api/session/${input.sessionId}`
   const readCatalog = async () => {
+    state.catalogReady = false
     state.savedConnectionReady = await input.probe.savedConnectionReady(input.request)
+    // A restarted Location can expose routes before the saved integration is
+    // registered. Wait for that prerequisite before reading its model catalog.
+    if (!state.savedConnectionReady) return false
     state.catalogReads++
     state.catalogReady = credentialFixtureCatalogReady(
       await input.request("/api/model", { method: "GET" }),

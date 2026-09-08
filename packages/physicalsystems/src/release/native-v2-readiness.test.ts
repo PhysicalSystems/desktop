@@ -139,6 +139,67 @@ test("restart waits for initially absent integration registration before switchi
   expect(f.state.writes).toHaveLength(2)
 })
 
+test("restart does not query the dependent catalog before its saved connection is registered", async () => {
+  const f = await fixture()
+  let integrations = 0
+  let registered = false
+  let catalogs = 0
+  const request = async (route: string, init: Parameters<typeof f.request>[1]) => {
+    if (route === "/api/integration/openai") {
+      registered = ++integrations > 2
+      if (!registered) return { location: { directory: "/owned/inert" }, data: null }
+    }
+    if (route === "/api/model") {
+      catalogs++
+      if (!registered) throw Error("INERT_CATALOG_REQUESTED_BEFORE_REGISTRATION")
+    }
+    return f.request(route, init)
+  }
+  const readiness = createV2CredentialReadiness({
+    request,
+    probe: f.probe,
+    endpoint,
+    sessionId: "ses_inert",
+    timeoutMs: 100,
+    pollMs: 1,
+  })
+  await readiness.dispatch()
+  expect(integrations).toBe(6)
+  expect(catalogs).toBe(4)
+  expect(readiness.checkpoint().catalogReads).toBe(catalogs)
+  expect(f.state.writes).toEqual(["/api/session/ses_inert/model", "/api/session/ses_inert/prompt"])
+  expect(f.probe.finishObservation().authorizationMatched).toBe(true)
+})
+
+test("unregistered connection times out without catalog requests; a registered malformed catalog still fails", async () => {
+  for (const registered of [false, true]) {
+    const f = await fixture()
+    let catalogs = 0
+    const request = async (route: string, init: Parameters<typeof f.request>[1]) => {
+      if (!registered && route === "/api/integration/openai")
+        return { location: { directory: "/owned/inert" }, data: null }
+      if (route === "/api/model") {
+        catalogs++
+        throw Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+      }
+      return f.request(route, init)
+    }
+    const readiness = createV2CredentialReadiness({
+      request,
+      probe: f.probe,
+      endpoint,
+      sessionId: "ses_inert",
+      timeoutMs: 20,
+      pollMs: 1,
+    })
+    await expect(readiness.dispatch()).rejects.toThrow(registered ? "AUTH_UNCONFIRMED" : "CATALOG_UNCONFIRMED")
+    expect(catalogs).toBe(registered ? 1 : 0)
+    expect(readiness.checkpoint().catalogReady).toBe(false)
+    expect(f.state.writes).toEqual([])
+    await expect(readiness.dispatch()).rejects.toThrow("DISPATCH_UNCONFIRMED")
+  }
+})
+
 test("wrong endpoint, SDK, fallback key, duplicate model or absent catalog never authorizes the prompt", async () => {
   expect(credentialFixtureCatalogReady({ data: [] }, endpoint)).toBe(false)
   expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint)).toBe(true)
