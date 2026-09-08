@@ -5,6 +5,7 @@ import {
   browserSyscallFailure,
   readBrowserObservation,
   createBrowserStderrObservation,
+  createWindowsBrowserStderrObservation,
 } from "./browser-observation"
 
 test("browser failure keeps only fixed phase/count metadata through cleanup wrappers", () => {
@@ -34,6 +35,8 @@ test("browser failure keeps only fixed phase/count metadata through cleanup wrap
   expect(JSON.stringify(readBrowserObservation(wrapped))).not.toContain("PRIVATE")
   expect(Object.isFrozen(readBrowserObservation(wrapped))).toBe(true)
   expect(browserSyscallFailure({ code: "EACCES" })).toBe("EACCES")
+  expect(browserSyscallFailure({ code: "EBUSY", path: "PRIVATE" })).toBe("EBUSY")
+  expect(browserSyscallFailure({ code: "ENOTEMPTY", path: "PRIVATE" })).toBe("ENOTEMPTY")
   expect(browserSyscallFailure({ code: "PRIVATE" })).toBe("OTHER")
 })
 
@@ -61,6 +64,7 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
     { browserPhase: "windows-preflight", machineRemoteDebugging: "restricted" },
     { browserPhase: "windows-preflight", userDeveloperTools: "PRIVATE" },
     { browserPhase: "windows-preflight", windowsNativeOutcome: "PRIVATE" },
+    { browserPhase: "cdp-targets", windowsDebugMessage: "PRIVATE" },
     { browserPhase: "cdp-targets", readinessTargetCount: 65537 },
     { browserPhase: "cdp-targets", readinessPortLineHasCR: "PRIVATE" },
     {},
@@ -80,6 +84,29 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
       browserObservation: { browserPhase: "identity-argv", argvFields: 1, profileTokenMatched: true },
     }),
   ).toEqual({ browserPhase: "identity-argv", argvFields: 1, profileTokenMatched: true })
+})
+
+test("Windows startup stderr records fixed messages without exporting debug URLs or private text", () => {
+  const observed = createWindowsBrowserStderrObservation()
+  expect(observed.snapshot()).toEqual({ windowsDebugMessage: "none", stderrTruncated: false })
+  for (const [text, expected] of [
+    ["PRIVATE unrelated startup output", "other"],
+    ["DevTools listening on ws://127.0.0.1:23456/PRIVATE", "listening"],
+    ["Cannot start http server for devtools.", "bind-failed"],
+    ["DevTools remote debugging requires a non-default data directory.", "default-profile"],
+    ["DevTools remote debugging is disallowed by the system admin.", "policy-denied"],
+  ] as const) {
+    observed.observe(Buffer.from(text.slice(0, 20)))
+    observed.observe(Buffer.from(text.slice(20)))
+    expect(observed.snapshot().windowsDebugMessage).toBe(expected)
+    expect(JSON.stringify(observed.snapshot())).not.toContain("PRIVATE")
+    const value = { browserPhase: "cdp-targets" as const, ...observed.snapshot() }
+    expect(readBrowserObservation({ browserObservation: value })).toEqual(value)
+  }
+  const bounded = createWindowsBrowserStderrObservation()
+  bounded.observe(Buffer.alloc(65537, 120))
+  bounded.observe(Buffer.from("DevTools remote debugging is disallowed by the system admin."))
+  expect(bounded.snapshot()).toEqual({ windowsDebugMessage: "other", stderrTruncated: true })
 })
 
 test("bounded private stderr observes fixed categories across chunks and never retains text", () => {

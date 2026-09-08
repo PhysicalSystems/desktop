@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
-import { Writable } from "node:stream"
+import { PassThrough, Writable } from "node:stream"
 import type { ChildProcess } from "node:child_process"
 import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
@@ -53,6 +53,7 @@ async function fixture(
     stopLost?: boolean
     exitDuringStop?: boolean
     profileMarkers?: "files" | "symlink"
+    startupMessage?: string
     malformedProcesses?: boolean
     reusedPid?: boolean
     wrongRootSid?: boolean
@@ -88,6 +89,7 @@ async function fixture(
   }
   const child = Object.assign(new EventEmitter(), {
     pid: 4100,
+    stderr: new PassThrough(),
     exitCode: null,
     signalCode: null,
     unref() {
@@ -224,14 +226,15 @@ async function fixture(
         },
       }
     },
-    spawn: (exe: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+    spawn: (exe: string, args: readonly string[], spawnOptions: { env?: NodeJS.ProcessEnv }) => {
       expect(state.portEvents).toEqual(["reserve", "release"])
       state.portEvents.push("spawn")
       expect(exe).toBe(executable)
       expect(args).toContain(`--user-data-dir=${state.profile}`)
       expect(args).toContain("--remote-debugging-port=23456")
-      state.nativeEnv = options.env ?? {}
+      state.nativeEnv = spawnOptions.env ?? {}
       state.running = true
+      if (options.startupMessage) queueMicrotask(() => child.stderr!.emit("data", Buffer.from(options.startupMessage!)))
       return child
     },
     targets: async (origin: string) => {
@@ -269,6 +272,24 @@ test("owned Windows browser verifies exact native process/CDP and restores prior
     } finally {
       await f.cleanup()
     }
+  }
+})
+
+test("a browser log claiming it is listening cannot substitute for native listener ownership", async () => {
+  const f = await fixture({
+    unready: "wrong-listener",
+    startupMessage: "DevTools listening on ws://127.0.0.1:23456/PRIVATE-TARGET",
+  })
+  try {
+    const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+    expect(readBrowserObservation(error)?.windowsDebugMessage).toBe("listening")
+    expect(readBrowserObservation(error)?.cdpReady).toBe(false)
+    expect(f.state.targetQueries).toBe(0)
+    expect(f.state.restored).toBe(true)
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+  } finally {
+    await f.cleanup()
   }
 })
 

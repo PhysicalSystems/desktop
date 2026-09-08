@@ -6,7 +6,13 @@ import { createServer, type Server } from "node:net"
 import { join, win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { reviewBrowserTargets, validateBrowserProbeURL } from "./owned-review-browser"
-import { browserObservationError, readBrowserObservation, type BrowserObservation } from "./browser-observation"
+import {
+  browserObservationError,
+  browserSyscallFailure,
+  readBrowserObservation,
+  createWindowsBrowserStderrObservation,
+  type BrowserObservation,
+} from "./browser-observation"
 import {
   windowsReviewNative,
   type WindowsReviewBaseline,
@@ -436,10 +442,12 @@ async function acquireWindowsReviewBrowser(
       observation.browserPhase = "stopped"
     } catch (error) {
       observation.cleanupFailurePhase = observation.browserPhase
+      if (observation.browserPhase === "cleanup-profile") observation.syscallFailure = browserSyscallFailure(error)
       throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", error, observation)
     } finally {
       // This only releases the controller's event-loop reference. Unknown
       // browser ownership remains a failure and its private paths stay intact.
+      child?.stderr?.destroy()
       child?.unref()
     }
   }
@@ -459,12 +467,20 @@ async function acquireWindowsReviewBrowser(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-background-mode",
+        "--enable-logging=stderr",
         "--remote-debugging-address=127.0.0.1",
         `--remote-debugging-port=${port}`,
         "about:blank",
       ],
-      { cwd: root, env: environment, shell: false, stdio: "ignore", windowsHide: false },
+      { cwd: root, env: environment, shell: false, stdio: ["ignore", "ignore", "pipe"], windowsHide: false },
     )
+    const stderr = createWindowsBrowserStderrObservation()
+    Object.assign(observation, stderr.snapshot())
+    child.stderr?.on("data", (chunk: Uint8Array) => {
+      stderr.observe(chunk)
+      Object.assign(observation, stderr.snapshot())
+    })
+    child.stderr?.on("error", () => {})
     observation.pidObserved = Boolean(child.pid)
     child.once("error", () => {
       spawnFailed = true

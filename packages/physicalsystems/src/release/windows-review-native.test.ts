@@ -5,11 +5,14 @@ import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { join, win32 } from "node:path"
 import {
   windowsReviewIdentityReadScript,
+  windowsReviewListenerReadScript,
+  windowsReviewNativeResult,
   windowsReviewNativeArguments,
   windowsReviewNativeEnvironment,
   windowsReviewNativeScript,
 } from "./windows-review-native"
 import { requireDisposablePublicRunner } from "./public-qualification"
+import { readBrowserObservation } from "./browser-observation"
 
 test("the actual encoded native script contains the tested reconciliation helper and fits CreateProcess", () => {
   const executable = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
@@ -17,6 +20,7 @@ test("the actual encoded native script contains the tested reconciliation helper
   const decoded = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
   expect(decoded).toBe(windowsReviewNativeScript)
   expect(decoded.split(windowsReviewIdentityReadScript)).toHaveLength(2)
+  expect(decoded.split(windowsReviewListenerReadScript)).toHaveLength(2)
   const units = executable.length * 2 + 3 + args.reduce((total, arg) => total + arg.length + 3, 0)
   expect(units).toBeLessThanOrEqual(32767)
 })
@@ -30,7 +34,7 @@ const hostedWindows =
   process.env.GITHUB_REPOSITORY === "PhysicalSystems/desktop"
 
 test.skipIf(!hostedWindows)(
-  "hosted PowerShell reconciles only a fresh Boolean absence after failed inert identity reads",
+  "hosted PowerShell separates exact listener query failures from zero matches and reconciles only fresh identity absence",
   async () => {
     // Execute the exact production helper with inert scriptblocks. No CIM, real
     // process lookup, browser, policy, provider or device operation is performed.
@@ -88,7 +92,40 @@ try {
 } catch {$failed=$true}
 Require ($failed -and $script:proofs -eq $beforeProofs)
 $cases++
-[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs} | ConvertTo-Json -Compress))
+# Shadow the actual cmdlet before executing the exact production snippet. No
+# real CIM, sockets or listeners are read. Common-parameter binding remains real.
+$script:queryCalls=0;$listenerCases=0;$request=@{port=23456}
+function Get-CimInstance {
+  [CmdletBinding()]param([string]$ClassName,[string]$Namespace,[string]$Filter)
+  $script:queryCalls++
+  Require ($ClassName -ceq 'MSFT_NetTCPConnection' -and $Namespace -ceq 'root/StandardCimv2')
+  Require ($Filter -ceq 'LocalPort=23456 AND State=2' -and $PSBoundParameters.ErrorAction -eq 'Stop')
+  if($script:mode -eq 'empty'){return}
+  if($script:mode -eq 'throw'){throw 'PRIVATE-QUERY-FAILURE'}
+  if($script:mode -eq 'error'){Write-Error 'PRIVATE-PROVIDER-FAILURE';return}
+  $address=if($script:mode -eq 'foreign'){'0.0.0.0'}else{'127.0.0.1'}
+  [pscustomobject]@{LocalAddress=$address;OwningProcess=4100}
+  if($script:mode -eq 'partial'){Write-Error 'PRIVATE-PARTIAL-FAILURE';return}
+  [pscustomobject]@{LocalAddress='::1';OwningProcess=4100}
+}
+function Read-InertListeners {
+${windowsReviewListenerReadScript}
+  return ,$listening
+}
+foreach($mode in @('empty','loopback')) {
+  $script:mode=$mode;$before=$script:queryCalls;$value=Read-InertListeners
+  Require ($script:queryCalls -eq $before+1)
+  if($mode -eq 'empty'){Require ($value.Count -eq 0)}
+  else{Require ($value.Count -eq 2 -and $value[0] -eq 4100 -and $value[1] -eq 4100)}
+  $listenerCases++
+}
+foreach($mode in @('throw','error','partial','foreign')) {
+  $script:mode=$mode;$before=$script:queryCalls;$failed=$false
+  try {$null=Read-InertListeners} catch {$failed=$true}
+  Require ($failed -and $script:queryCalls -eq $before+1)
+  $listenerCases++
+}
+[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls} | ConvertTo-Json -Compress))
 `
     const args = [
       "-NoLogo",
@@ -129,10 +166,35 @@ $cases++
       } catch {
         throw Error("INERT_IDENTITY_FIXTURE_INVALID")
       }
-      expect(value).toEqual({ fixtureOnly: true, cases: 13, reads: 13, proofs: 11 })
+      expect(value).toEqual({ fixtureOnly: true, cases: 13, reads: 13, proofs: 11, listenerCases: 6, queryCalls: 6 })
     } finally {
       if (closed) await rm(root, { recursive: true, force: true })
     }
   },
   20000,
 )
+
+test("native listener transport preserves successful zero matches but never accepts failed or partial query output", () => {
+  const empty = { processes: [], listening: [], policyOwned: true }
+  expect(windowsReviewNativeResult({ stdout: JSON.stringify(empty), stderr: "" })).toEqual(empty)
+  for (const stdout of ["", JSON.stringify(empty), JSON.stringify({ ...empty, listening: [4100] })]) {
+    const error = (() => {
+      try {
+        windowsReviewNativeResult({
+          stdout,
+          stderr: "PRIVATE-CREDENTIAL\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_listener\n",
+          error: { code: 1 },
+        })
+      } catch (error) {
+        return error
+      }
+    })()
+    expect(error).toBeInstanceOf(Error)
+    expect(readBrowserObservation(error)).toEqual({
+      browserPhase: "context",
+      windowsNativePhase: "listener",
+      windowsNativeOutcome: "exit",
+    })
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+  }
+})

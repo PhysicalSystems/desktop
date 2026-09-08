@@ -201,6 +201,18 @@ function Read-IdentityOrAbsent([scriptblock]$read,[scriptblock]$absent) {
 }
 `
 
+/** Microsoft documents MSFT_NetTCPConnection in root/StandardCimv2, with
+ * State=2 for Listen and OwningProcess for its PID. A direct exact-port CIM
+ * query returns zero instances normally; provider/query errors must terminate.
+ * https://learn.microsoft.com/en-us/windows/win32/fwp/wmi/nettcpipprov/msft-nettcpconnection
+ * Kept verbatim for the hosted inert cmdlet fixture; it never runs locally. */
+export const windowsReviewListenerReadScript = String.raw`
+$listening=@(Get-CimInstance MSFT_NetTCPConnection -Namespace root/StandardCimv2 -Filter "LocalPort=$([int]$request.port) AND State=2" -ErrorAction Stop | ForEach-Object {
+if($_.LocalAddress -notin @('127.0.0.1','::1')){throw 'non-loopback'}
+[int]$_.OwningProcess
+})
+`
+
 // ASSOCF_IS_PROTOCOL=0x1000 maps the current user default; never FIXED_PROGID.
 // Policy restoration compares its current value before writing and removes only
 // our newly created, still-empty keys. UserChoice and its Hash are read-only.
@@ -409,19 +421,16 @@ $result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolic
     if(!(Same-Value $after.value $request.before.value) -or (($after.keys | ConvertTo-Json -Compress) -cne ($request.before.keys | ConvertTo-Json -Compress))) {throw 'restore-unconfirmed'}
     $result=@{restored=$true}
   }
-  'observe' {
-    Require-NoMachineOverride
-    $null=Association
-    $listening=@()
-    if($request.port) {
-      Set-ReviewPhase 'listener'
-      $listening=@(Get-NetTCPConnection -LocalPort ([int]$request.port) -State Listen -ErrorAction SilentlyContinue | ForEach-Object {
-        if($_.LocalAddress -notin @('127.0.0.1','::1')){throw 'non-loopback'}
-        [int]$_.OwningProcess
-      })
-    }
-    $result=@{processes=@(Processes);listening=$listening;policyOwned=(Same-Value (Read-Policy).value @{kind='String';data=[string]$request.profile})}
+'observe' {
+  Require-NoMachineOverride
+  $null=Association
+  $listening=@()
+  if($request.port) {
+    Set-ReviewPhase 'listener'
+${windowsReviewListenerReadScript}
   }
+  $result=@{processes=@(Processes);listening=$listening;policyOwned=(Same-Value (Read-Policy).value @{kind='String';data=[string]$request.profile})}
+}
   'stop' {
     if(@($request.processes).Count -gt 256){throw 'excessive'}
     foreach($expected in $request.processes) {

@@ -92,12 +92,13 @@ export type BrowserObservation = {
   termination?: "SIGABRT" | "SIGSEGV" | "SIGTRAP" | "SIGTERM" | "SIGKILL" | "OTHER"
   stderrCategory?: "sandbox" | "display" | "dbus" | "other"
   stderrTruncated?: boolean
+  windowsDebugMessage?: "none" | "other" | "listening" | "bind-failed" | "default-profile" | "policy-denied"
   inspectPhase?: "proc-stat" | "proc-status" | "cmdline" | "uid" | "crashpad-executable" | "birth"
   sameSession?: boolean
   databaseMatched?: boolean
   ownedProcesses?: number
   targetCount?: number
-  syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "OTHER"
+  syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "EBUSY" | "ENOTEMPTY" | "OTHER"
   windowsNativePhase?: (typeof windowsPhases)[number]
   failedWindowsNativePhase?: (typeof windowsPhases)[number]
   windowsNativeOutcome?: "timeout" | "signal" | "exit" | "start" | "output-limit" | "invalid-json" | "unknown"
@@ -203,16 +204,18 @@ function validate(value: unknown): BrowserObservation | undefined {
                 : key === "windowsNativeOutcome"
                   ? ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]
                   : key === "syscallFailure"
-                    ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
+                    ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "OTHER"]
                     : key === "processState"
                       ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
                       : key === "termination"
                         ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
-                        : key === "stderrCategory"
-                          ? ["sandbox", "display", "dbus", "other"]
-                          : key === "inspectPhase"
-                            ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
-                            : undefined
+                        : key === "windowsDebugMessage"
+                          ? ["none", "other", "listening", "bind-failed", "default-profile", "policy-denied"]
+                          : key === "stderrCategory"
+                            ? ["sandbox", "display", "dbus", "other"]
+                            : key === "inspectPhase"
+                              ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
+                              : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)
@@ -249,7 +252,7 @@ export function browserObservationError(code: (typeof codes)[number], error: unk
 
 export function browserSyscallFailure(error: unknown): BrowserObservation["syscallFailure"] {
   const code = (error as NodeJS.ErrnoException)?.code
-  return ["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(code ?? "")
+  return ["ENOENT", "ESRCH", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY"].includes(code ?? "")
     ? (code as "ENOENT" | "ESRCH" | "EACCES" | "EPERM")
     : "OTHER"
 }
@@ -285,5 +288,38 @@ export function createBrowserStderrObservation() {
       tail = bytes < 65536 ? text.slice(-256) : ""
     },
     snapshot: () => ({ stderrCategory: category, stderrTruncated: truncated }),
+  }
+}
+
+/** Observe startup messages only; a log line never proves listener ownership.
+ * Drain and discard output, including any later provider text, after 64 KiB. */
+export function createWindowsBrowserStderrObservation() {
+  let bytes = 0,
+    tail = "",
+    truncated = false
+  let message: NonNullable<BrowserObservation["windowsDebugMessage"]> = "none"
+  const priority = { none: 0, other: 1, listening: 2, "bind-failed": 3, "default-profile": 4, "policy-denied": 5 }
+  return {
+    observe(chunk: Uint8Array) {
+      const left = 65536 - bytes
+      if (chunk.length > left) truncated = true
+      const part = chunk.subarray(0, Math.max(0, left))
+      bytes += part.length
+      const text = tail + Buffer.from(part).toString("utf8")
+      const found = /DevTools remote debugging is disallowed by the system admin/i.test(text)
+        ? "policy-denied"
+        : /DevTools remote debugging requires a non-default data directory/i.test(text)
+          ? "default-profile"
+          : /Cannot start http server for devtools/i.test(text)
+            ? "bind-failed"
+            : /DevTools listening on ws:\/\//i.test(text)
+              ? "listening"
+              : bytes
+                ? "other"
+                : "none"
+      if (priority[found] > priority[message]) message = found
+      tail = bytes < 65536 ? text.slice(-256) : ""
+    },
+    snapshot: () => ({ windowsDebugMessage: message, stderrTruncated: truncated }),
   }
 }
