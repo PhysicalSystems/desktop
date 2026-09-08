@@ -342,7 +342,7 @@ ${windowsDirectoryProbeDefinition}
   if($null -eq $line -or $line.Length -gt 16384){throw 'request'}
   $r=$line | ConvertFrom-Json
   $boundary='invoke'
-  $result=[DirectoryDenialProbe]::Run([DirectoryDenialProbe+NativeOps]::new(),$r.parent.path,[IO.Path]::GetFileName($r.root.path),[ulong]$r.parent.dev,[ulong]$r.parent.ino,[ulong]$r.root.dev,[ulong]$r.root.ino)
+  $result=[DirectoryDenialProbe]::Run([DirectoryDenialProbe+NativeOps]::new(),$r.parent.path,[IO.Path]::GetFileName($r.root.path),[uint64]$r.parent.dev,[uint64]$r.parent.ino,[uint64]$r.root.dev,[uint64]$r.root.ino)
   $boundary='serialize'
   [Console]::Out.Write((@{boundary='complete';observation=$result} | ConvertTo-Json -Depth 4 -Compress))
 } catch { [Console]::Out.Write(('{"boundary":"'+$boundary+'","observation":null}')) }

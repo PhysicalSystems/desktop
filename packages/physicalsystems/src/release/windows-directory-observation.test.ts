@@ -310,9 +310,23 @@ ${inertDefinition}
   foreach($phase in @(${cases.map((value) => "'" + value + "'").join(",")})){
     if(-not [InertDirectoryOps]::Check($phase)){throw 'fixture'}
   }
+  $phase='legacy-alias'
+  if($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1){throw 'fixture'}
+  $legacyRejected=$false
+  try{$null=[ulong]'1'}catch{$legacyRejected=$true}
+  if(-not $legacyRejected){throw 'fixture'}
+  $phase='request-conversion'
+  $r=[Console]::In.ReadLine()|ConvertFrom-Json
+  foreach($anchor in @($r.parent,$r.root)){
+    if(([uint64]$anchor.dev).ToString() -cne $anchor.dev -or ([uint64]$anchor.ino).ToString() -cne $anchor.ino){throw 'fixture'}
+  }
+  $precision='{"aboveSafe":"9007199254740993","maximum":"18446744073709551615"}'|ConvertFrom-Json
+  foreach($number in @($precision.aboveSafe,$precision.maximum)){
+    if(([uint64]$number).ToString() -cne $number){throw 'fixture'}
+  }
+  $wire=[DirectoryDenialProbe]::Run([InertDirectoryOps]::new('clear'),$r.parent.path,[IO.Path]::GetFileName($r.root.path),[uint64]$r.parent.dev,[uint64]$r.parent.ino,[uint64]$r.root.dev,[uint64]$r.root.ino)
   $phase='serialize'
-  $wire=[DirectoryDenialProbe]::Run([InertDirectoryOps]::new('clear'),'C:\owned','browser',5,1,5,2)
-  [Console]::Out.Write((@{fixtureOnly=$true;cases=18;allHandlesClosed=$true;wire=@{boundary='complete';observation=$wire}} | ConvertTo-Json -Depth 5 -Compress))
+  [Console]::Out.Write((@{fixtureOnly=$true;cases=18;allHandlesClosed=$true;legacyAliasRejected=$legacyRejected;requestPrecisionPreserved=$true;wire=@{boundary='complete';observation=$wire}} | ConvertTo-Json -Depth 5 -Compress))
 }catch{
   [Console]::Out.Write(('{"failure":"'+$phase+'"}'))
 }
@@ -326,7 +340,10 @@ ${inertDefinition}
     ]
     expect(executable.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3).toBeLessThan(32767)
     let retainRoot = true
-    const transport = createWindowsReviewRequestTransport<Record<string, never>>(
+    const transport = createWindowsReviewRequestTransport<{
+      parent: { path: string; dev: string; ino: string }
+      root: { path: string; dev: string; ino: string }
+    }>(
       (deadline, complete) =>
         execFile(
           executable,
@@ -345,16 +362,32 @@ ${inertDefinition}
       () => 12000,
     )
     try {
-      const value = await transport({})
+      // Microsoft documents [ulong] as introduced in PowerShell 6.2. This
+      // exercises the production Windows PowerShell 5.1 request conversions.
+      // https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_numeric_literals#numeric-type-accelerators
+      const value = await transport({
+        parent: { path: "C:\\owned", dev: "5", ino: "1" },
+        root: { path: "C:\\owned\\browser", dev: "5", ino: "2" },
+      })
       retainRoot = false
       if (value && typeof value === "object" && "failure" in value) {
         const phase = String((value as { failure: unknown }).failure)
         throw Error(
           "INERT_DIRECTORY_FIXTURE_FAILED:" +
-            (["compile", "serialize", ...cases].includes(phase as (typeof cases)[number]) ? phase : "unknown"),
+            (["compile", "legacy-alias", "request-conversion", "serialize", ...cases].includes(
+              phase as (typeof cases)[number],
+            )
+              ? phase
+              : "unknown"),
         )
       }
-      expect(value).toMatchObject({ fixtureOnly: true, cases: 18, allHandlesClosed: true })
+      expect(value).toMatchObject({
+        fixtureOnly: true,
+        cases: 18,
+        allHandlesClosed: true,
+        legacyAliasRejected: true,
+        requestPrecisionPreserved: true,
+      })
       const f = fixture()
       const decoded = f.probe(input)
       f.calls[0]!.complete(undefined, JSON.stringify((value as { wire: unknown }).wire), "")
@@ -391,48 +424,12 @@ test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "
       const value = await observeWindowsDirectoryDenial(request)
       retained = value.quiescence !== "confirmed"
       expect(value.quiescence).toBe("confirmed")
-      // Same exact fixed script, uncompressed, for causal comparison only.
-      // Its failure cannot qualify cleanup; confirmed closure is mandatory.
-      const rawController = join(parent, "uncompressed-controller")
-      await mkdir(rawController)
-      const environment = windowsReviewNativeEnvironment(process.env, rawController)
-      const executable = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-      const args = [
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-EncodedCommand",
-        Buffer.from(windowsDirectoryObservationScript, "utf16le").toString("base64"),
-      ]
-      expect(executable.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3).toBeLessThan(32767)
-      retained = true
-      const uncompressed = await createWindowsDirectoryObservationTransport((deadline, complete) =>
-        execFile(
-          executable,
-          args,
-          {
-            cwd: rawController,
-            env: environment,
-            shell: false,
-            windowsHide: true,
-            encoding: "utf8",
-            timeout: deadline.timeout,
-            maxBuffer: 16384,
-          },
-          complete,
-        ),
-      )(request)
-      retained = uncompressed.quiescence !== "confirmed"
-      expect(uncompressed.quiescence).toBe("confirmed")
       console.log(
         JSON.stringify({
-          inertDirectoryEncodingComparison: {
-            compressed: { boundary: value.boundary, status: value.observation.status },
-            uncompressed: {
-              boundary: uncompressed.boundary,
-              status: uncompressed.observation.status,
-              ...("transportOutcome" in uncompressed ? { transportOutcome: uncompressed.transportOutcome } : {}),
-            },
+          inertDirectoryNativeResult: {
+            boundary: value.boundary,
+            status: value.observation.status,
+            ...(value.transportOutcome ? { transportOutcome: value.transportOutcome } : {}),
           },
         }),
       )
@@ -458,5 +455,5 @@ test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "
       if (!retained) await rm(parent, { recursive: true })
     }
   },
-  35000,
+  20000,
 )
