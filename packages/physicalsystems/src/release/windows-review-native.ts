@@ -76,8 +76,10 @@ export type WindowsReviewPolicy = {
   keys: boolean[]
   value: null | { kind: "String" | "ExpandString"; data: string }
 }
+export type WindowsReviewIdentityHelper = { executable: string; version: string }
 export type WindowsReviewBaseline = {
   executable: string
+  identityHelper?: WindowsReviewIdentityHelper
   sid: string
   policy: WindowsReviewPolicy
   processes: WindowsReviewProcess[]
@@ -381,6 +383,45 @@ foreach($p in @($exe,$profile)){if($p -notmatch '^[A-Za-z]:\\[^"%\r\n\x00]+[^\\"
 }
 `
 
+/** A helper is trusted only at the signed browser's exact installed version.
+ * Numeric FileVersionInfo parts avoid localized or suffixed display strings.
+ * This runs once during preflight, never in a process-observation poll. */
+export const windowsReviewIdentityHelperScript = String.raw`
+function Read-EdgeVersion($item) {
+  $v=$item.VersionInfo
+  $parts=@($v.FileMajorPart,$v.FileMinorPart,$v.FileBuildPart,$v.FilePrivatePart)
+  foreach($part in $parts){if($null -eq $part -or $part -isnot [int] -or $part -lt 0 -or $part -gt 65535){throw 'version'}}
+  if($parts[0] -lt 1){throw 'version'}
+  return ($parts -join '.')
+}
+function Require-PlainEdgeItem([string]$path,[bool]$directory) {
+  $item=Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.PSIsContainer -ne $directory -or $item.FullName -ine $path){throw 'reparse'}
+  return $item
+}
+function Read-EdgeIdentityHelper([string]$exe) {
+  Set-ReviewPhase 'helper-version'
+  $main=Require-PlainEdgeItem $exe $false
+  $version=Read-EdgeVersion $main
+  $application=[IO.Path]::GetDirectoryName($exe)
+  $ancestor=$application
+  while($ancestor){$null=Require-PlainEdgeItem $ancestor $true;$ancestor=[IO.Path]::GetDirectoryName($ancestor)}
+  $versionDirectory=[IO.Path]::Combine($application,$version)
+  $path=[IO.Path]::Combine($versionDirectory,'identity_helper.exe')
+  try {$helper=Get-Item -LiteralPath $path -Force -ErrorAction Stop} catch {
+    if($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound){throw}
+    return @{edgeVersion=$version;identityHelper=$null}
+  }
+  $null=Require-PlainEdgeItem $versionDirectory $true
+  $helper=Require-PlainEdgeItem $path $false
+  if((Read-EdgeVersion $helper) -cne $version){throw 'version'}
+  Set-ReviewPhase 'helper-signature'
+  $signature=Get-AuthenticodeSignature -LiteralPath $path
+  if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)'){throw 'signature'}
+  return @{edgeVersion=$version;identityHelper=@{executable=$path;version=$version}}
+}
+`
+
 // ASSOCF_IS_PROTOCOL=0x1000 maps the current user default; never FIXED_PROGID.
 // The five-key HKCU Classes snapshot is restored only after exact comparison;
 // only newly created empty keys are removed. UserChoice and its Hash are read-only.
@@ -488,6 +529,7 @@ function Require-DirectVerb {
   }
 }
 ${windowsReviewLauncherCommandScript}
+${windowsReviewIdentityHelperScript}
 function Association {
   Set-ReviewPhase 'association-progid'
   Require-DirectVerb
@@ -565,10 +607,11 @@ $exe=Association
 Set-ReviewPhase 'signature'
 $signature=Get-AuthenticodeSignature -LiteralPath $exe
 if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)CN=Microsoft Corporation(,|$)') { throw 'signature' }
+$helper=Read-EdgeIdentityHelper $exe
 Set-ReviewPhase 'debug-policy'
 $rules=@{RemoteDebuggingAllowed=@('deny','allow');DeveloperToolsAvailability=@('restricted','allow','deny')}
 $debug=@{};foreach($h in @('machine','base')){foreach($n in $rules.Keys){$debug[$h+$n]=Debug-Policy (Get-Variable $h -ValueOnly) $n $rules[$n]}}
-$result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolicy=$debug;resolvedCommand=[ReviewNative]::Association(1,[string]$request.scheme)}
+$result=@{executable=$exe;edgeVersion=$helper.edgeVersion;identityHelper=$helper.identityHelper;sid=$sid;policy=(Read-Policy);processes=@();debugPolicy=$debug;resolvedCommand=[ReviewNative]::Association(1,[string]$request.scheme)}
 }
   'set' {
     Require-NoMachineOverride

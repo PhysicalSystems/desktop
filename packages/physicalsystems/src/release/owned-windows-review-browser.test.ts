@@ -12,6 +12,7 @@ import {
   startOwnedWindowsReviewBrowser,
   reserveWindowsReviewPort,
   windowsReviewOwnership,
+  windowsReviewIdentityHelper,
   windowsReviewPolicy,
   windowsReviewDebugPolicyObservation,
   windowsReviewProcesses,
@@ -33,6 +34,11 @@ import { qualificationFailureCode } from "./qualification"
 
 const executable = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 const resolvedCommand = `"${executable}" -- "%1"`
+const edgeVersion = "150.0.0.1"
+const identityHelper = {
+  executable: win32.join(win32.dirname(executable), edgeVersion, "identity_helper.exe"),
+  version: edgeVersion,
+}
 const processRecord = (profile: string): WindowsReviewProcess => ({
   pid: 4100,
   parent: 100,
@@ -259,6 +265,144 @@ async function fixture(
   }
   return { input, io, state, before, cleanup: () => rm(temporary, { recursive: true, force: true }) }
 }
+
+test("only the exact native-verified Edge version helper can enter ownership with a current owned parent and exact profile", () => {
+  const profile = "C:\\runner\\owned\\profile"
+  const main = processRecord(profile)
+  const helper = {
+    ...main,
+    pid: 4102,
+    parent: main.pid,
+    birth: "134000000000000002",
+    executable: identityHelper.executable,
+    args: [identityHelper.executable, `--user-data-dir=${profile}`],
+  }
+  const base = {
+    known: new Map<number, WindowsReviewProcess>(),
+    root: main,
+    executable,
+    identityHelper,
+    profile,
+    sid: main.sid,
+  }
+  const good = windowsReviewOwnership({ ...base, processes: [helper, main] })
+  expect([...good.owned.keys()].sort()).toEqual([4100, 4102])
+  expect(good.unknown).toHaveLength(0)
+  const replacedRoot = { ...helper, pid: main.pid, parent: main.parent }
+  expect(windowsReviewOwnership({ ...base, processes: [replacedRoot] }).unknown).toEqual([replacedRoot])
+  expect(windowsReviewOwnership({ ...base, identityHelper: undefined, processes: [main, helper] }).unknown).toEqual([
+    helper,
+  ])
+  for (const mutation of [
+    { executable: "C:\\foreign\\identity_helper.exe" },
+    { executable: win32.join(win32.dirname(executable), "149.0.0.1", "identity_helper.exe") },
+    { sid: "S-1-5-21-999-1001" },
+    { session: main.session + 1 },
+    { birth: "134000000000000000" },
+    { parent: 42 },
+    { args: [identityHelper.executable] },
+    { args: [identityHelper.executable, "--user-data-dir=C:\\foreign"] },
+    { args: [...helper.args, `--user-data-dir=${profile}`] },
+    { args: [...helper.args, "--user-data-dir", profile] },
+  ]) {
+    const changed = { ...helper, ...mutation }
+    expect(windowsReviewOwnership({ ...base, processes: [main, changed] }).unknown).toEqual([changed])
+  }
+  const retained = windowsReviewOwnership({ ...base, known: good.owned, processes: [helper] })
+  expect(retained.owned.get(helper.pid)).toEqual(helper)
+  expect(() =>
+    windowsReviewOwnership({ ...base, known: good.owned, processes: [{ ...helper, birth: "134000000000000003" }] }),
+  ).toThrow()
+})
+
+test("helper preflight shape binds the exact numeric main version and rejects path aliases or version changes before mutation", async () => {
+  expect(windowsReviewIdentityHelper(executable, edgeVersion, identityHelper)).toEqual(identityHelper)
+  expect(windowsReviewIdentityHelper(executable, undefined, null)).toBeUndefined()
+  for (const helper of [
+    { ...identityHelper, executable: "C:\\foreign\\identity_helper.exe" },
+    { ...identityHelper, executable: identityHelper.executable.replace(edgeVersion, "149.0.0.1") },
+    {
+      ...identityHelper,
+      executable: identityHelper.executable.replace("identity_helper.exe", "..\\identity_helper.exe"),
+    },
+    { ...identityHelper, version: "149.0.0.1" },
+  ]) {
+    const f = await fixture()
+    const native = f.io.native
+    f.io.native = async (request) => {
+      const value = await native(request)
+      return request.operation === "preflight" ? { ...(value as object), edgeVersion, identityHelper: helper } : value
+    }
+    try {
+      await expect(startOwnedWindowsReviewBrowser(f.input, f.io)).rejects.toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+      expect(f.state.calls).toEqual(["preflight"])
+    } finally {
+      await f.cleanup()
+    }
+  }
+  for (const version of ["150.0.0.1 suffix", "0150.0.0.1", "150.0.0.65536", "150.0.0", "0.0.0.1"])
+    expect(() => windowsReviewIdentityHelper(executable, version, { ...identityHelper, version })).toThrow()
+})
+
+test("the actual Windows controller admits the verified helper but never accepts it as the main CDP listener", async () => {
+  for (const helperListener of [false, true]) {
+    const f = await fixture()
+    const native = f.io.native
+    let helper: WindowsReviewProcess | undefined
+    let helperStop = false
+    let helperRestored = false
+    f.io.native = async (request) => {
+      if (request.operation === "stop") {
+        expect(
+          request.processes.some((item) => item.pid === 4102 && item.executable === identityHelper.executable),
+        ).toBe(true)
+        helperStop = true
+        return native({ ...request, processes: request.processes.filter((item) => item.pid !== 4102) })
+      }
+      if (request.operation === "restore") {
+        expect(request.observedPids).toContain(4102)
+        helperRestored = true
+        return native({ ...request, observedPids: request.observedPids.filter((pid) => pid !== 4102) })
+      }
+      const value = (await native(request)) as Record<string, unknown>
+      if (request.operation === "preflight") return { ...value, edgeVersion, identityHelper }
+      if (request.operation === "observe" && f.state.running && f.state.handoff) {
+        helper ??= {
+          ...processRecord(f.state.profile),
+          pid: 4102,
+          parent: 4100,
+          birth: "134000000000000002",
+          executable: identityHelper.executable,
+          args: [identityHelper.executable, `--user-data-dir=${f.state.profile}`],
+        }
+        return {
+          ...value,
+          processes: [...(value.processes as WindowsReviewProcess[]), helper],
+          listening: helperListener ? [4102] : value.listening,
+        }
+      }
+      return value
+    }
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+      f.state.handoff = true
+      const queries = f.state.targetQueries
+      if (helperListener) {
+        await expect(browser.confirmHandoff("https://auth.openai.com/codex/device")).rejects.toThrow(
+          "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+        )
+        expect(f.state.targetQueries).toBe(queries)
+      } else expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(true)
+      expect(browser.observation().handoffUnknownProcesses).toBe(0)
+      await browser.stop()
+      expect(helperStop).toBe(true)
+      expect(helperRestored).toBe(true)
+      expect(browser.observation().browserPhase).toBe("stopped")
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
 
 test("owned Windows browser verifies exact native process/CDP and restores the prior launcher registration only after shutdown", async () => {
   for (const stopLost of [false, true]) {

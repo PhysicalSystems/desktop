@@ -17,6 +17,7 @@ import {
 import {
   windowsReviewNative,
   type WindowsReviewBaseline,
+  type WindowsReviewIdentityHelper,
   type WindowsReviewNative,
   type WindowsReviewPolicy,
   type WindowsReviewProcess,
@@ -162,6 +163,24 @@ export function windowsReviewSameProcess(before: WindowsReviewProcess, after: Wi
   )
 }
 
+/** Native preflight alone verifies Authenticode. This validates its exact
+ * signed-main version/path binding before admitting any helper process. */
+export function windowsReviewIdentityHelper(executable: string, edgeVersion: unknown, value: unknown) {
+  if (value === undefined || value === null) return undefined
+  const helper = record(value)
+  if (
+    typeof edgeVersion !== "string" ||
+    !/^[1-9][0-9]{0,4}(?:\.(?:0|[1-9][0-9]{0,4})){3}$/.test(edgeVersion) ||
+    edgeVersion.split(".").some((part) => Number(part) > 65535) ||
+    helper.version !== edgeVersion ||
+    typeof helper.executable !== "string" ||
+    win32.normalize(helper.executable) !== helper.executable ||
+    !pathEqual(helper.executable, win32.join(win32.dirname(executable), edgeVersion, "identity_helper.exe"))
+  )
+    throw failure()
+  return Object.freeze({ executable: helper.executable, version: edgeVersion }) satisfies WindowsReviewIdentityHelper
+}
+
 /** Record only the root we spawned, live descendants and exact profile-bound
  * processes. A shell's transient unowned launcher must exit on its own. */
 export function windowsReviewOwnership(input: {
@@ -169,24 +188,33 @@ export function windowsReviewOwnership(input: {
   known: ReadonlyMap<number, WindowsReviewProcess>
   root: WindowsReviewProcess
   executable: string
+  identityHelper?: WindowsReviewIdentityHelper
   profile: string
   sid: string
 }) {
+  const helper = input.identityHelper
+  const isMainExecutable = (item: WindowsReviewProcess) => pathEqual(item.executable, input.executable)
+  const isHelperExecutable = (item: WindowsReviewProcess) => !!helper && pathEqual(item.executable, helper.executable)
+  const hasExactProfile = (item: WindowsReviewProcess) => {
+    const args = item.args.filter((arg) => arg === "--user-data-dir" || arg.startsWith("--user-data-dir="))
+    return args.length === 1 && args[0]!.startsWith("--user-data-dir=") && pathEqual(args[0]!.slice(16), input.profile)
+  }
   const owned = new Map<number, WindowsReviewProcess>()
   for (const item of input.processes) {
     const prior = input.known.get(item.pid)
     if (prior && !windowsReviewSameProcess(prior, item)) throw failure()
     if (
       item.sid !== input.sid ||
-      !pathEqual(item.executable, input.executable) ||
+      (!isMainExecutable(item) && !isHelperExecutable(item)) ||
       item.session !== input.root.session ||
       BigInt(item.birth) < BigInt(input.root.birth)
     )
       continue
     if (
-      (item.pid === input.root.pid && windowsReviewSameProcess(input.root, item)) ||
+      (isMainExecutable(item) && item.pid === input.root.pid && windowsReviewSameProcess(input.root, item)) ||
       prior ||
-      item.args.some((arg) => arg.startsWith("--user-data-dir=") && pathEqual(arg.slice(16), input.profile))
+      (isMainExecutable(item) &&
+        item.args.some((arg) => arg.startsWith("--user-data-dir=") && pathEqual(arg.slice(16), input.profile)))
     )
       owned.set(item.pid, item)
   }
@@ -200,7 +228,8 @@ export function windowsReviewOwnership(input: {
         !parent ||
         item.sid !== input.sid ||
         item.session !== input.root.session ||
-        !pathEqual(item.executable, input.executable) ||
+        (!isMainExecutable(item) && !(isHelperExecutable(item) && hasExactProfile(item))) ||
+        BigInt(item.birth) < BigInt(input.root.birth) ||
         BigInt(item.birth) < BigInt(parent.birth)
       )
         continue
@@ -216,7 +245,7 @@ export function windowsReviewOwnership(input: {
   // order; one process can violate several rules but contributes only once.
   for (const item of unknown) {
     const parent = owned.get(item.parent)
-    if (!pathEqual(item.executable, input.executable)) {
+    if (!isMainExecutable(item) && !isHelperExecutable(item)) {
       rejected.executable++
       // Native discovery explicitly includes Edge Crashpad and all selected
       // descendants. These basename buckets explain rejection only: names do
@@ -357,6 +386,7 @@ async function acquireWindowsReviewBrowser(
     throw failure()
   const baseline: WindowsReviewBaseline = {
     executable: raw.executable,
+    identityHelper: windowsReviewIdentityHelper(raw.executable, raw.edgeVersion, raw.identityHelper),
     resolvedCommand: raw.resolvedCommand,
     sid: raw.sid,
     policy: windowsReviewPolicy(raw.policy),
@@ -457,6 +487,7 @@ async function acquireWindowsReviewBrowser(
       known,
       root: main,
       executable: baseline.executable,
+      identityHelper: baseline.identityHelper,
       profile,
       sid: baseline.sid,
     })
@@ -698,7 +729,11 @@ async function acquireWindowsReviewBrowser(
               observation.handoffUnknownOtherExecutableProcesses = Math.min(current.executableShapes.other, 65536)
             }
             if (input.unknownExecutableSink && !unknownExecutableCaptured) {
-              const rejected = current.unknown.filter((item) => !pathEqual(item.executable, baseline.executable))
+              const rejected = current.unknown.filter(
+                (item) =>
+                  !pathEqual(item.executable, baseline.executable) &&
+                  !(baseline.identityHelper && pathEqual(item.executable, baseline.identityHelper.executable)),
+              )
               if (rejected.length) {
                 unknownExecutableCaptured = true
                 const anchor = main

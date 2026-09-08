@@ -8,6 +8,7 @@ import {
   windowsReviewIdentityReadScript,
   windowsReviewListenerReadScript,
   windowsReviewLauncherCommandScript,
+  windowsReviewIdentityHelperScript,
   windowsReviewScriptBootstrap,
   windowsReviewNativeResult,
   windowsReviewNativeArguments,
@@ -29,6 +30,7 @@ test("the actual encoded native script contains the tested reconciliation helper
   expect(source.split(windowsReviewIdentityReadScript)).toHaveLength(2)
   expect(source.split(windowsReviewListenerReadScript)).toHaveLength(2)
   expect(source.split(windowsReviewLauncherCommandScript)).toHaveLength(2)
+  expect(source.split(windowsReviewIdentityHelperScript)).toHaveLength(2)
   expect(args).not.toContain("-ExecutionPolicy")
   expect(args).not.toContain("-File")
   const units = executable.length * 2 + 3 + args.reduce((total, arg) => total + arg.length + 3, 0)
@@ -39,6 +41,7 @@ const fixturePhases = [
   "bootstrap",
   "identity",
   "launcher",
+  "identity-helper",
   "listener-empty",
   "listener-loopback",
   "listener-throw",
@@ -252,8 +255,44 @@ foreach($path in @('relative','C:\owned\..\profile','C:\owned\%1','C:\owned\"pro
     $launcherCases++
   }
 }
+Mark 'identity-helper'
+${windowsReviewIdentityHelperScript}
+function Set-ReviewPhase([string]$phase) {}
+$script:helperPath='C:\Program Files\Microsoft\Edge\Application\150.0.0.1\identity_helper.exe'
+$script:helperMode='valid';$script:signatures=0
+function Get-Item {
+  [CmdletBinding()]param([string]$LiteralPath,[switch]$Force)
+  Require ($Force -and $PSBoundParameters.ErrorAction -eq 'Stop')
+  $helper=$LiteralPath -ceq $script:helperPath
+  if($helper -and $script:helperMode -eq 'missing'){
+    throw [System.Management.Automation.ErrorRecord]::new([IO.FileNotFoundException]::new('inert-missing'),'inert-missing',[System.Management.Automation.ErrorCategory]::ObjectNotFound,$null)
+  }
+  if($helper -and $script:helperMode -eq 'unreadable'){throw 'inert-unreadable'}
+  $attributes=if($script:helperMode -eq 'reparse' -and $LiteralPath -eq 'C:\Program Files\Microsoft\Edge\Application\150.0.0.1'){[IO.FileAttributes]::ReparsePoint}else{[IO.FileAttributes]::Normal}
+  $major=if($helper -and $script:helperMode -eq 'version'){149}else{150}
+  $full=if($helper -and $script:helperMode -eq 'foreign'){'C:\foreign\identity_helper.exe'}else{$LiteralPath}
+  [pscustomobject]@{FullName=$full;Attributes=$attributes;PSIsContainer=(!$LiteralPath.EndsWith('.exe'));VersionInfo=[pscustomobject]@{FileMajorPart=[int]$major;FileMinorPart=0;FileBuildPart=0;FilePrivatePart=1}}
+}
+function Get-AuthenticodeSignature([string]$LiteralPath) {
+  Require ($LiteralPath -ceq $script:helperPath)
+  $script:signatures++
+  $status=if($script:helperMode -eq 'unsigned'){'NotSigned'}else{'Valid'}
+  $subject=if($script:helperMode -eq 'publisher'){'CN=Foreign Publisher'}else{'CN=Microsoft Corporation, O=Microsoft Corporation'}
+  [pscustomobject]@{Status=$status;SignerCertificate=[pscustomobject]@{Subject=$subject}}
+}
+$helperCases=0
+foreach($mode in @('valid','missing','unreadable','reparse','version','foreign','unsigned','publisher')) {
+  $script:helperMode=$mode;$script:signatures=0;$failed=$false;$value=$null
+  try {$value=Read-EdgeIdentityHelper 'C:\Program Files\Microsoft\Edge\Application\msedge.exe'}catch{$failed=$true}
+  if($mode -eq 'valid'){
+    Require (!$failed -and $value.edgeVersion -ceq '150.0.0.1' -and $value.identityHelper.executable -ceq $script:helperPath -and $value.identityHelper.version -ceq $value.edgeVersion -and $script:signatures -eq 1)
+  }elseif($mode -eq 'missing'){
+    Require (!$failed -and $null -eq $value.identityHelper -and $script:signatures -eq 0)
+  }else{Require $failed}
+  $helperCases++
+}
 Mark 'json'
-[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls;nonterminatingControl=$script:errorReturns;launcherCases=$launcherCases;stdinPreserved=$true} | ConvertTo-Json -Compress))
+[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls;nonterminatingControl=$script:errorReturns;launcherCases=$launcherCases;helperCases=$helperCases;stdinPreserved=$true} | ConvertTo-Json -Compress))
 `
     const executeScript = (source: string) => {
       const args = [
@@ -309,6 +348,7 @@ Mark 'json'
         queryCalls: 7,
         nonterminatingControl: 1,
         launcherCases: 13,
+        helperCases: 8,
         stdinPreserved: true,
       })
       await expect(

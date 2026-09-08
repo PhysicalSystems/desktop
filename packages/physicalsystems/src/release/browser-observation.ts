@@ -38,6 +38,8 @@ const windowsPhases = [
   "association-progid",
   "association-executable",
   "signature",
+  "helper-version",
+  "helper-signature",
   "debug-policy",
   "policy-read",
   "policy-compare",
