@@ -10,9 +10,10 @@ import {
   PublicBuildProvisioningError,
 } from "../packages/physicalsystems/src/release/public-build-command"
 import { publicReviewDigest } from "../packages/physicalsystems/src/release/public-downloads"
+import { collectPublicProducer } from "../packages/physicalsystems/src/release/public-collection-command"
+import { PublicCollectorError } from "../packages/physicalsystems/src/release/public-collector"
 import {
   freezePublicProducerPolicy,
-  incompletePublicQualification,
   preparePublicProducerInputs,
   PublicProducerError,
   withPublicWindowsSigning,
@@ -37,8 +38,8 @@ const output = async (key: string, value: string) => {
 
 try {
   const command = process.argv[2]
-  if (process.argv.length !== 3 || !["preflight", "prepare", "build-windows", "incomplete"].includes(command ?? ""))
-    throw new PublicProducerError("Use desktop-public-producer.ts preflight|prepare|build-windows|incomplete")
+  if (process.argv.length !== 3 || !["preflight", "prepare", "build-windows", "collect"].includes(command ?? ""))
+    throw new PublicProducerError("Use desktop-public-producer.ts preflight|prepare|build-windows|collect")
   if (command === "preflight") {
     const policy = freezePublicProducerPolicy(process.env)
     const directory = await emptyOutput(required("PUBLIC_POLICY_DIRECTORY"), root)
@@ -97,13 +98,38 @@ try {
       ),
     )
   } else {
+    const download = required("PUBLIC_DOWNLOADED_DIRECTORY")
+    const result = await collectPublicProducer({
+      env: process.env,
+      publicBuild: await read(required("PUBLIC_BUILD_INPUTS")),
+      expectedPublicBuildSha256: required("EXPECTED_PUBLIC_BUILD_SHA256"),
+      expectedInputsSha256: required("EXPECTED_RELEASE_INPUTS_SHA256"),
+      windows: {
+        artifacts: join(download, "windows/artifacts"),
+        receipts: join(download, "windows/receipts"),
+        expectedJobSha256: required("EXPECTED_WINDOWS_JOB_SHA256"),
+      },
+      linux: {
+        artifacts: join(download, "linux/artifacts"),
+        receipts: join(download, "linux/receipts"),
+        expectedJobSha256: required("EXPECTED_LINUX_JOB_SHA256"),
+      },
+      staging: required("PUBLIC_COLLECTION_STAGING"),
+      output: required("PUBLIC_QUALIFIED_DIRECTORY"),
+    })
+    await output("qualification_sha256", result.sha256)
     if (process.env.GITHUB_STEP_SUMMARY)
-      await appendFile(process.env.GITHUB_STEP_SUMMARY, `${incompletePublicQualification}\n`)
-    throw new PublicProducerError(incompletePublicQualification)
+      await appendFile(
+        process.env.GITHUB_STEP_SUMMARY,
+        `\nAll required native checks, exact artifact bytes and signatures validated. Qualified distribution SHA-256: \`${result.sha256}\`. Publication still requires the publisher's protected approval.\n`,
+      )
+    console.log(`Qualified distribution SHA-256: ${result.sha256}`)
   }
 } catch (error) {
   console.error(
-    error instanceof PublicProducerError || error instanceof PublicBuildProvisioningError
+    error instanceof PublicProducerError ||
+      error instanceof PublicBuildProvisioningError ||
+      error instanceof PublicCollectorError
       ? error.message
       : "Public desktop producer failed; no qualification or publication authority was granted",
   )

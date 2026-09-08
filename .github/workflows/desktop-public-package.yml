@@ -1,0 +1,149 @@
+name: Public desktop native package
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+      inputs_sha256:
+        type: string
+        required: true
+      public_build_sha256:
+        type: string
+        required: true
+      version:
+        type: string
+        required: true
+      platform:
+        type: string
+        required: true
+    secrets:
+      DESKTOP_WINDOWS_PFX_BASE64:
+        required: false
+      DESKTOP_WINDOWS_PFX_PASSWORD:
+        required: false
+      DESKTOP_AZURE_TENANT_ID:
+        required: false
+      DESKTOP_AZURE_CLIENT_ID:
+        required: false
+      DESKTOP_AZURE_CLIENT_SECRET:
+        required: false
+    outputs:
+      job_receipt_sha256:
+        value: ${{ jobs.package.outputs.job_receipt_sha256 }}
+      build_artifact_id:
+        value: ${{ jobs.package.outputs.build_artifact_id }}
+      receipt_artifact_id:
+        value: ${{ jobs.package.outputs.receipt_artifact_id }}
+
+permissions:
+  contents: read
+
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: core.autocrlf
+  GIT_CONFIG_VALUE_0: "false"
+  PHYSICALSYSTEMS_RELEASE_REPOSITORY: PhysicalSystems/desktop
+
+jobs:
+  package:
+    name: Build and inspect public ${{ inputs.platform }} bytes
+    if: github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main' && inputs.source_sha == github.sha && (inputs.platform == 'windows-x64' || inputs.platform == 'linux-x64')
+    runs-on: ${{ inputs.platform == 'windows-x64' && 'windows-2025' || 'ubuntu-24.04' }}
+    outputs:
+      job_receipt_sha256: ${{ steps.smoke.outputs.job_receipt_sha256 }}
+      build_artifact_id: ${{ steps.installers.outputs.artifact-id }}
+      receipt_artifact_id: ${{ steps.receipts.outputs.artifact-id }}
+    timeout-minutes: 70
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      OPENCODE_DISABLE_MODELS_FETCH: "1"
+      EXPECTED_RELEASE_INPUTS_SHA256: ${{ inputs.inputs_sha256 }}
+      EXPECTED_PUBLIC_BUILD_SHA256: ${{ inputs.public_build_sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+      - name: Define isolated native paths after the runner is available
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync } from 'node:fs';
+          import path from 'node:path';
+          const paths = {
+            PUBLIC_RELEASE_INPUTS: 'desktop-public/inputs/release-inputs.json',
+            PUBLIC_BUILD_INPUTS: 'desktop-public/inputs/public-build-inputs.json',
+            PUBLIC_BUILD_DIRECTORY: 'desktop-public/artifacts',
+            PUBLIC_SMOKE_DIRECTORY: 'desktop-public/smoke',
+          };
+          appendFileSync(process.env.GITHUB_ENV, Object.entries(paths).map(([key, value]) => `${key}=${path.join(process.env.RUNNER_TEMP, value)}\n`).join(''));
+          NODE
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-public-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-public/inputs
+      - name: Verify native source/archive and public producer regressions
+        working-directory: packages/physicalsystems
+        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/public-build.test.ts ./src/release/public-build-command.test.ts ./src/release/public-producer.test.ts ./src/release/public-native-receipts.test.ts ./src/release/public-collection-command.test.ts
+      - name: Build Windows installers using the frozen signing policy
+        if: runner.os == 'Windows'
+        env:
+          # Only this actual build step receives signing secrets. The wrapper
+          # creates an exclusive temporary PFX and removes it even on failure.
+          PHYSICALSYSTEMS_PFX_BASE64: ${{ secrets.DESKTOP_WINDOWS_PFX_BASE64 }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_WINDOWS_PFX_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.DESKTOP_AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.DESKTOP_AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_AZURE_CLIENT_SECRET }}
+        run: bun script/desktop-public-producer.ts build-windows
+      - name: Build Linux installers under the same frozen public identity
+        if: runner.os == 'Linux'
+        run: bun script/desktop-build-public.ts --inputs "$PUBLIC_RELEASE_INPUTS" --public-inputs "$PUBLIC_BUILD_INPUTS" --expected-inputs-sha256 "$EXPECTED_RELEASE_INPUTS_SHA256" --expected-public-build-sha256 "$EXPECTED_PUBLIC_BUILD_SHA256" --platform linux-x64 --output "$PUBLIC_BUILD_DIRECTORY"
+      - name: Install display dependencies on the disposable Linux runner
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0 dbus gnome-keyring libglib2.0-bin
+      - name: Exercise exact public packages and author native observations
+        id: smoke
+        run: |
+          if [ "$RUNNER_OS" = 'Linux' ]; then
+            xvfb-run -a bun script/desktop-public-smoke.ts
+          else
+            bun script/desktop-public-smoke.ts
+          fi
+      # This allowlist deliberately excludes profiles, logs, signing files and
+      # dependency caches. No artifact uses the publisher's qualified name.
+      - name: Retain exact installers and explicitly unqualified build records
+        id: installers
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-unqualified-${{ inputs.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/desktop-public/artifacts/physical-systems-desktop-${{ inputs.version }}-windows-x64.exe
+            ${{ runner.temp }}/desktop-public/artifacts/physical-systems-desktop-${{ inputs.version }}-linux-x64.deb
+            ${{ runner.temp }}/desktop-public/artifacts/physical-systems-desktop-${{ inputs.version }}-linux-x64.AppImage
+            ${{ runner.temp }}/desktop-public/artifacts/artifacts.json
+            ${{ runner.temp }}/desktop-public/artifacts/SHA256SUMS
+            ${{ runner.temp }}/desktop-public/artifacts/desktop-release-inputs.json
+            ${{ runner.temp }}/desktop-public/artifacts/public-build-inputs.json
+            ${{ runner.temp }}/desktop-public/artifacts/public-build-record.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Retain sanitized public smoke and native receipts
+        id: receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-smoke-${{ inputs.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-public/smoke/*.json
+          if-no-files-found: warn
+          retention-days: 30

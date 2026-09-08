@@ -303,6 +303,8 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
       PHYSICALSYSTEMS_ALLOW_DEVICES: "1",
       PHYSICALSYSTEMS_QUALIFICATION_TRACE: "credential-private-trap",
       OPENCODE_CONFIG: "/real/config",
+      OPENCODE_DISABLE_CHANNEL_DB: "credential-private-trap",
+      OPENCODE_DB: "/private/database",
       DISPLAY: ":44",
     },
     "/owned/profile",
@@ -312,6 +314,8 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
   expect(env.HOME).toBe("/owned/profile")
   expect(env.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
   expect(env.PHYSICALSYSTEMS_QUALIFICATION_TRACE).toBe("1")
+  expect(env.OPENCODE_DISABLE_CHANNEL_DB).toBe("1")
+  expect(env.OPENCODE_DB).toBeUndefined()
   expect(JSON.stringify(env)).not.toContain("credential-private-trap")
   expect(env.DISPLAY).toBe(":44")
   for (const key of ["OPENAI_API_KEY", "GH_TOKEN", "NODE_OPTIONS", "OPENCODE_CONFIG"]) expect(env[key]).toBeUndefined()

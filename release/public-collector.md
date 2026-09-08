@@ -5,11 +5,10 @@ from independently anchored package, smoke and native-check evidence. It never
 launches, signs, installs or publishes an application. It does not change a smoke
 receipt's `UNQUALIFIED` result into evidence that native checks ran.
 
-The collector is implemented, but **the public workflow is not wired to produce
-its complete inputs or invoke it**. Current smoke alone remains insufficient.
-The native job must actually implement every required check; the first public
-upgrade baseline policy also remains unresolved. Adding a receipt or calculating
-its own expected hash cannot establish that a native check passed.
+The public workflow now invokes this collector using independently anchored
+Windows and Linux native-job outputs. Current partial observations remain
+insufficient: every required native check must actually run and pass. Adding a
+receipt or calculating its own expected hash cannot establish that a check ran.
 
 ## Trusted inputs
 
@@ -19,9 +18,12 @@ attempt, source revision, public-build digest and release-input digest. Its thre
 artifact entries contain the exact installer name, byte count and SHA-256, plus
 the **raw-file** SHA-256 of that artifact's smoke and native receipts.
 
-The reviewed coordinator must construct this plan from trusted native/build job
-outputs. Its **canonical JSON** digest must reach the collector separately from
-the downloaded plan. The public-build digest, release-input digest, source and
+The reviewed coordinator constructs this plan from two separate trusted native
+job outputs. Each supplies the **raw-file** digest of `native-job.json` independently
+of its downloaded upload. Those files bind each exact installer and its raw smoke
+and native receipt digests. The coordinator validates them, synthesizes the plan
+in memory and supplies its **canonical JSON** digest to the collector; it does not
+trust a downloaded plan to supply its own expected hash. The public-build digest, release-input digest, source and
 run identity are independent arguments as well. The collector checks all these
 bindings and validates public identity using the existing public-build validator.
 
@@ -76,8 +78,10 @@ bun script/desktop-public-collect.ts \
   --evidence "$SANITIZED_COLLECTION_INPUTS" --output "$NEW_QUALIFIED_BUNDLE"
 ```
 
-Workflow integration must still supply the actual native evidence, call the
-collector, upload `desktop-public-qualified-<run-id>-<attempt>`, and allow the
-producer to succeed only after collection verifies. The CLI does not enable or
-dispatch the publisher. Collector tests use explicitly simulated installer bytes,
+The workflow calls `desktop-public-producer.ts collect`, which stages only the
+independently bound files and invokes this collector. It uploads
+`desktop-public-qualified-<run-id>-<attempt>` only after collection verifies; the
+producer fails if any native requirement remains untested. Native jobs preserve
+truthful partial receipts so the missing checks are visible in their summaries.
+The CLI does not enable or dispatch the publisher. Collector tests use explicitly simulated installer bytes,
 signatures and native receipts; they do not qualify a real desktop distribution.

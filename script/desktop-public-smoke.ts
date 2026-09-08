@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
-import { lstat, mkdir, readFile } from "node:fs/promises"
+import { appendFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { emptyOutput, run } from "../packages/physicalsystems/src/release/commands"
 import { verifyInventory } from "../packages/physicalsystems/src/release/artifacts"
 import { verifyReleaseInputs } from "../packages/physicalsystems/src/release/inputs"
 import type { ReleaseHistory } from "../packages/physicalsystems/src/release/inputs"
 import { validatePublicBuildInputs } from "../packages/physicalsystems/src/release/public-build"
+import { publicSmokeCanContinue } from "../packages/physicalsystems/src/release/public-producer"
 import {
-  incompletePublicQualification,
-  publicSmokeCanContinue,
-} from "../packages/physicalsystems/src/release/public-producer"
+  publicNativeJobReceipt,
+  publicNativeReceipt,
+  publicReceiptBytes,
+  requirePublicNativeContext,
+} from "../packages/physicalsystems/src/release/public-native-receipts"
+import type { PublicNativeJobReceipt } from "../packages/physicalsystems/src/release/public-native-receipts"
 
 const required = (key: string) => {
   if (!process.env[key]) throw new Error("Missing public smoke input")
@@ -43,11 +47,15 @@ try {
     throw new Error("Public smoke input binding failed")
   const artifacts = required("PUBLIC_BUILD_DIRECTORY")
   const inventory = await verifyInventory(artifacts, inputs)
+  const platform = process.platform === "win32" ? "windows-x64" : "linux-x64"
+  const context = { env: process.env, build, publicBuildInputsSha256: publicDigest, platform } as const
+  requirePublicNativeContext(context)
   const reports = await emptyOutput(required("PUBLIC_SMOKE_DIRECTORY"), root)
   const evidence = join(dirname(reports), "private-public-smoke")
   await mkdir(evidence, { mode: 0o700 })
+  const receipts: PublicNativeJobReceipt["artifacts"] = []
   for (const artifact of inventory.files) {
-    const reportFile = join(reports, `${artifact.sha256}.json`)
+    const reportFile = join(evidence, `${artifact.sha256}.smoke.json`)
     await run(
       process.execPath,
       [
@@ -74,20 +82,43 @@ try {
       // A public smoke returns nonzero even when its implemented checks pass.
       // Only its exact receipt may authorize continuing to another format.
     })
-    if (
-      !publicSmokeCanContinue({
-        report: await read(reportFile),
-        artifact,
-        build,
-        publicBuildInputsSha256: publicDigest,
-      })
-    ) {
+    const report = await read(reportFile)
+    const native = publicNativeReceipt({
+      report,
+      artifact,
+      build,
+      publicBuildInputsSha256: publicDigest,
+      runId: required("GITHUB_RUN_ID"),
+      runAttempt: Number(required("GITHUB_RUN_ATTEMPT")),
+    })
+    const smokeBytes = publicReceiptBytes(report)
+    const nativeBytes = publicReceiptBytes(native)
+    await writeFile(join(reports, `${smokeBytes.sha256}.json`), smokeBytes.bytes, { flag: "wx" })
+    await writeFile(join(reports, `${nativeBytes.sha256}.json`), nativeBytes.bytes, { flag: "wx" })
+    receipts.push({
+      name: artifact.name,
+      bytes: artifact.bytes,
+      sha256: artifact.sha256,
+      smokeSha256: smokeBytes.sha256,
+      nativeSha256: nativeBytes.sha256,
+    })
+    if (process.env.GITHUB_STEP_SUMMARY)
+      await appendFile(
+        process.env.GITHUB_STEP_SUMMARY,
+        `\n${artifact.name}\n\n${native.checks.map((check) => `- ${check.id}: ${check.status}`).join("\n")}\n`,
+      )
+    if (!publicSmokeCanContinue({ report, artifact, build, publicBuildInputsSha256: publicDigest })) {
       console.error("Public smoke cleanup or signature state is unconfirmed; remaining artifacts were not opened")
+      process.exitCode = 1
       break
     }
   }
-  console.error(incompletePublicQualification)
-  process.exitCode = 1
+  if (!process.exitCode) {
+    const job = publicReceiptBytes(publicNativeJobReceipt({ ...context, artifacts: receipts }))
+    await writeFile(join(reports, "native-job.json"), job.bytes, { flag: "wx" })
+    if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `job_receipt_sha256=${job.sha256}\n`)
+    console.log("Exact public smoke and native observations recorded; the strict collector determines qualification")
+  }
 } catch {
   console.error("Public smoke did not complete with confirmed ownership; no further artifact was opened or qualified")
   process.exitCode = 1

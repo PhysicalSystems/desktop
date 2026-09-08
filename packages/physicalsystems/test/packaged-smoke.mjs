@@ -16,7 +16,9 @@ import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
 import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { desktopIdentity } from "../src/release/identity.ts"
-import { createNativeCredentialProbe, waitForCredentialAttachment } from "../src/release/native-credentials.ts"
+import { waitForCredentialAttachment } from "../src/release/native-credentials.ts"
+import { createNativeV2CredentialProbe } from "../src/release/native-credentials-v2.ts"
+import { ownedV2CredentialTransport } from "../src/release/native-v2-transport.ts"
 import { observeCredentialBackend } from "../src/release/credential-backend.ts"
 import {
   nsisInstallArguments,
@@ -25,6 +27,7 @@ import {
   qualifyInstalledReinstall,
 } from "../src/release/installed-reinstall.ts"
 import { startLinuxSecretService } from "../src/release/linux-secret-service.ts"
+import { qualifyPlatformDisplay } from "../src/release/platform-display.ts"
 import {
   packagedQualificationArguments,
   loadPublicQualification,
@@ -97,7 +100,7 @@ let linuxInstallation
 let linuxSandboxProfile
 let linuxTemporary
 let secretService
-const credentialProbe = createNativeCredentialProbe()
+const credentialProbe = createNativeV2CredentialProbe({ providerID: "openai" })
 const credentialState = {
   pids: [],
   saved: undefined,
@@ -105,6 +108,7 @@ const credentialState = {
   backend: undefined,
   sessionId: undefined,
   experimentId: undefined,
+  absence: undefined,
 }
 let applicationStarted = false
 let systemMutationUnconfirmed = false
@@ -407,14 +411,15 @@ try {
           throw failed || new Error("PACKAGED_APP_SHUTDOWN_UNCONFIRMED")
       }
       check(
-        "native-credential-probe",
+        "native-v2-credential-probe",
         "PASS",
         JSON.stringify({
           backend: credentialState.backend,
           confirmedAppShutdowns: 3,
           freshProcesses: new Set(credentialState.pids).size === 3,
           afterRestartAuthorizationMatched: true,
-          afterRemovalRestartAuthorizationAbsent: true,
+          afterRemovalRestartCredentialAbsent: credentialState.absence,
+          api: "v2-integration",
           savedVault: credentialState.saved,
           removedVault: credentialState.removed,
         }),
@@ -713,27 +718,22 @@ async function launch(executable, credentialPhase) {
     }),
     { mode: 0o600 },
   )
-  const child = spawn(
-    executable,
-    [
-      "--remote-debugging-port=0",
-      "--remote-debugging-address=127.0.0.1",
-      `--user-data-dir=${join(profile, "desktop")}`,
-      "--disable-gpu",
-      "--disable-background-timer-throttling",
-      "--disable-renderer-backgrounding",
-      ...(process.platform === "linux" ? ["--ozone-platform=x11"] : []),
-    ],
-    {
-      cwd: profile,
-      env: {
-        ...qualificationEnvironment(process.env, profile),
-        ...linuxTemporary?.environment,
-        ...secretService?.environment,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
+  const launchArguments = [
+    "--remote-debugging-port=0",
+    "--remote-debugging-address=127.0.0.1",
+    `--user-data-dir=${join(profile, "desktop")}`,
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+  ]
+  const child = spawn(executable, launchArguments, {
+    cwd: profile,
+    env: {
+      ...qualificationEnvironment(process.env, profile),
+      ...linuxTemporary?.environment,
+      ...secretService?.environment,
     },
-  )
+    stdio: ["ignore", "pipe", "pipe"],
+  })
   applicationStarted = true
   const log = createWriteStream(join(root, "application.log"), { mode: 0o600, flags: "a" })
   const privateLog = observePrivateLog(log)
@@ -766,6 +766,7 @@ async function launch(executable, credentialPhase) {
   let api
   let owned = []
   let attached
+  let v2Request
   const attach = async () => {
     const expected = await evaluate(
       "window.api.physicalSystems.snapshot().then(s => ({ sessionId: s.conversation?.sessionId, directory: s.projects.find(p => p.id === s.activeProjectId)?.cwd }))",
@@ -778,6 +779,7 @@ async function launch(executable, credentialPhase) {
       pid: child.pid,
       ...expected,
     })
+    v2Request = ownedV2CredentialTransport(attached)
     api = async (path, body, init = {}) =>
       fetch(`${attached.url}${path}?directory=${encodeURIComponent(attached.directory)}`, {
         method: init.method || (body === undefined ? "GET" : "POST"),
@@ -790,12 +792,11 @@ async function launch(executable, credentialPhase) {
         signal: init.signal || AbortSignal.timeout(6000),
       })
   }
-  const authRequest = async (path, init) => {
-    const response = await api(path, init.body, init)
-    if (!response.ok) throw new Error("CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
-    const text = await response.text()
-    if (text.length > 128) throw new Error("CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
-    return JSON.parse(text)
+  const v2Idle = async () => {
+    const result = await v2Request("/api/session/active", { method: "GET" })
+    if (!result.data || typeof result.data !== "object" || Array.isArray(result.data))
+      throw new Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
+    return Object.keys(result.data).length === 0
   }
   const preservedState = async () => {
     const state = await evaluate(`window.api.physicalSystems.snapshot().then(async s => ({
@@ -950,7 +951,7 @@ async function launch(executable, credentialPhase) {
       "Owned private profile reports device connections disabled and no owned hardware operations; only the expected synthetic project may persist.",
     )
     if (credentialPhase !== "save") {
-      stage = "native-credential-probe"
+      stage = "native-v2-credential-probe"
       await until(
         () => evaluate("window.api.physicalSystems.snapshot().then(s => Boolean(s.conversation?.sessionId))"),
         "CREDENTIAL_PROBE_RESTART_UNCONFIRMED",
@@ -962,27 +963,29 @@ async function launch(executable, credentialPhase) {
         reinstallAfter = await preservedState()
         return
       }
-      const stored = await credentialProbe.inspectFiles(profile)
+      const stored = await credentialProbe.inspectFiles(profile, { databaseName: "opencode.db" })
       const expected = credentialPhase === "retrieve-remove" ? credentialState.saved : credentialState.removed
       if (stored.vaultSha256 !== expected.vaultSha256) throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
-      const prompt = credentialProbe.beginObservation(credentialPhase === "retrieve-remove" ? "present" : "absent")
-      const response = await api(
-        `/session/${attached.sessionId}/message`,
-        {
-          agent: "physical-systems",
-          model: { providerID: credentialProbe.providerID, modelID: "fixture" },
-          parts: [{ type: "text", text: prompt }],
-        },
-        { signal: AbortSignal.timeout(30000) },
-      ).catch(() => {
-        throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
-      })
-      if (!response.ok) throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
-      const result = await response.text().catch(() => {
-        throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
-      })
-      if (result.length > 2 * 1024 * 1024) throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
-      credentialProbe.finishObservation()
+      await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      if (credentialPhase === "retrieve-remove") {
+        const prompt = credentialProbe.beginObservation("present")
+        await v2Request(`/api/session/${attached.sessionId}/model`, {
+          method: "POST",
+          body: { model: { providerID: credentialProbe.providerID, id: "fixture" } },
+        })
+        await v2Request(`/api/session/${attached.sessionId}/prompt`, {
+          method: "POST",
+          body: { prompt: { text: prompt } },
+        })
+        await until(() => credentialProbe.observationReady(), "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED", 30000)
+        await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED", 30000)
+        credentialProbe.finishObservation()
+      } else {
+        const requestsBefore = provider.calls.length
+        credentialState.absence = await credentialProbe.assertRemoved(v2Request)
+        if (!(await v2Idle()) || provider.calls.length !== requestsBefore)
+          throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+      }
       const experiment = await evaluate("window.api.physicalSystems.snapshot().then(s => s.experiments?.current)")
       if (
         experiment?.id !== credentialState.experimentId ||
@@ -991,8 +994,12 @@ async function launch(executable, credentialPhase) {
       )
         throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
       if (credentialPhase === "retrieve-remove") {
-        await credentialProbe.remove(authRequest)
-        credentialState.removed = await credentialProbe.inspectFiles(profile)
+        await credentialProbe.remove(v2Request)
+        await v2Request(`/api/session/${attached.sessionId}/model`, {
+          method: "POST",
+          body: { model: { providerID: "fixture", id: "fixture" } },
+        })
+        credentialState.removed = await credentialProbe.inspectFiles(profile, { databaseName: "opencode.db" })
         if (credentialState.removed.vaultSha256 === credentialState.saved.vaultSha256)
           throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
         const selected = await until(
@@ -1049,6 +1056,17 @@ async function launch(executable, credentialPhase) {
       })
     }
     await waitForComposer()
+    stage = "native-platform-display-probe"
+    const display = await qualifyPlatformDisplay({
+      env: process.env,
+      root,
+      targetId: target.id,
+      launchArguments,
+      call,
+      evaluate,
+    })
+    check(stage, "PASS", JSON.stringify(display))
+    stage = "synthetic-chat"
     await type("[data-component=prompt-input]", qualificationPrompt)
     await waitForComposer()
     await click('button[aria-label="Send"]')
@@ -1114,7 +1132,7 @@ async function launch(executable, credentialPhase) {
       "PASS",
       "Renderer reload preserved the bound conversation and exactly three recorded trials without replay.",
     )
-    stage = "native-credential-probe"
+    stage = "native-v2-credential-probe"
     if (installed || linuxInstallation) {
       const preference = await evaluate(
         "window.api.getPinchZoomEnabled().then(async before => { await window.api.setPinchZoomEnabled(!before); return { before, saved: await window.api.getPinchZoomEnabled() } })",
@@ -1125,8 +1143,8 @@ async function launch(executable, credentialPhase) {
     }
     credentialState.sessionId = attached.sessionId
     credentialState.experimentId = completed.id
-    await credentialProbe.save(authRequest)
-    credentialState.saved = await credentialProbe.inspectFiles(profile)
+    await credentialProbe.save(v2Request)
+    credentialState.saved = await credentialProbe.inspectFiles(profile, { databaseName: "opencode.db" })
     credentialState.backend = await until(
       () => {
         try {

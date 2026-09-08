@@ -96,7 +96,7 @@ async function fixture() {
       artifactBytes: artifact.bytes,
       artifactSha256: artifact.sha256,
       version: build.version,
-      checks: [...requiredQualificationChecks, "public-compiled-identity", "native-credential-probe", ...extra].map(
+      checks: [...requiredQualificationChecks, "public-compiled-identity", "native-v2-credential-probe", ...extra].map(
         (id) => ({
           id,
           status: "PASS",
@@ -235,7 +235,7 @@ test("current unqualified smoke cannot substitute for absent, skipped or duplica
 test("the current producer's native probe and every owned Linux cleanup must pass before collection", async () => {
   for (const index of [0, 1, 2]) {
     const required = [
-      "native-credential-probe",
+      "native-v2-credential-probe",
       ...(index < 2 ? ["native-reinstall-probe"] : []),
       ...(index === 0 ? [] : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
     ]
@@ -271,7 +271,7 @@ test("passing auxiliary smoke probes cannot replace any of the eight separate pu
   const substituted = await fixture()
   await substituted.edit("nativeSha256", (record) => {
     record.checks = [
-      { id: "native-credential-probe", status: "PASS" },
+      { id: "native-v2-credential-probe", status: "PASS" },
       { id: "native-secret-service-cleanup", status: "PASS" },
       { id: "native-reinstall-probe", status: "PASS" },
     ]

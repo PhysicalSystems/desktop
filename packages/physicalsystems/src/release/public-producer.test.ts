@@ -190,23 +190,21 @@ test("missing/malformed PFX cannot enter packaging and Azure receives only its s
   })
 })
 
-test("the producer qualification boundary always fails and cannot emit a qualified artifact", async () => {
+test("the real producer collection command refuses absent independent workflow anchors", async () => {
   const directory = await mkdtemp(join(tmpdir(), "public-producer-boundary-"))
   try {
     const summary = join(directory, "summary.md")
     const script = fileURLToPath(new URL("../../../../script/desktop-public-producer.ts", import.meta.url))
-    const result = spawnSync(process.execPath, [script, "incomplete"], {
+    const result = spawnSync(process.execPath, [script, "collect"], {
       cwd: directory,
       env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: summary },
       encoding: "utf8",
       timeout: 10000,
     })
     expect(result.status).toBe(1)
-    expect(result.stderr).toContain("PUBLIC_NATIVE_QUALIFICATION_INCOMPLETE")
+    expect(result.stderr).toContain("Missing PUBLIC_DOWNLOADED_DIRECTORY")
     expect(result.stderr).not.toContain(directory)
-    expect(await readFile(summary, "utf8")).toContain(
-      "No qualified distribution, release, tag or website selection was produced",
-    )
+    await expect(readFile(summary, "utf8")).rejects.toThrow()
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

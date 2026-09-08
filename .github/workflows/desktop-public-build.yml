@@ -1,8 +1,8 @@
-name: Build public desktop installers (qualification incomplete)
+name: Build and qualify public desktop installers
 run-name: Public desktop ${{ inputs.channel }} from ${{ github.sha }}
 
-# Packaging and smoke evidence are real, but native public qualification is not
-# complete. The final job fails deliberately and no qualified bundle is emitted.
+# Native observations are bound through distinct Windows/Linux job outputs.
+# The strict collector succeeds only when every required check actually passes.
 on:
   workflow_dispatch:
     inputs:
@@ -121,115 +121,51 @@ jobs:
     with:
       source_sha: ${{ needs.prepare.outputs.source_sha }}
 
-  package:
-    name: Build and inspect public ${{ matrix.platform }} bytes
+  windows:
+    name: Public windows-x64 installers and native evidence
     needs: [prepare, source]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-x64
-            runner: windows-2025
-          - platform: linux-x64
-            runner: ubuntu-24.04
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 70
-    defaults:
-      run:
-        shell: bash
-    env:
-      CI: "true"
-      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
-      OPENCODE_DISABLE_MODELS_FETCH: "1"
-      EXPECTED_RELEASE_INPUTS_SHA256: ${{ needs.prepare.outputs.inputs_sha256 }}
-      EXPECTED_PUBLIC_BUILD_SHA256: ${{ needs.prepare.outputs.public_build_sha256 }}
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ needs.prepare.outputs.source_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/setup-desktop-build
-      - name: Define isolated native paths after the runner is available
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync } from 'node:fs';
-          import path from 'node:path';
-          const paths = {
-            PUBLIC_RELEASE_INPUTS: 'desktop-public/inputs/release-inputs.json',
-            PUBLIC_BUILD_INPUTS: 'desktop-public/inputs/public-build-inputs.json',
-            PUBLIC_BUILD_DIRECTORY: 'desktop-public/artifacts',
-            PUBLIC_SMOKE_DIRECTORY: 'desktop-public/smoke',
-          };
-          appendFileSync(process.env.GITHUB_ENV, Object.entries(paths).map(([key, value]) => `${key}=${path.join(process.env.RUNNER_TEMP, value)}\n`).join(''));
-          NODE
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: desktop-public-inputs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/desktop-public/inputs
-      - name: Verify native source/archive and public producer regressions
-        working-directory: packages/physicalsystems
-        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/public-build.test.ts ./src/release/public-build-command.test.ts ./src/release/public-producer.test.ts
-      - name: Build Windows installers using the frozen signing policy
-        if: runner.os == 'Windows'
-        env:
-          # Only this actual build step receives signing secrets. The wrapper
-          # creates an exclusive temporary PFX and removes it even on failure.
-          PHYSICALSYSTEMS_PFX_BASE64: ${{ secrets.DESKTOP_WINDOWS_PFX_BASE64 }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_WINDOWS_PFX_PASSWORD }}
-          AZURE_TENANT_ID: ${{ secrets.DESKTOP_AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.DESKTOP_AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_AZURE_CLIENT_SECRET }}
-        run: bun script/desktop-public-producer.ts build-windows
-      - name: Build Linux installers under the same frozen public identity
-        if: runner.os == 'Linux'
-        run: bun script/desktop-build-public.ts --inputs "$PUBLIC_RELEASE_INPUTS" --public-inputs "$PUBLIC_BUILD_INPUTS" --expected-inputs-sha256 "$EXPECTED_RELEASE_INPUTS_SHA256" --expected-public-build-sha256 "$EXPECTED_PUBLIC_BUILD_SHA256" --platform linux-x64 --output "$PUBLIC_BUILD_DIRECTORY"
-      - name: Install display dependencies on the disposable Linux runner
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0 dbus gnome-keyring libglib2.0-bin
-      - name: Inspect exact public packages and record missing native qualification
-        run: |
-          if [ "$RUNNER_OS" = 'Linux' ]; then
-            xvfb-run -a bun script/desktop-public-smoke.ts
-          else
-            bun script/desktop-public-smoke.ts
-          fi
-      # This allowlist deliberately excludes profiles, logs, signing files and
-      # dependency caches. No artifact uses the publisher's qualified name.
-      - name: Retain exact installers and explicitly unqualified build records
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: desktop-public-unqualified-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/desktop-public/artifacts/physical-systems-desktop-${{ needs.prepare.outputs.version }}-windows-x64.exe
-            ${{ runner.temp }}/desktop-public/artifacts/physical-systems-desktop-${{ needs.prepare.outputs.version }}-linux-x64.deb
-            ${{ runner.temp }}/desktop-public/artifacts/physical-systems-desktop-${{ needs.prepare.outputs.version }}-linux-x64.AppImage
-            ${{ runner.temp }}/desktop-public/artifacts/artifacts.json
-            ${{ runner.temp }}/desktop-public/artifacts/SHA256SUMS
-            ${{ runner.temp }}/desktop-public/artifacts/desktop-release-inputs.json
-            ${{ runner.temp }}/desktop-public/artifacts/public-build-inputs.json
-            ${{ runner.temp }}/desktop-public/artifacts/public-build-record.json
-          if-no-files-found: warn
-          retention-days: 30
-      - name: Retain sanitized public smoke receipts
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: desktop-public-smoke-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/desktop-public/smoke/*.json
-          if-no-files-found: warn
-          retention-days: 30
+    uses: ./.github/workflows/desktop-public-package.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      inputs_sha256: ${{ needs.prepare.outputs.inputs_sha256 }}
+      public_build_sha256: ${{ needs.prepare.outputs.public_build_sha256 }}
+      version: ${{ needs.prepare.outputs.version }}
+      platform: windows-x64
+    secrets:
+      DESKTOP_WINDOWS_PFX_BASE64: ${{ secrets.DESKTOP_WINDOWS_PFX_BASE64 }}
+      DESKTOP_WINDOWS_PFX_PASSWORD: ${{ secrets.DESKTOP_WINDOWS_PFX_PASSWORD }}
+      DESKTOP_AZURE_TENANT_ID: ${{ secrets.DESKTOP_AZURE_TENANT_ID }}
+      DESKTOP_AZURE_CLIENT_ID: ${{ secrets.DESKTOP_AZURE_CLIENT_ID }}
+      DESKTOP_AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_AZURE_CLIENT_SECRET }}
+
+  linux:
+    name: Public linux-x64 installers and native evidence
+    needs: [prepare, source]
+    uses: ./.github/workflows/desktop-public-package.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      inputs_sha256: ${{ needs.prepare.outputs.inputs_sha256 }}
+      public_build_sha256: ${{ needs.prepare.outputs.public_build_sha256 }}
+      version: ${{ needs.prepare.outputs.version }}
+      platform: linux-x64
 
   qualification:
-    name: Public native qualification is incomplete — publication blocked
+    name: Collect independently anchored complete public qualification
     if: always() && github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main' && needs.prepare.result == 'success'
-    needs: [prepare, source, package]
+    needs: [prepare, source, windows, linux]
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
+      - name: Require successful exact-source native producer jobs
+        env:
+          SOURCE_RESULT: ${{ needs.source.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+        run: |
+          if [ "$SOURCE_RESULT" != success ] || [ "$WINDOWS_RESULT" != success ] || [ "$LINUX_RESULT" != success ]; then
+            echo 'Public qualification requires successful source and both native producer jobs; inspect their fixed check summaries.'
+            exit 1
+          fi
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           ref: ${{ needs.prepare.outputs.source_sha }}
@@ -237,5 +173,46 @@ jobs:
       - uses: ./.github/actions/setup-desktop-build
         with:
           install-dependencies: "false"
-      - name: Fail closed until all required native evidence is implemented and verified
-        run: bun script/desktop-public-producer.ts incomplete
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-public-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-public/inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.windows.outputs.build_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/windows/artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.windows.outputs.receipt_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/windows/receipts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.linux.outputs.build_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/linux/artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.linux.outputs.receipt_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/linux/receipts
+          merge-multiple: true
+      - name: Strictly collect the exact signed bytes and all native requirements
+        id: collect
+        env:
+          PUBLIC_BUILD_INPUTS: ${{ runner.temp }}/desktop-public/inputs/public-build-inputs.json
+          EXPECTED_RELEASE_INPUTS_SHA256: ${{ needs.prepare.outputs.inputs_sha256 }}
+          EXPECTED_PUBLIC_BUILD_SHA256: ${{ needs.prepare.outputs.public_build_sha256 }}
+          EXPECTED_WINDOWS_JOB_SHA256: ${{ needs.windows.outputs.job_receipt_sha256 }}
+          EXPECTED_LINUX_JOB_SHA256: ${{ needs.linux.outputs.job_receipt_sha256 }}
+          PUBLIC_DOWNLOADED_DIRECTORY: ${{ runner.temp }}/desktop-public/downloaded
+          PUBLIC_COLLECTION_STAGING: ${{ runner.temp }}/desktop-public/collection-evidence
+          PUBLIC_QUALIFIED_DIRECTORY: ${{ runner.temp }}/desktop-public/qualified
+        run: bun script/desktop-public-producer.ts collect
+      - name: Retain only the verified publisher bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-qualified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-public/qualified/*
+          if-no-files-found: error
+          retention-days: 30

@@ -10,6 +10,7 @@ import { publicReviewDigest, validateDistributionFacts } from "./public-download
 import { validateQualifiedDistribution, verifyQualifiedBundle } from "./public-publisher"
 import { unimplementedPublicChecks, verifyPublicSignaturePair } from "./public-qualification"
 import { requiredQualificationChecks, sha256File } from "./qualification"
+import { publicNativeProbeIds } from "./public-native-receipts"
 
 export class PublicCollectorError extends Error {}
 const invalid = () => new PublicCollectorError("PUBLIC_COLLECTION_EVIDENCE_INVALID")
@@ -237,7 +238,7 @@ export async function collectPublicDistribution(input: {
     const required = [
       ...requiredQualificationChecks,
       "public-compiled-identity",
-      "native-credential-probe",
+      "native-v2-credential-probe",
       ...(artifact.name.endsWith(".exe") || artifact.name.endsWith(".deb") ? ["native-reinstall-probe"] : []),
       ...(platform === "windows-x64"
         ? ["public-signing", "uninstall"]
@@ -409,6 +410,7 @@ function checkMap(value: unknown, native: boolean) {
           "native-secret-service",
           "native-secret-service-cleanup",
           "native-reinstall-probe",
+          ...publicNativeProbeIds,
           "uninstall",
           "appimage-launcher",
           "linux-sandbox-setup",
