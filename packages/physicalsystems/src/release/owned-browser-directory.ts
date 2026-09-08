@@ -2,7 +2,16 @@
 import type { BigIntStats } from "node:fs"
 import { lstat, readdir, realpath, rm } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
-import { browserObservationError, type BrowserObservation } from "./browser-observation"
+import { browserObservationError, readBrowserObservation, type BrowserObservation } from "./browser-observation"
+
+export type DirectoryProbeObservation = Pick<
+  BrowserObservation,
+  Extract<keyof BrowserObservation, `directoryProbe${string}`>
+>
+export type OwnedBrowserDirectoryAnchors = Readonly<{
+  root: Readonly<{ path: string; dev: bigint; ino: bigint }>
+  parent: Readonly<{ path: string; dev: bigint; ino: bigint }>
+}>
 
 type IdentityStat = Pick<BigIntStats, "dev" | "ino" | "mode" | "isFile" | "isDirectory" | "isSymbolicLink">
 type DirectoryIO = {
@@ -12,6 +21,7 @@ type DirectoryIO = {
   wait?(milliseconds: number): Promise<void>
   entries?(path: string): Promise<string[]>
   inventoryTimeoutMs?: number
+  observeFailure?(anchors: OwnedBrowserDirectoryAnchors): Promise<DirectoryProbeObservation>
 }
 export type OwnedBrowserDirectory = Readonly<{ root: string; dev: bigint; ino: bigint }>
 
@@ -307,7 +317,36 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
       const metadata = await remainingMetadata(identity, io).catch(() => ({
         directoryInventory: "read-failed" as const,
       }))
-      throw failure(error, { ...observation, ...metadata })
+      let probe: DirectoryProbeObservation = {}
+      if (
+        io.observeFailure &&
+        observation.directoryFailurePhase === "remove" &&
+        removalAttempt === delays.length &&
+        retryable.includes(code(error) || "")
+      ) {
+        probe = { directoryProbeStatus: "IDENTITY_UNCONFIRMED", directoryProbeQuiescence: "not-started" }
+        const present = await read().catch(() => undefined)
+        if (present) {
+          probe = { directoryProbeStatus: "UNREADABLE", directoryProbeQuiescence: "unconfirmed" }
+          try {
+            const value = await io.observeFailure(
+              Object.freeze({
+                root: Object.freeze({ path: identity.root, dev: identity.dev, ino: identity.ino }),
+                parent: Object.freeze({ path: owner!.parent, dev: owner!.parentDev, ino: owner!.parentIno }),
+              }),
+            )
+            // Diagnostics cannot overwrite the original removal phase or add
+            // private fields. Invalid observations leave that failure intact.
+            const fields = Object.fromEntries(Object.entries(value).filter(([key]) => key.startsWith("directoryProbe")))
+            const safe = readBrowserObservation({ browserObservation: { browserPhase: "cleanup-profile", ...fields } })
+            if (safe)
+              probe = Object.fromEntries(Object.entries(safe).filter(([key]) => key.startsWith("directoryProbe")))
+          } catch {}
+        }
+      }
+      // Even later absence or successful access probes cannot reverse the
+      // exhausted removal failure or renew its deletion budget.
+      throw failure(error, { ...observation, ...metadata, ...probe })
     }
   }
 }

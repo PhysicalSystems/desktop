@@ -178,6 +178,27 @@ export type BrowserObservation = {
   directoryNonWritableMode?: number
   directoryReadFailures?: number
   directoryInventoryDepth?: number
+  directoryProbeStatus?: "DENIAL_OBSERVED" | "NOT_LOCALIZED" | "BOUNDED" | "UNREADABLE" | "IDENTITY_UNCONFIRMED"
+  directoryProbePhase?: "root-file-open" | "directory-traversal" | "delete-open" | "metadata" | "none"
+  directoryProbeKind?: "root" | "directory" | "file"
+  directoryProbeNativeStatus?:
+    | "success"
+    | "is-directory"
+    | "access-denied"
+    | "cannot-delete"
+    | "sharing-violation"
+    | "delete-pending"
+    | "vanished"
+    | "other"
+  directoryProbeQuiescence?: "not-started" | "confirmed" | "unconfirmed"
+  directoryProbeControllerCleanup?: "not-created" | "removed" | "retained"
+  directoryProbeOrdinal?: number
+  directoryProbeDepth?: number
+  directoryProbeEntries?: number
+  directoryProbeReadonlyAttribute?: boolean
+  directoryProbeRootReadonlyAttribute?: boolean
+  directoryProbeReadonlyDirectories?: number
+  directoryProbeReadonlyFiles?: number
 }
 const codes = [
   "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
@@ -189,6 +210,8 @@ const codes = [
   "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED",
 ] as const
 const bools = [
+  "directoryProbeReadonlyAttribute",
+  "directoryProbeRootReadonlyAttribute",
   "handoffDeadlineExpired",
   "handoffPolicyOwned",
   "handoffListenerOwned",
@@ -253,6 +276,10 @@ const counts = [
   "readinessTargetCount",
 ]
 const directoryCounts = [
+  "directoryProbeOrdinal",
+  "directoryProbeEntries",
+  "directoryProbeReadonlyDirectories",
+  "directoryProbeReadonlyFiles",
   "directoryEntries",
   "directoryDirectories",
   "directoryFiles",
@@ -261,6 +288,24 @@ const directoryCounts = [
   "directoryReadFailures",
 ]
 const directoryEnums = new Map<string, readonly string[]>([
+  ["directoryProbeStatus", ["DENIAL_OBSERVED", "NOT_LOCALIZED", "BOUNDED", "UNREADABLE", "IDENTITY_UNCONFIRMED"]],
+  ["directoryProbePhase", ["root-file-open", "directory-traversal", "delete-open", "metadata", "none"]],
+  ["directoryProbeKind", ["root", "directory", "file"]],
+  [
+    "directoryProbeNativeStatus",
+    [
+      "success",
+      "is-directory",
+      "access-denied",
+      "cannot-delete",
+      "sharing-violation",
+      "delete-pending",
+      "vanished",
+      "other",
+    ],
+  ],
+  ["directoryProbeQuiescence", ["not-started", "confirmed", "unconfirmed"]],
+  ["directoryProbeControllerCleanup", ["not-created", "removed", "retained"]],
   ["directoryFailurePhase", ["parent-canonical", "parent-identity", "root-identity", "remove", "absence-check"]],
   ["directorySyscall", ["rm", "lstat", "realpath", "readdir", "other", "absent"]],
   ["directoryErrorPath", ["root", "parent", "descendant", "other", "absent"]],
@@ -306,13 +351,15 @@ function validate(value: unknown): BrowserObservation | undefined {
                                       ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
                                       : undefined)
     const maximum =
-      key === "directoryRemovalAttempt" || key === "directoryInventoryDepth"
-        ? 4
-        : directoryCounts.includes(key)
-          ? 128
-          : counts.includes(key)
-            ? 65536
-            : undefined
+      key === "directoryProbeDepth"
+        ? 8
+        : key === "directoryRemovalAttempt" || key === "directoryInventoryDepth"
+          ? 4
+          : directoryCounts.includes(key)
+            ? 128
+            : counts.includes(key)
+              ? 65536
+              : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)

@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 import { spawn } from "node:child_process"
 import type { ChildProcess, SpawnOptions } from "node:child_process"
-import { lstat, mkdir, readdir, realpath } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readdir, realpath } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
 import { join, win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { reviewBrowserTargets, validateBrowserProbeURL } from "./owned-review-browser"
-import { captureOwnedBrowserDirectory, removeOwnedBrowserDirectory } from "./owned-browser-directory"
+import {
+  captureOwnedBrowserDirectory,
+  removeOwnedBrowserDirectory,
+  type DirectoryProbeObservation,
+  type OwnedBrowserDirectoryAnchors,
+} from "./owned-browser-directory"
+import { observeWindowsDirectoryDenial } from "./windows-directory-observation"
 import {
   browserObservationError,
   browserSyscallFailure,
@@ -27,6 +33,49 @@ const failure = () => Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
 const cleanupFailure = () => Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 const pathEqual = (a: string, b: string) => win32.normalize(a).toLowerCase() === win32.normalize(b).toLowerCase()
+
+/** Failure-only access observation. Its compiler/cache files never enter the
+ * failed browser tree; confirmed helper closure only permits controller cleanup. */
+export async function observeWindowsReviewDirectoryDenial(
+  env: NodeJS.ProcessEnv,
+  anchors: OwnedBrowserDirectoryAnchors,
+  observe: typeof observeWindowsDirectoryDenial = observeWindowsDirectoryDenial,
+): Promise<DirectoryProbeObservation> {
+  const observation: DirectoryProbeObservation = {
+    directoryProbeStatus: "UNREADABLE",
+    directoryProbeQuiescence: "not-started",
+    directoryProbeControllerCleanup: "not-created",
+  }
+  try {
+    const root = await realpath(await mkdtemp(join(anchors.parent.path, "directory-denial-")))
+    observation.directoryProbeControllerCleanup = "retained"
+    const directory = await captureOwnedBrowserDirectory(root)
+    observation.directoryProbeQuiescence = "unconfirmed"
+    const result = await observe({ env, controllerRoot: root, ...anchors })
+    observation.directoryProbeQuiescence = result.quiescence
+    Object.assign(observation, {
+      directoryProbeStatus: result.observation.status,
+      directoryProbePhase: result.observation.phase,
+      directoryProbeKind: result.observation.kind,
+      directoryProbeNativeStatus: result.observation.nativeStatus,
+      directoryProbeOrdinal: result.observation.ordinal,
+      directoryProbeDepth: result.observation.depth,
+      directoryProbeEntries: result.observation.entriesProbed,
+      directoryProbeReadonlyAttribute: result.observation.readonlyAttribute,
+      directoryProbeRootReadonlyAttribute: result.observation.rootReadonlyAttribute,
+      directoryProbeReadonlyDirectories: result.observation.readonlyDirectories,
+      directoryProbeReadonlyFiles: result.observation.readonlyFiles,
+    })
+    if (result.quiescence === "confirmed") {
+      await removeOwnedBrowserDirectory(directory)
+      observation.directoryProbeControllerCleanup = "removed"
+    }
+  } catch {
+    // The original EACCES/retention decision belongs to the caller. Raw native
+    // errors, paths or another cleanup failure cannot replace that decision.
+  }
+  return Object.fromEntries(Object.entries(observation).filter(([, value]) => value !== undefined))
+}
 
 /** Private diagnostic input only. The caller must configure encrypted storage
  * before supplying the sink; none of these records enter public observations. */
@@ -345,6 +394,7 @@ async function acquireWindowsReviewBrowser(
     timeoutMs?: number
     pollMs?: number
     reservePort?: typeof reserveWindowsReviewPort
+    observeDirectory?: typeof observeWindowsDirectoryDenial
   },
   observation: BrowserObservation,
 ) {
@@ -553,7 +603,9 @@ async function acquireWindowsReviewBrowser(
         throw cleanupFailure()
       if (!options.retainProfile) {
         observation.browserPhase = "cleanup-profile"
-        await removeOwnedBrowserDirectory(directory)
+        await removeOwnedBrowserDirectory(directory, {
+          observeFailure: (anchors) => observeWindowsReviewDirectoryDenial(input.env, anchors, io.observeDirectory),
+        })
       }
       stopped = true
       observation.browserPhase = "stopped"

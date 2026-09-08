@@ -178,6 +178,18 @@ routing remains intact. Final cleanup still removes the whole review directory
 after confirmed app and browser shutdown; relocating temporary files cannot
 hide a cleanup failure. Linux launcher routing is unchanged.
 
+After Windows exhausts its existing four directory-removal attempts, a bounded
+failure-only helper can distinguish root, traversal and child access denials.
+It uses nonmutating file-open probes with the pinned runtime's access masks,
+captured parent/root identities and no-reparse child handles. It never sets a
+deletion disposition or changes attributes or permissions. Its compiler and
+cache files stay in a separate captured sibling directory, removed only after
+confirmed helper closure. An unconfirmed helper retains that directory too.
+Fixed status, phase, type, ordinal, depth and attribute counts may enter the
+receipt; names, paths, file content and raw native errors do not. Successful
+opens mean only that this diagnostic did not locate the denial. The original
+cleanup failure, retained browser state and blocked uninstall remain intact.
+
 Failed or uncertain native startup/cleanup retains private paths and prevents an
 observed-success return. Original browser profiles are never removed. A preserved
 unknown cleanup state belongs only to its disposable runner, which must not be

@@ -8,6 +8,45 @@ import {
   createWindowsBrowserStderrObservation,
 } from "./browser-observation"
 
+test("directory access diagnostics preserve fixed fields and reject paths, arbitrary errors and unbounded counters", () => {
+  const fields = {
+    browserPhase: "cleanup-profile",
+    directoryProbeStatus: "DENIAL_OBSERVED",
+    directoryProbePhase: "root-file-open",
+    directoryProbeKind: "root",
+    directoryProbeNativeStatus: "access-denied",
+    directoryProbeQuiescence: "confirmed",
+    directoryProbeControllerCleanup: "removed",
+    directoryProbeOrdinal: 0,
+    directoryProbeDepth: 0,
+    directoryProbeEntries: 0,
+    directoryProbeReadonlyAttribute: true,
+    directoryProbeRootReadonlyAttribute: true,
+    directoryProbeReadonlyDirectories: 0,
+    directoryProbeReadonlyFiles: 0,
+  } as const
+  expect(readBrowserObservation({ browserObservation: fields })).toEqual(fields)
+  for (const change of [
+    { directoryProbePath: "PRIVATE PATH" },
+    { directoryProbeNativeStatus: "PRIVATE ERROR" },
+    { directoryProbeStatus: "PASS" },
+    { directoryProbeDepth: 9 },
+    { directoryProbeOrdinal: 129 },
+    { directoryProbeEntries: -1 },
+    { directoryProbeReadonlyDirectories: 129 },
+    { directoryProbeReadonlyAttribute: "PRIVATE" },
+  ])
+    expect(readBrowserObservation({ browserObservation: { ...fields, ...change } })).toBeUndefined()
+  const wrapped = browserObservationError(
+    "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED",
+    { browserObservation: fields },
+    {
+      reviewPhase: "browser-cleanup",
+    },
+  )
+  expect(readBrowserObservation(wrapped)).toEqual({ ...fields, reviewPhase: "browser-cleanup" })
+})
+
 test("browser failure keeps only fixed phase/count metadata through cleanup wrappers", () => {
   const startup = browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", Error("PRIVATE-CONTENT"), {
     browserPhase: "cleanup-identity",

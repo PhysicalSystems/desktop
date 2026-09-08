@@ -21,6 +21,107 @@ async function fixture() {
 }
 const denied = (code = "EACCES") => Object.assign(Error("PRIVATE PATH AND ERROR TRAP"), { code })
 
+test("failure observer receives captured anchors once after removal exhaustion and cannot satisfy cleanup", async () => {
+  const f = await fixture()
+  let attempts = 0
+  let observations = 0
+  const error = await removeOwnedBrowserDirectory(f.identity, {
+    remove: async () => {
+      attempts++
+      throw denied()
+    },
+    wait: async () => {},
+    observeFailure: async (anchors) => {
+      observations++
+      expect(attempts).toBe(4)
+      expect(anchors.root).toEqual({ path: f.root, dev: f.identity.dev, ino: f.identity.ino })
+      const parent = await lstat(f.parent, { bigint: true })
+      expect(anchors.parent).toEqual({ path: f.parent, dev: parent.dev, ino: parent.ino })
+      expect(Object.isFrozen(anchors.root)).toBe(true)
+      expect(Object.isFrozen(anchors.parent)).toBe(true)
+      return { directoryProbeStatus: "NOT_LOCALIZED", directoryProbeQuiescence: "confirmed" }
+    },
+  }).catch((error: unknown) => error)
+  expect(error).toMatchObject({ code: "EACCES", message: "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED" })
+  expect(readBrowserObservation(error)).toMatchObject({
+    directoryFailurePhase: "remove",
+    directoryRemovalAttempt: 4,
+    directoryProbeStatus: "NOT_LOCALIZED",
+    directoryProbeQuiescence: "confirmed",
+  })
+  expect(observations).toBe(1)
+  expect(attempts).toBe(4)
+  expect(await readFile(join(f.root, "private-state"), "utf8")).toBe("INERT PRIVATE FIXTURE")
+})
+
+test("failure observer is not invoked after success or replacement of the captured root", async () => {
+  for (const replaced of [false, true]) {
+    const f = await fixture()
+    if (replaced) {
+      await rename(f.root, join(f.parent, "retained-original"))
+      await mkdir(f.root)
+    }
+    let observations = 0
+    const result = await removeOwnedBrowserDirectory(f.identity, {
+      observeFailure: async () => {
+        observations++
+        return { directoryProbeStatus: "NOT_LOCALIZED" }
+      },
+    }).then(
+      () => "removed",
+      () => "retained",
+    )
+    expect(result).toBe(replaced ? "retained" : "removed")
+    expect(observations).toBe(0)
+  }
+})
+
+test("later absence during a failure diagnostic cannot turn exhausted removal into success", async () => {
+  const f = await fixture()
+  let attempts = 0
+  const error = await removeOwnedBrowserDirectory(f.identity, {
+    remove: async () => {
+      attempts++
+      throw denied()
+    },
+    wait: async () => {},
+    observeFailure: async () => {
+      await rm(f.root, { recursive: true })
+      return { directoryProbeStatus: "NOT_LOCALIZED", directoryProbeQuiescence: "confirmed" }
+    },
+  }).catch((error: unknown) => error)
+  expect(error).toMatchObject({ code: "EACCES", message: "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED" })
+  expect(attempts).toBe(4)
+  await expect(lstat(f.root)).rejects.toMatchObject({ code: "ENOENT" })
+})
+
+test("observer exceptions and metadata cannot replace the original removal failure or expose private data", async () => {
+  for (const mode of ["throw", "private", "override"] as const) {
+    const f = await fixture()
+    const error = await removeOwnedBrowserDirectory(f.identity, {
+      remove: async () => {
+        throw denied()
+      },
+      wait: async () => {},
+      observeFailure: async () => {
+        if (mode === "throw") throw Error("PRIVATE DIAGNOSTIC ERROR")
+        if (mode === "private") return { directoryProbeStatus: "PRIVATE PATH" } as never
+        return {
+          directoryProbeStatus: "NOT_LOCALIZED",
+          directoryProbeQuiescence: "confirmed",
+          directoryFailurePhase: "absence-check",
+          directoryRemovalAttempt: 1,
+          privatePath: "PRIVATE PATH",
+        }
+      },
+    }).catch((error: unknown) => error)
+    expect(error).toMatchObject({ code: "EACCES" })
+    expect(readBrowserObservation(error)).toMatchObject({ directoryFailurePhase: "remove", directoryRemovalAttempt: 4 })
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+    expect(await readFile(join(f.root, "private-state"), "utf8")).toBe("INERT PRIVATE FIXTURE")
+  }
+})
+
 test("actual directory IDs survive content changes and distinguish replacement on the executing host", async () => {
   // Runs unchanged on hosted Windows: verifies real Bun dev/ino support with
   // inert directories, without any browser, keyring or native subprocess.

@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events"
 import { statSync } from "node:fs"
 import { PassThrough, Writable } from "node:stream"
 import type { ChildProcess } from "node:child_process"
-import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
 import { join, win32 } from "node:path"
@@ -16,6 +16,7 @@ import {
   windowsReviewPolicy,
   windowsReviewDebugPolicyObservation,
   windowsReviewProcesses,
+  observeWindowsReviewDirectoryDenial,
   type WindowsUnknownExecutableSnapshot,
 } from "./owned-windows-review-browser"
 import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
@@ -31,6 +32,62 @@ import {
 } from "./windows-review-native"
 import { browserObservationError, readBrowserObservation } from "./browser-observation"
 import { qualificationFailureCode } from "./qualification"
+
+test("Windows failure diagnostic isolates its controller and only cleans it after confirmed native closure", async () => {
+  for (const mode of ["confirmed", "unconfirmed", "throw"] as const) {
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "windows-denial-controller-")))
+    const root = join(parent, "browser")
+    await mkdir(root)
+    await writeFile(join(root, "private-state"), "INERT BROWSER STATE")
+    const parentStat = await lstat(parent, { bigint: true })
+    const rootStat = await lstat(root, { bigint: true })
+    let controller = ""
+    try {
+      const observation = await observeWindowsReviewDirectoryDenial(
+        {},
+        {
+          root: { path: root, dev: rootStat.dev, ino: rootStat.ino },
+          parent: { path: parent, dev: parentStat.dev, ino: parentStat.ino },
+        },
+        async (input) => {
+          controller = input.controllerRoot
+          expect(controller).not.toBe(root)
+          expect(controller.startsWith(root + (process.platform === "win32" ? "\\" : "/"))).toBe(false)
+          expect(input.root.path).toBe(root)
+          await writeFile(join(controller, "inert-module-cache"), "INERT CONTROLLER")
+          if (mode === "throw") throw Error("PRIVATE NATIVE ERROR")
+          return {
+            quiescence: mode,
+            observation: {
+              status: "NOT_LOCALIZED",
+              phase: "none",
+              kind: "root",
+              nativeStatus: "success",
+              ordinal: 0,
+              depth: 0,
+              entriesProbed: 0,
+              rootReadonlyAttribute: false,
+              readonlyAttribute: false,
+              readonlyDirectories: 0,
+              readonlyFiles: 0,
+            },
+          }
+        },
+      )
+      expect(observation.directoryProbeQuiescence).toBe(mode === "confirmed" ? "confirmed" : "unconfirmed")
+      expect(observation.directoryProbeControllerCleanup).toBe(mode === "confirmed" ? "removed" : "retained")
+      if (mode === "confirmed") await expect(lstat(controller)).rejects.toMatchObject({ code: "ENOENT" })
+      else expect(await readFile(join(controller, "inert-module-cache"), "utf8")).toBe("INERT CONTROLLER")
+      expect(await readFile(join(root, "private-state"), "utf8")).toBe("INERT BROWSER STATE")
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      expect(
+        readBrowserObservation({ browserObservation: { browserPhase: "cleanup-profile", ...observation } }),
+      ).toBeDefined()
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  }
+})
 
 const executable = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
 const resolvedCommand = `"${executable}" -- "%1"`
