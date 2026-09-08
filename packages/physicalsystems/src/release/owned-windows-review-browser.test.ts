@@ -34,7 +34,8 @@ import { browserObservationError, readBrowserObservation } from "./browser-obser
 import { qualificationFailureCode } from "./qualification"
 
 test("Windows failure diagnostic isolates its controller and only cleans it after confirmed native closure", async () => {
-  for (const mode of ["confirmed", "unconfirmed", "throw"] as const) {
+  for (const mode of ["confirmed", "unconfirmed", "throw", "reparse"] as const) {
+    const confirmed = mode === "confirmed" || mode === "reparse"
     const parent = await realpath(await mkdtemp(join(tmpdir(), "windows-denial-controller-")))
     const root = join(parent, "browser")
     await mkdir(root)
@@ -57,15 +58,18 @@ test("Windows failure diagnostic isolates its controller and only cleans it afte
           await writeFile(join(controller, "inert-module-cache"), "INERT CONTROLLER")
           if (mode === "throw") throw Error("PRIVATE NATIVE ERROR")
           return {
-            quiescence: mode,
+            quiescence: confirmed ? "confirmed" : "unconfirmed",
             boundary: "complete" as const,
             observation: {
               status: "IDENTITY_UNCONFIRMED",
               phase: "metadata",
-              kind: "file",
+              kind: mode === "reparse" ? "directory" : "file",
               nativeStatus: "other",
-              identityReason: "file-id-mismatch",
+              identityReason: mode === "reparse" ? "reparse" : "file-id-mismatch",
               identityScope: "entry",
+              ...(mode === "reparse"
+                ? { reparseTraversalStatus: "access-denied" as const, reparseDeleteStatus: "success" as const }
+                : {}),
               ordinal: 2,
               depth: 2,
               entriesProbed: 2,
@@ -77,18 +81,23 @@ test("Windows failure diagnostic isolates its controller and only cleans it afte
           }
         },
       )
-      expect(observation.directoryProbeQuiescence).toBe(mode === "confirmed" ? "confirmed" : "unconfirmed")
-      expect(observation.directoryProbeControllerCleanup).toBe(mode === "confirmed" ? "removed" : "retained")
+      expect(observation.directoryProbeQuiescence).toBe(confirmed ? "confirmed" : "unconfirmed")
+      expect(observation.directoryProbeControllerCleanup).toBe(confirmed ? "removed" : "retained")
       if (mode !== "throw")
         expect(observation).toMatchObject({
           directoryProbeStatus: "IDENTITY_UNCONFIRMED",
-          directoryProbeIdentityReason: "file-id-mismatch",
+          directoryProbeIdentityReason: mode === "reparse" ? "reparse" : "file-id-mismatch",
           directoryProbeIdentityScope: "entry",
-          directoryProbeKind: "file",
+          directoryProbeKind: mode === "reparse" ? "directory" : "file",
           directoryProbeOrdinal: 2,
           directoryProbeDepth: 2,
         })
-      if (mode === "confirmed") await expect(lstat(controller)).rejects.toMatchObject({ code: "ENOENT" })
+      if (mode === "reparse")
+        expect(observation).toMatchObject({
+          directoryProbeReparseTraversalStatus: "access-denied",
+          directoryProbeReparseDeleteStatus: "success",
+        })
+      if (confirmed) await expect(lstat(controller)).rejects.toMatchObject({ code: "ENOENT" })
       else expect(await readFile(join(controller, "inert-module-cache"), "utf8")).toBe("INERT CONTROLLER")
       expect(await readFile(join(root, "private-state"), "utf8")).toBe("INERT BROWSER STATE")
       expect(JSON.stringify(observation)).not.toContain("PRIVATE")

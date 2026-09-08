@@ -205,6 +205,8 @@ export type BrowserObservation = {
     | "namespace-open"
     | "namespace-read"
   directoryProbeIdentityScope?: "parent" | "root" | "entry"
+  directoryProbeReparseTraversalStatus?: BrowserObservation["directoryProbeNativeStatus"]
+  directoryProbeReparseDeleteStatus?: BrowserObservation["directoryProbeNativeStatus"]
   directoryProbeOrdinal?: number
   directoryProbeDepth?: number
   directoryProbeEntries?: number
@@ -336,6 +338,21 @@ const directoryEnums = new Map<string, readonly string[]>([
     ],
   ],
   ["directoryProbeIdentityScope", ["parent", "root", "entry"]],
+  ...["directoryProbeReparseTraversalStatus", "directoryProbeReparseDeleteStatus"].map(
+    (key): [string, readonly string[]] => [
+      key,
+      [
+        "success",
+        "is-directory",
+        "access-denied",
+        "cannot-delete",
+        "sharing-violation",
+        "delete-pending",
+        "vanished",
+        "other",
+      ],
+    ],
+  ),
   ["directoryFailurePhase", ["parent-canonical", "parent-identity", "root-identity", "remove", "absence-check"]],
   ["directorySyscall", ["rm", "lstat", "realpath", "readdir", "other", "absent"]],
   ["directoryErrorPath", ["root", "parent", "descendant", "other", "absent"]],

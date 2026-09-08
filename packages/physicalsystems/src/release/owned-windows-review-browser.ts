@@ -58,6 +58,8 @@ export async function observeWindowsReviewDirectoryDenial(
       directoryProbeTransportOutcome: result.transportOutcome,
       directoryProbeIdentityReason: result.observation.identityReason,
       directoryProbeIdentityScope: result.observation.identityScope,
+      directoryProbeReparseTraversalStatus: result.observation.reparseTraversalStatus,
+      directoryProbeReparseDeleteStatus: result.observation.reparseDeleteStatus,
       directoryProbeStatus: result.observation.status,
       directoryProbePhase: result.observation.phase,
       directoryProbeKind: result.observation.kind,

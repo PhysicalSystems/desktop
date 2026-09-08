@@ -42,6 +42,14 @@ test("directory access diagnostics preserve fixed fields and reject paths, arbit
     directoryProbeRootReadonlyAttribute: false,
   } as const
   expect(readBrowserObservation({ browserObservation: identity })).toEqual(identity)
+  const reparse = {
+    ...identity,
+    directoryProbeIdentityReason: "reparse",
+    directoryProbeKind: "directory",
+    directoryProbeReparseTraversalStatus: "access-denied",
+    directoryProbeReparseDeleteStatus: "success",
+  } as const
+  expect(readBrowserObservation({ browserObservation: reparse })).toEqual(reparse)
   for (const change of [
     { directoryProbePath: "PRIVATE PATH" },
     { directoryProbeNativeStatus: "PRIVATE ERROR" },
@@ -49,6 +57,8 @@ test("directory access diagnostics preserve fixed fields and reject paths, arbit
     { directoryProbeTransportOutcome: "PRIVATE ERROR" },
     { directoryProbeIdentityReason: "PRIVATE ERROR" },
     { directoryProbeIdentityScope: "PRIVATE PATH" },
+    { directoryProbeReparseTraversalStatus: "PRIVATE ERROR" },
+    { directoryProbeReparseDeleteStatus: "PRIVATE ERROR" },
     { directoryProbeStatus: "PASS" },
     { directoryProbeDepth: 9 },
     { directoryProbeOrdinal: 129 },

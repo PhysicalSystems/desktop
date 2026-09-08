@@ -51,6 +51,8 @@ export type WindowsDirectoryObservation = Readonly<{
   readonlyFiles: number
   identityReason?: (typeof identityReasons)[number]
   identityScope?: (typeof identityScopes)[number]
+  reparseTraversalStatus?: (typeof nativeStatuses)[number]
+  reparseDeleteStatus?: (typeof nativeStatuses)[number]
 }>
 const unavailable = (): WindowsDirectoryObservation =>
   Object.freeze({
@@ -79,7 +81,11 @@ function decodedObservation(value: unknown): WindowsDirectoryObservation | undef
     const shape = unavailable()
     if (
       Object.keys(shape).some((key) => !Object.hasOwn(row, key)) ||
-      Object.keys(row).some((key) => !Object.hasOwn(shape, key) && key !== "identityReason" && key !== "identityScope")
+      Object.keys(row).some(
+        (key) =>
+          !Object.hasOwn(shape, key) &&
+          !["identityReason", "identityScope", "reparseTraversalStatus", "reparseDeleteStatus"].includes(key),
+      )
     )
       return
     for (const [key, allowed] of Object.entries({
@@ -104,7 +110,21 @@ function decodedObservation(value: unknown): WindowsDirectoryObservation | undef
       (row.readonlyDirectories as number) + (row.readonlyFiles as number) > (row.entriesProbed as number)
     )
       return
-    const { identityReason, identityScope, ...observation } = row
+    const { identityReason, identityScope, reparseTraversalStatus, reparseDeleteStatus, ...observation } = row
+    const reparse = reparseTraversalStatus != null || reparseDeleteStatus != null
+    if (
+      reparse &&
+      (row.status !== "IDENTITY_UNCONFIRMED" ||
+        identityReason !== "reparse" ||
+        identityScope !== "entry" ||
+        row.kind !== "directory" ||
+        row.phase !== "metadata" ||
+        typeof reparseTraversalStatus !== "string" ||
+        !(nativeStatuses as readonly string[]).includes(reparseTraversalStatus) ||
+        typeof reparseDeleteStatus !== "string" ||
+        !(nativeStatuses as readonly string[]).includes(reparseDeleteStatus))
+    )
+      return
     if (row.status === "IDENTITY_UNCONFIRMED") {
       if (
         typeof identityReason !== "string" ||
@@ -118,7 +138,12 @@ function decodedObservation(value: unknown): WindowsDirectoryObservation | undef
         row.readonlyFiles !== 0
       )
         return
-      return Object.freeze({ ...observation, identityReason, identityScope }) as WindowsDirectoryObservation
+      return Object.freeze({
+        ...observation,
+        identityReason,
+        identityScope,
+        ...(reparse ? { reparseTraversalStatus, reparseDeleteStatus } : {}),
+      }) as WindowsDirectoryObservation
     }
     if (identityReason != null || identityScope != null) return
     return Object.freeze(observation) as WindowsDirectoryObservation
@@ -193,6 +218,7 @@ public static class DirectoryDenialProbe {
   public sealed class Result {
     public string status="NOT_LOCALIZED", phase="none", kind="root", nativeStatus="success";
     public string identityReason=null,identityScope=null;
+    public string reparseTraversalStatus=null,reparseDeleteStatus=null;
     public int ordinal=0, depth=0, entriesProbed=0, readonlyDirectories=0, readonlyFiles=0;
     public bool rootReadonlyAttribute=false, readonlyAttribute=false;
   }
@@ -206,9 +232,9 @@ public static class DirectoryDenialProbe {
     public abstract long Elapsed { get; }
   }
   sealed class IdentityFailure {
-    readonly string reason,scope,phase,kind;readonly int ordinal,depth,entries;
-    public IdentityFailure(string why,string where,Result value){reason=why;scope=where;phase=value.phase;kind=value.kind;ordinal=value.ordinal;depth=value.depth;entries=value.entriesProbed;}
-    public Result Result(){return new Result{status="IDENTITY_UNCONFIRMED",phase=phase,kind=kind,nativeStatus="other",ordinal=ordinal,depth=depth,entriesProbed=entries,identityReason=reason,identityScope=scope};}
+    readonly string reason,scope,phase,kind,traversal,deletion;readonly int ordinal,depth,entries;
+    public IdentityFailure(string why,string where,Result value,string traverse=null,string delete=null){reason=why;scope=where;phase=value.phase;kind=value.kind;ordinal=value.ordinal;depth=value.depth;entries=value.entriesProbed;traversal=traverse;deletion=delete;}
+    public Result Result(){return new Result{status="IDENTITY_UNCONFIRMED",phase=phase,kind=kind,nativeStatus="other",ordinal=ordinal,depth=depth,entriesProbed=entries,identityReason=reason,identityScope=scope,reparseTraversalStatus=traversal,reparseDeleteStatus=deletion};}
   }
   sealed class Stop : Exception { public readonly string status;public readonly IdentityFailure identity;public Stop(string value,IdentityFailure failure=null){status=value;identity=failure;} }
   sealed class Lease : IDisposable {
@@ -221,7 +247,7 @@ public static class DirectoryDenialProbe {
     public State(Ops value){io=value;}
     public void Bound(){if(io.Elapsed>=3000)throw new Stop("BOUNDED");}
     public void At(string phase,string kind,int ordinal,int depth,string where=null){result.phase=phase;result.kind=kind;result.ordinal=ordinal;result.depth=depth;result.readonlyAttribute=false;scope=where??(kind=="root"?"root":"entry");}
-    public Stop Identity(string reason,string where=null){return new Stop("IDENTITY_UNCONFIRMED",new IdentityFailure(reason,where??scope,result));}
+    public Stop Identity(string reason,string where=null,string traversal=null,string deletion=null){return new Stop("IDENTITY_UNCONFIRMED",new IdentityFailure(reason,where??scope,result,traversal,deletion));}
     public Lease Open(IntPtr parent,string name,uint access,uint options,uint attributes,bool expectedDirectory=false){
       Bound();IntPtr handle;uint code=io.Open(parent,name,access,options,attributes,out handle);
       result.nativeStatus=Status(code);
@@ -252,6 +278,35 @@ public static class DirectoryDenialProbe {
       catch{throw Identity(opened?"namespace-read":"namespace-open");}
       finally{At(phase,oldKind,oldOrdinal,oldDepth,oldScope);result.nativeStatus=status;result.readonlyAttribute=readOnly;}
     }
+    bool LinkOpen(IntPtr parent,string name,uint access,uint options,uint attributes,Info expected,out string status){
+      Bound();IntPtr handle=IntPtr.Zero;status=null;
+      try{
+        var code=io.Open(parent,name,access,options,attributes,out handle);
+        if(code==0&&(handle==IntPtr.Zero||handle==new IntPtr(-1)))return false;
+        if(code!=0&&handle!=IntPtr.Zero)return false;
+        if(code==0&&(access&0x80)!=0){
+          var actual=io.Metadata(handle);if(!LinkIdentity(actual)||actual.dev!=expected.dev||actual.ino!=expected.ino)return false;
+        }
+        status=Status(code);return true;
+      }finally{if(handle!=IntPtr.Zero&&handle!=new IntPtr(-1))new Lease(this,handle).Dispose();}
+    }
+    static bool LinkIdentity(Info value){return value!=null&&value.ino!=0&&(value.attributes&0x410)==0x410;}
+    public Stop ReparseDirectory(IntPtr parent,string name){
+      var rejected=Identity("reparse");string traversal=null,deletion=null;bool verified=false;
+      try{
+        using(var original=Open(parent,name,0x00100080,0x00200001,0)){
+          var before=io.Metadata(original.handle);if(!LinkIdentity(before))return rejected;
+          var traversalKnown=LinkOpen(parent,name,0x001200a9,0x00204021,0x80,before,out traversal);
+          var deletionKnown=LinkOpen(parent,name,0x00110000,0x00200001,0,before,out deletion);
+          using(var current=Open(parent,name,0x00100080,0x00200001,0)){
+            var after=io.Metadata(current.handle);
+            verified=traversalKnown&&deletionKnown&&LinkIdentity(after)&&before.dev==after.dev&&before.ino==after.ino;
+          }
+        }
+      }catch(Stop stop){if(stop.status=="BOUNDED")throw;}
+      catch{}
+      return verified&&!closeFailed?Identity("reparse",null,traversal,deletion):rejected;
+    }
     public void Walk(Lease directory,Info anchor,int depth,int directoryOrdinal=0){
       foreach(var entry in io.Entries(directory.handle)){
         Bound();
@@ -263,7 +318,7 @@ public static class DirectoryDenialProbe {
         }
         var ordinal=++result.entriesProbed;var isDir=(entry.attributes&0x10)!=0;var kind=isDir?"directory":"file";
         At("metadata",kind,ordinal,depth+1);
-        if((entry.attributes&0x400)!=0)throw Identity("reparse");
+        if((entry.attributes&0x400)!=0)throw isDir?ReparseDirectory(directory.handle,entry.name):Identity("reparse");
         using(var item=Open(directory.handle,entry.name,0x00100080,isDir?0x00200001u:0x00200040u,0)){
           var identity=Check(item,null,null,isDir);
           if((identity.attributes&1)!=0){if(isDir)result.readonlyDirectories++;else result.readonlyFiles++;}
@@ -331,7 +386,7 @@ public static class DirectoryDenialProbe {
         }
       }
     }catch(Stop stop){if(stop.identity!=null)s.result=stop.identity.Result();s.result.status=stop.status;}catch{s.result.status="UNREADABLE";s.result.nativeStatus="other";}
-    if(s.closeFailed){s.result.status="UNREADABLE";s.result.nativeStatus="other";s.result.identityReason=null;s.result.identityScope=null;}
+    if(s.closeFailed){s.result.status="UNREADABLE";s.result.nativeStatus="other";s.result.identityReason=null;s.result.identityScope=null;s.result.reparseTraversalStatus=null;s.result.reparseDeleteStatus=null;}
     return s.result;
   }
   public sealed class NativeOps : Ops {

@@ -103,6 +103,44 @@ test("identity diagnostics preserve only fixed failing context and clear stale a
   }
 })
 
+test("reparse access observations remain a rejected identity and cannot appear on unrelated failures", () => {
+  const link = {
+    ...observed,
+    status: "IDENTITY_UNCONFIRMED",
+    phase: "metadata",
+    kind: "directory",
+    nativeStatus: "other",
+    ordinal: 6,
+    depth: 6,
+    entriesProbed: 6,
+    rootReadonlyAttribute: false,
+    readonlyAttribute: false,
+    identityReason: "reparse",
+    identityScope: "entry",
+    reparseTraversalStatus: "access-denied",
+    reparseDeleteStatus: "success",
+  } as const
+  expect(windowsDirectoryObservation(link)).toEqual(link)
+  for (const patch of [
+    { reparseTraversalStatus: "PRIVATE" },
+    { reparseDeleteStatus: "PRIVATE" },
+    { reparseTraversalStatus: null },
+    { reparseDeleteStatus: undefined },
+    { identityReason: "file-id-mismatch" },
+    { identityScope: "root" },
+    { kind: "file" },
+    { phase: "delete-open" },
+    { status: "NOT_LOCALIZED" },
+  ]) {
+    const decoded = windowsDirectoryObservation({ ...link, ...patch })
+    expect(decoded.status).toBe("UNREADABLE")
+    expect(JSON.stringify(decoded)).not.toContain("PRIVATE")
+  }
+  expect(windowsDirectoryObservation({ ...observed, reparseTraversalStatus: null, reparseDeleteStatus: null })).toEqual(
+    observed,
+  )
+})
+
 function fixture() {
   const calls: {
     child: ChildProcess
@@ -229,7 +267,7 @@ test("native script and schema boundaries remain distinct without retaining priv
 // NativeOps' P/Invokes run in this fixture, including on hosted Windows.
 const inertDefinition = String.raw`
 public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
-  readonly string mode;int next=10,operations=0,rootOpens=0,parentOpens=0,entryOpens=0;public int opened=0,closed=0,enumerated=0;
+  readonly string mode;int next=10,operations=0,rootOpens=0,parentOpens=0,entryOpens=0,linkOpens=0,linkTraversals=0,linkDeletes=0;public int opened=0,closed=0,enumerated=0;
   readonly System.Collections.Generic.Dictionary<System.IntPtr,int> handles=new System.Collections.Generic.Dictionary<System.IntPtr,int>();
   public InertDirectoryOps(string value){mode=value;}
   public override long Elapsed {get{return mode=="timeout"&&operations>4?3001:0;}}
@@ -245,6 +283,11 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
     bool deletion=access==0x00110000&&attributes==0&&options==(dir?0x00200001u:0x00200040u);
     bool initial=node==2&&access==0x00110000&&attributes==0&&options==0x00200040;
     if(!metadata&&!traversal&&!deletion&&!initial)throw new System.Exception();
+    if(node==3&&mode.StartsWith("link-")){
+      if(metadata&&++linkOpens>1&&mode=="link-replaced")node=333;
+      if(traversal){linkTraversals++;if(mode=="link-traversal-denied")return 0xc0000022;if(mode=="link-invalid-handle")return 0;if(mode=="link-substituted-handle")node=333;}
+      if(deletion){linkDeletes++;if(mode=="link-delete-denied")return 0xc0000022;}
+    }
     if(initial)return mode=="root-denied"||mode=="changed-after-denial"||mode=="parent-replaced"?0xc0000022u:0xc00000bau;
     if(traversal&&node==2&&mode=="traversal-denied")return 0xc0000022;
     if(deletion&&node==4){
@@ -252,7 +295,7 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
       if(mode=="sharing")return 0xc0000043;
       if(mode=="vanished")return 0xc0000034;
     }
-    if(metadata&&node==1&&++parentOpens>1&&mode=="parent-replaced")node=999;
+    if(metadata&&node==1&&++parentOpens>1&&(mode=="parent-replaced"||mode=="link-parent-replaced"))node=999;
     if(metadata&&node==2&&++rootOpens>1){
       if(mode=="namespace-open")return 0xc0000022;
       if(mode=="changed-after-denial"||mode=="ancestor-supersedes")node=999;
@@ -269,6 +312,8 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
     uint attributes=dir?0x10u:0u;
     if(mode=="readonly"&&node!=1)attributes|=1;
     if(mode=="root-reparse"&&node==2)attributes|=0x400;
+    if(mode.StartsWith("link-")&&(node==3||node==333))attributes|=0x400;
+    if(mode=="link-metadata-unavailable"&&node==3)return null;
     if(mode=="kind-mismatch"&&node==3)attributes=0;
     ulong id=(ulong)node;
     if(node==2&&mode=="identity")id=999;
@@ -277,13 +322,14 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
   }
   public override System.Collections.Generic.IEnumerable<DirectoryDenialProbe.Entry> Entries(System.IntPtr handle){
     enumerated++;int node=handles[handle];
+    if(mode.StartsWith("link-")&&node==3)throw new System.Exception();
     if(mode=="invalid-entry"&&node==2){yield return null;}
     else if(mode=="entry-bound"&&node==2){
       for(int i=0;i<129;i++)yield return new DirectoryDenialProbe.Entry{name="f"+i,attributes=0};
     }else if(mode=="depth-bound"){
       yield return new DirectoryDenialProbe.Entry{name="nest",attributes=0x10};
     }else if(node==2){
-      yield return new DirectoryDenialProbe.Entry{name="directory",attributes=mode=="entry-reparse"||mode=="ancestor-supersedes"?0x410u:0x10u};
+      yield return new DirectoryDenialProbe.Entry{name="directory",attributes=mode=="entry-reparse"||mode=="ancestor-supersedes"||mode.StartsWith("link-")?0x410u:0x10u};
       yield return new DirectoryDenialProbe.Entry{name="file",attributes=0};
     }else if(node==3){
       yield return new DirectoryDenialProbe.Entry{name="payload",attributes=0};
@@ -291,13 +337,23 @@ public sealed class InertDirectoryOps : DirectoryDenialProbe.Ops {
   }
   public override bool Close(System.IntPtr handle){
     if(!handles.Remove(handle))throw new System.Exception();
-    closed++;return mode!="close-error";
+    closed++;return mode!="close-error"&&mode!="link-close-error";
   }
   public static bool Check(string mode){
     var io=new InertDirectoryOps(mode);
     var value=DirectoryDenialProbe.Run(io,@"C:\owned","browser",5,1,5,2);
     if(io.opened!=io.closed||io.handles.Count!=0)throw new System.Exception();
     if(value.status=="IDENTITY_UNCONFIRMED"&&(value.nativeStatus!="other"||value.rootReadonlyAttribute||value.readonlyAttribute||value.readonlyDirectories!=0||value.readonlyFiles!=0))throw new System.Exception();
+    if(mode.StartsWith("link-")){
+      if(io.enumerated!=1)throw new System.Exception();
+      if(mode!="link-metadata-unavailable"&&(io.linkTraversals!=1||io.linkDeletes!=1))throw new System.Exception();
+      bool fields=value.reparseTraversalStatus!=null||value.reparseDeleteStatus!=null;
+      if(mode=="link-close-error")return value.status=="UNREADABLE"&&!fields;
+      if(mode=="link-parent-replaced")return Identity(value,"file-id-mismatch","parent","root",0,0,1)&&!fields;
+      if(!Identity(value,"reparse","entry","directory",1,1,1))return false;
+      if(mode=="link-replaced"||mode=="link-invalid-handle"||mode=="link-metadata-unavailable"||mode=="link-substituted-handle")return !fields;
+      return value.reparseTraversalStatus==(mode=="link-traversal-denied"?"access-denied":"success")&&value.reparseDeleteStatus==(mode=="link-delete-denied"?"access-denied":"success");
+    }
     switch(mode){
       case "root-denied":return value.status=="DENIAL_OBSERVED"&&value.phase=="root-file-open"&&value.ordinal==0&&io.enumerated==0;
       case "traversal-denied":return value.status=="DENIAL_OBSERVED"&&value.phase=="directory-traversal"&&io.enumerated==0;
@@ -354,6 +410,15 @@ const cases = [
   "namespace-read",
   "ancestor-supersedes",
   "invalid-entry",
+  "link-success",
+  "link-traversal-denied",
+  "link-delete-denied",
+  "link-replaced",
+  "link-close-error",
+  "link-parent-replaced",
+  "link-invalid-handle",
+  "link-metadata-unavailable",
+  "link-substituted-handle",
 ] as const
 
 test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "github-hosted")(
@@ -521,6 +586,68 @@ test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "
       expect(after.ino).toBe(rootStat.ino)
     } finally {
       if (!retained) await rm(parent, { recursive: true })
+    }
+  },
+  20000,
+)
+
+test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "github-hosted")(
+  "hosted native reparse access probe opens only the depth-six junction and preserves its foreign sentinel",
+  async () => {
+    const { symlink, unlink } = await import("node:fs/promises")
+    const parent = await realpath(await mkdtemp(join(await realpath(process.env.RUNNER_TEMP!), "directory-link-")))
+    await requireDisposablePublicRunner(process.env, parent)
+    const root = join(parent, "browser")
+    const controllerRoot = join(parent, "controller")
+    const foreign = join(parent, "foreign")
+    const directory = join(root, "one", "two", "three", "four", "five")
+    const junction = join(directory, "junction")
+    let retained = true
+    let linkIdentity: import("node:fs").BigIntStats | undefined
+    try {
+      await Promise.all([mkdir(directory, { recursive: true }), mkdir(controllerRoot), mkdir(foreign)])
+      await writeFile(join(foreign, "sentinel.txt"), "owned inert foreign sentinel")
+      await symlink(foreign, junction, "junction")
+      linkIdentity = await lstat(junction, { bigint: true })
+      expect(linkIdentity.isSymbolicLink()).toBe(true)
+      const [parentStat, rootStat] = await Promise.all([lstat(parent, { bigint: true }), lstat(root, { bigint: true })])
+      const value = await observeWindowsDirectoryDenial({
+        env: process.env,
+        controllerRoot,
+        parent: { path: parent, dev: parentStat.dev, ino: parentStat.ino },
+        root: { path: root, dev: rootStat.dev, ino: rootStat.ino },
+      })
+      retained = value.quiescence !== "confirmed"
+      expect(value.quiescence).toBe("confirmed")
+      expect(value.boundary).toBe("complete")
+      expect(value.observation).toMatchObject({
+        status: "IDENTITY_UNCONFIRMED",
+        identityReason: "reparse",
+        identityScope: "entry",
+        phase: "metadata",
+        kind: "directory",
+        ordinal: 6,
+        depth: 6,
+        entriesProbed: 6,
+        reparseTraversalStatus: "success",
+        reparseDeleteStatus: "success",
+      })
+      expect(await readFile(join(foreign, "sentinel.txt"), "utf8")).toBe("owned inert foreign sentinel")
+      expect((await lstat(junction, { bigint: true })).isSymbolicLink()).toBe(true)
+    } finally {
+      if (!retained) {
+        const current = await lstat(junction, { bigint: true })
+        if (
+          !linkIdentity ||
+          !current.isSymbolicLink() ||
+          current.dev !== linkIdentity.dev ||
+          current.ino !== linkIdentity.ino
+        )
+          throw Error("INERT_DIRECTORY_LINK_IDENTITY_UNCONFIRMED")
+        await unlink(junction)
+        expect(await readFile(join(foreign, "sentinel.txt"), "utf8")).toBe("owned inert foreign sentinel")
+        await rm(parent, { recursive: true })
+      }
     }
   },
   20000,
