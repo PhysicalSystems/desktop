@@ -17,6 +17,7 @@ import {
   windowsReviewNativeFailure,
   windowsReviewNativeResult,
   windowsReviewNativeArguments,
+  windowsReviewNativeEnvironment,
   windowsReviewNativeScript,
 } from "./windows-review-native"
 import { browserObservationError, readBrowserObservation } from "./browser-observation"
@@ -497,4 +498,40 @@ test("the real encoded diagnostic script fits CreateProcess including executable
   expect(() => windowsReviewNativeArguments(`C:\\${"x".repeat(2048)}\\powershell.exe`)).toThrow(
     "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
   )
+})
+
+test("native module discovery uses the fixed OS module directory and an exclusively owned cache", () => {
+  const env = windowsReviewNativeEnvironment(
+    {
+      SystemRoot: "C:\\Windows",
+      ProgramFiles: "C:\\Program Files",
+      PSModulePath: "PRIVATE-MODULES",
+      PSMODULEPATH: "PRIVATE-MODULES-UPPER",
+      PSModuleAnalysisCachePath: "PRIVATE-CACHE",
+      PSModuleAutoLoadingPreference: "PRIVATE-AUTOLOAD",
+      PSDisableModuleAnalysisCacheCleanup: "PRIVATE-CLEANUP",
+      USERPROFILE: "PRIVATE-PROFILE",
+      LOCALAPPDATA: "PRIVATE-PROFILE",
+      PATH: "PRIVATE-PATH",
+      NODE_OPTIONS: "PRIVATE-LOADER",
+    },
+    "C:\\runner\\owned-browser",
+  )
+  expect(env.PSModulePath).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules")
+  expect(env.PSModuleAnalysisCachePath).toBe("C:\\runner\\owned-browser\\ModuleAnalysisCache")
+  expect(env.TEMP).toBe("C:\\runner\\owned-browser")
+  expect(env.ProgramFiles).toBe("C:\\Program Files")
+  expect(env.PATH).toBe("C:\\Windows\\System32")
+  expect(JSON.stringify(env)).not.toContain("PRIVATE")
+  expect(env.PSMODULEPATH).toBeUndefined()
+  expect(windowsReviewNativeEnvironment({ SYSTEMROOT: "D:\\Windows" }, "D:\\owned").PSModulePath).toBe(
+    "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules",
+  )
+  for (const SystemRoot of [undefined, "relative", "C:\\Windows\\..\\other", 'C:\\bad"path'])
+    expect(() => windowsReviewNativeEnvironment({ SystemRoot }, "C:\\owned")).toThrow(
+      "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+    )
+  const reset = "$env:PSModulePath = [IO.Path]::Combine($PSHOME,'Modules')"
+  expect(windowsReviewNativeScript.indexOf(reset)).toBeGreaterThan(0)
+  expect(windowsReviewNativeScript.indexOf(reset)).toBeLessThan(windowsReviewNativeScript.indexOf("ConvertFrom-Json"))
 })

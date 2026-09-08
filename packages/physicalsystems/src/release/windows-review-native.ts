@@ -114,22 +114,34 @@ export function windowsReviewNativeArguments(executable: string) {
   return args
 }
 
-export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): WindowsReviewNative {
+/** The native adapter searches only OS-shipped modules and owns its analysis
+ * cache. Inherited user/module discovery hooks never enter this environment. */
+export function windowsReviewNativeEnvironment(env: NodeJS.ProcessEnv, root: string): NodeJS.ProcessEnv {
   const system = env.SystemRoot ?? env.SYSTEMROOT
-  if (
-    process.platform !== "win32" ||
-    !system ||
-    !/^[A-Za-z]:\\[^\r\n\0"]+$/.test(system) ||
-    win32.normalize(system) !== system
-  )
+  if (!system || !/^[A-Za-z]:\\[^\r\n\0"]+$/.test(system) || win32.normalize(system) !== system)
     throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
-  const executable = win32.join(system, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-  const args = windowsReviewNativeArguments(executable)
   const privateEnv = Object.fromEntries(
     ["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"].flatMap(
       (key) => (env[key] ? [[key, env[key]!]] : []),
     ),
   )
+  return {
+    ...privateEnv,
+    SystemRoot: system,
+    WINDIR: system,
+    TEMP: root,
+    TMP: root,
+    PATH: win32.join(system, "System32"),
+    PSModulePath: win32.join(system, "System32", "WindowsPowerShell", "v1.0", "Modules"),
+    PSModuleAnalysisCachePath: win32.join(root, "ModuleAnalysisCache"),
+  }
+}
+
+export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): WindowsReviewNative {
+  if (process.platform !== "win32") throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+  const environment = windowsReviewNativeEnvironment(env, root)
+  const executable = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+  const args = windowsReviewNativeArguments(executable)
   return async (request) => {
     const payload = JSON.stringify(request)
     if (payload.length > 128 * 1024) throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
@@ -139,14 +151,7 @@ export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): Windo
         args,
         {
           cwd: root,
-          env: {
-            ...privateEnv,
-            SystemRoot: system,
-            WINDIR: system,
-            TEMP: root,
-            TMP: root,
-            PATH: win32.join(system, "System32"),
-          },
+          env: environment,
           shell: false,
           windowsHide: true,
           encoding: "utf8",
@@ -183,6 +188,9 @@ Set-ReviewPhase 'bootstrap'
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 trap { [Console]::Out.WriteLine('PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_'+$script:reviewPhase); [Console]::Error.Write('PROVIDER_REVIEW_WINDOWS_UNCONFIRMED'); exit 1 }
+# Windows PowerShell can insert AllUsers paths at startup. Reassert the
+# OS-shipped module directory before first-use cmdlet discovery begins.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME,'Modules')
 Set-ReviewPhase 'input-read'
 $inputText = [Console]::In.ReadToEnd()
 Set-ReviewPhase 'input-parse'
