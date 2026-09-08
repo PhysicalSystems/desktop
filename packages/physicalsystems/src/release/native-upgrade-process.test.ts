@@ -2,7 +2,8 @@
 import { afterEach, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import type { ChildProcess } from "node:child_process"
-import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises"
+import { unlinkSync } from "node:fs"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
@@ -213,11 +214,31 @@ test.skipIf(process.platform !== "win32")(
     await writeFile(artifact, "INERT INSTALLER")
     await writeFile(target, targetBytes)
     const parent = new EventEmitter() as ChildProcess
-    Object.assign(parent, { pid: 123456789, exitCode: null, signalCode: null, kill: () => false, unref: () => parent })
+    let parentClosed = false
+    const closeParent = () => {
+      if (parentClosed) return
+      parentClosed = true
+      parent.emit("close", 1)
+    }
+    Object.assign(parent, {
+      pid: 123456789,
+      exitCode: null,
+      signalCode: null,
+      kill: () => {
+        queueMicrotask(closeParent)
+        return true
+      },
+      unref: () => parent,
+    })
     let queries = 0
     let queriesFinished = 0
     let interruptedBeforeQuery = false
-    const result = await runNativeUpgradeInstaller(
+    const slowQuery = Promise.withResolvers<void>()
+    let queryDeadline: ReturnType<typeof setTimeout> | undefined
+    const observations: string[] = []
+    let partialWritten = false
+    let helperClosed: Promise<void> | undefined
+    const running = runNativeUpgradeInstaller(
       {
         env: {
           CI: "true",
@@ -240,42 +261,73 @@ test.skipIf(process.platform !== "win32")(
         targetAsarReference: { file: target, bytes: targetBytes.length, sha256: await sha256File(target) },
         descendants: async () => {
           queries++
-          await new Promise((resolve) => setTimeout(resolve, 300))
+          if (queries === 1) {
+            // A broken watcher must fail inside the fixture's normal test
+            // budget and release its fake process, rather than hang forever.
+            queryDeadline = setTimeout(() => slowQuery.reject(new Error("INERT_WATCHER_DID_NOT_INTERRUPT")), 2000)
+            try {
+              await slowQuery.promise
+            } finally {
+              clearTimeout(queryDeadline)
+            }
+          }
           queriesFinished++
           return []
         },
       },
       {
         timeoutMs: 3000,
+        observePayload: async (...args) => {
+          // The first real ABSENT result returns to the watcher before the
+          // next call writes partial bytes. No timer or background I/O can
+          // hide the removal transition from a slow hosted Windows runner.
+          if (observations.at(-1) === "ABSENT" && !partialWritten) {
+            await writeFile(actual, targetBytes.subarray(0, 64 * 1024))
+            partialWritten = true
+          }
+          const observation = await observePartialWindowsPayload(...args)
+          observations.push(observation)
+          return observation
+        },
         spawn: (file, args) => {
           if (file === artifact) {
-            setTimeout(() => {
-              void unlink(actual)
-            }, 10)
-            setTimeout(() => {
-              void writeFile(actual, targetBytes.subarray(0, 64 * 1024))
-            }, 40)
+            // Baseline verification has finished; remove its resource before
+            // the watcher starts, while the fake installer remains alive.
+            unlinkSync(actual)
             return parent
           }
           expect(file).toBe("C:\\Windows\\System32\\taskkill.exe")
           expect(args).toEqual(["/PID", "123456789", "/T", "/F"])
           interruptedBeforeQuery = queries > queriesFinished
+          slowQuery.resolve()
           const helper = new EventEmitter() as ChildProcess
           Object.assign(helper, { kill: () => false, unref: () => helper })
-          setTimeout(() => {
-            parent.emit("close", 1)
+          helperClosed = new Promise((resolve) => helper.once("close", () => resolve()))
+          queueMicrotask(() => {
+            closeParent()
             helper.emit("close", 0)
-          }, 1)
+          })
           return helper
         },
       },
     )
-    expect(interruptedBeforeQuery).toBe(true)
-    expect(result).toMatchObject({
-      kind: "windows-partial-payload-copy",
-      installerExited: true,
-      descendantsExited: true,
-      targetInstallationComplete: false,
-    })
+    try {
+      const result = await running
+      expect(observations).toEqual(["ABSENT", "PARTIAL"])
+      expect(interruptedBeforeQuery).toBe(true)
+      expect(queriesFinished).toBe(2)
+      expect(result).toMatchObject({
+        kind: "windows-partial-payload-copy",
+        installerExited: true,
+        descendantsExited: true,
+        targetInstallationComplete: false,
+      })
+    } finally {
+      clearTimeout(queryDeadline)
+      slowQuery.resolve()
+      closeParent()
+      await running.catch(() => {})
+      await helperClosed
+    }
   },
 )

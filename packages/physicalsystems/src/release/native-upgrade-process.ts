@@ -123,6 +123,7 @@ export async function runNativeUpgradeInstaller(
   },
   options: {
     spawn?: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+    observePayload?: typeof observePartialWindowsPayload
     platform?: NodeJS.Platform
     timeoutMs?: number
   } = {},
@@ -224,7 +225,7 @@ export async function runNativeUpgradeInstaller(
       if (Date.now() - lastInspection >= 150) inspect()
       if (windows && interrupted && !stoppedPartial) {
         const reference = input.targetAsarReference!
-        const observation = await observePartialWindowsPayload(
+        const observation = await (options.observePayload ?? observePartialWindowsPayload)(
           join(input.installation, "resources", "app.asar"),
           reference.file,
           reference.bytes,

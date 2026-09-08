@@ -46,6 +46,12 @@ the listener cmdlet to distinguish successful empty queries from failed or parti
 queries. Production uses an exact-port CIM query with terminating errors; a failed
 query can never become an empty listener result.
 
+The same early step checks the installer partial-copy watcher using inert files
+and fake processes. Its fixture sequences a real absent-file observation before
+writing partial target bytes and holds a descendant query until interruption is
+requested. No installer runs. This catches Windows-specific lifecycle regressions
+before the full candidate spends time installing build dependencies.
+
 Windows startup stderr is drained privately and classified within 64 KiB. Only
 fixed message categories and a truncation flag enter the report. A message saying
 DevTools is listening cannot establish ownership or authorize a CDP request.
