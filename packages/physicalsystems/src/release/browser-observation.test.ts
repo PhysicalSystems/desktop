@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
-import { browserObservationError, browserSyscallFailure, readBrowserObservation } from "./browser-observation"
+import {
+  browserObservationError,
+  browserSyscallFailure,
+  readBrowserObservation,
+  createBrowserStderrObservation,
+} from "./browser-observation"
 
 test("browser failure keeps only fixed phase/count metadata through cleanup wrappers", () => {
   const startup = browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", Error("PRIVATE-CONTENT"), {
@@ -44,6 +49,9 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
     { browserPhase: "identity-argv", argvFields: -1 },
     { browserPhase: "identity-argv", argvFields: 65537 },
     { browserPhase: "identity-argv", profileTokenMatched: "PRIVATE" },
+    { browserPhase: "identity-argv", processState: "PRIVATE" },
+    { browserPhase: "identity-argv", exitCode: 256 },
+    { browserPhase: "identity-argv", stderrCategory: "PRIVATE" },
     {},
     [],
     null,
@@ -61,4 +69,39 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
       browserObservation: { browserPhase: "identity-argv", argvFields: 1, profileTokenMatched: true },
     }),
   ).toEqual({ browserPhase: "identity-argv", argvFields: 1, profileTokenMatched: true })
+})
+
+test("bounded private stderr observes fixed categories across chunks and never retains text", () => {
+  const observer = createBrowserStderrObservation()
+  observer.observe(Buffer.from("PRIVATE URL token Failed to connect to the bus"))
+  expect(observer.snapshot()).toEqual({ stderrCategory: "dbus", stderrTruncated: false })
+  observer.observe(Buffer.from("Missing X server or $DISPLAY"))
+  expect(observer.snapshot().stderrCategory).toBe("display")
+  observer.observe(Buffer.from("Failed to move to new name"))
+  observer.observe(Buffer.from("space: Operation not permitted PRIVATE"))
+  expect(observer.snapshot().stderrCategory).toBe("sandbox")
+  expect(JSON.stringify(observer.snapshot())).not.toContain("PRIVATE")
+  const bounded = createBrowserStderrObservation()
+  bounded.observe(Buffer.alloc(65537, 120))
+  bounded.observe(Buffer.from("No usable sandbox"))
+  expect(bounded.snapshot()).toEqual({ stderrCategory: "other", stderrTruncated: true })
+  expect(
+    readBrowserObservation({
+      browserObservation: {
+        browserPhase: "identity-argv",
+        processState: "Z",
+        processExited: true,
+        exitCode: 1,
+        stderrCategory: "sandbox",
+        emptyArgvReads: 1,
+      },
+    }),
+  ).toEqual({
+    browserPhase: "identity-argv",
+    processState: "Z",
+    processExited: true,
+    exitCode: 1,
+    stderrCategory: "sandbox",
+    emptyArgvReads: 1,
+  })
 })

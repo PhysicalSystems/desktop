@@ -9,6 +9,7 @@ import {
   reviewBrowserCrashpad,
   reviewBrowserProcess,
   reviewBrowserProfileArgument,
+  createReviewBrowserProfileProof,
   reviewBrowserSignalIdentity,
   reviewBrowserTargets,
   reviewBrowserUid,
@@ -95,6 +96,41 @@ test("ownership rejects changed PID/birth/session/group and every changed native
   expect(reviewBrowserProcess(`400 (Chrome (renderer)) S ${fields.join(" ")}`)).toEqual(identity)
 })
 
+test("empty argv retries require one immutable live identity; exit, reuse and nonempty mismatch never bind", () => {
+  const profile = "/owned/profile"
+  const command = `/opt/google/chrome/chrome --user-data-dir=${profile}\0`
+  const proof = createReviewBrowserProfileProof(profile)
+  const first = { ...identity }
+  expect(proof(first, { ...first }, "\0\0")).toBe(false)
+  first.birth = "999999"
+  expect(proof({ ...identity, state: "R" }, { ...identity }, command)).toBe(true)
+  for (const change of [
+    { birth: "123457" },
+    { pid: 401 },
+    { group: 401 },
+    { session: 401 },
+    { state: "Z" },
+    { state: "X" },
+    { state: "x" },
+  ]) {
+    const pending = createReviewBrowserProfileProof(profile)
+    expect(pending(identity, identity, "")).toBe(false)
+    expect(() => pending({ ...identity, ...change }, { ...identity, ...change }, command)).toThrow(
+      "BROWSER_UNCONFIRMED",
+    )
+    expect(() => createReviewBrowserProfileProof(profile)(identity, { ...identity, ...change }, "")).toThrow(
+      "BROWSER_UNCONFIRMED",
+    )
+  }
+  expect(() =>
+    createReviewBrowserProfileProof(profile)(
+      identity,
+      identity,
+      "/opt/google/chrome/chrome --user-data-dir=/foreign\0",
+    ),
+  ).toThrow("BROWSER_UNCONFIRMED")
+})
+
 test("read-only discovery tolerates refused, 503 and truncated responses before a valid target", async () => {
   const responses = [
     () => {
@@ -170,7 +206,14 @@ test("discovery rejects unowned endpoints and malformed or excessive target meta
 
 test("cleanup releases only its controller handle while preserving the original failure", async () => {
   let unrefs = 0
+  let pipeClosed = 0
   const child = {
+    stderr: {
+      destroy() {
+        pipeClosed++
+        return this
+      },
+    } as any,
     unref() {
       unrefs++
     },
@@ -182,6 +225,7 @@ test("cleanup releases only its controller handle while preserving the original 
     }),
   ).rejects.toBe(original)
   expect(unrefs).toBe(1)
+  expect(pipeClosed).toBe(1)
   expect(await settleReviewBrowserCleanup(child, async () => "stopped")).toBe("stopped")
   expect(unrefs).toBe(2)
 })

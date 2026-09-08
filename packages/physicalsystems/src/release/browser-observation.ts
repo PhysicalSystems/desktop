@@ -42,6 +42,14 @@ export type BrowserObservation = {
   requestObserved?: boolean
   profileTokenMatched?: boolean
   argvFields?: number
+  argvReads?: number
+  emptyArgvReads?: number
+  processState?: "R" | "S" | "D" | "T" | "t" | "I" | "P" | "Z" | "X" | "x"
+  processExited?: boolean
+  exitCode?: number
+  termination?: "SIGABRT" | "SIGSEGV" | "SIGTRAP" | "SIGTERM" | "SIGKILL" | "OTHER"
+  stderrCategory?: "sandbox" | "display" | "dbus" | "other"
+  stderrTruncated?: boolean
   ownedProcesses?: number
   targetCount?: number
   syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "OTHER"
@@ -61,8 +69,10 @@ const bools = [
   "openerAcknowledged",
   "requestObserved",
   "profileTokenMatched",
+  "processExited",
+  "stderrTruncated",
 ]
-const counts = ["ownedProcesses", "targetCount", "argvFields"]
+const counts = ["ownedProcesses", "targetCount", "argvFields", "argvReads", "emptyArgvReads"]
 function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}
@@ -73,7 +83,13 @@ function validate(value: unknown): BrowserObservation | undefined {
         ? reviews
         : key === "syscallFailure"
           ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
-          : undefined
+          : key === "processState"
+            ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
+            : key === "termination"
+              ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
+              : key === "stderrCategory"
+                ? ["sandbox", "display", "dbus", "other"]
+                : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)
@@ -81,7 +97,9 @@ function validate(value: unknown): BrowserObservation | undefined {
           ? typeof item !== "boolean"
           : counts.includes(key)
             ? !Number.isInteger(item) || Number(item) < 0 || Number(item) > 65536
-            : true
+            : key === "exitCode"
+              ? !Number.isInteger(item) || Number(item) < 0 || Number(item) > 255
+              : true
     )
       return
     result[key] = item
@@ -111,4 +129,38 @@ export function browserSyscallFailure(error: unknown): BrowserObservation["sysca
   return ["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(code ?? "")
     ? (code as "ENOENT" | "ESRCH" | "EACCES" | "EPERM")
     : "OTHER"
+}
+
+/** Drain stderr privately; keep only one fixed category and bounded overlap.
+ * A DBus warning is an observation, not a claim that it caused startup failure. */
+export function createBrowserStderrObservation() {
+  let bytes = 0,
+    tail = "",
+    truncated = false
+  let category: NonNullable<BrowserObservation["stderrCategory"]> = "other"
+  const priority = { other: 0, dbus: 1, display: 2, sandbox: 3 }
+  return {
+    observe(chunk: Uint8Array) {
+      const left = 65536 - bytes
+      if (chunk.length > left) truncated = true
+      const part = chunk.subarray(0, Math.max(0, left))
+      bytes += part.length
+      const text = tail + Buffer.from(part).toString("utf8")
+      const found =
+        /No usable sandbox|Failed to move to new namespace|SUID sandbox helper binary|Running as root without|Failed to initialize.{0,80}sandbox/i.test(
+          text,
+        )
+          ? "sandbox"
+          : /Missing X server|The platform failed to initialize|Unable to open X display|Could not connect to.{0,80}display/i.test(
+                text,
+              )
+            ? "display"
+            : /Failed to connect to the bus|Failed to connect to.{0,80}D-Bus|Could not parse server address/i.test(text)
+              ? "dbus"
+              : "other"
+      if (priority[found] > priority[category]) category = found
+      tail = bytes < 65536 ? text.slice(-256) : ""
+    },
+    snapshot: () => ({ stderrCategory: category, stderrTruncated: truncated }),
+  }
 }

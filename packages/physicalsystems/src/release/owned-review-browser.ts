@@ -3,7 +3,12 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
-import { browserObservationError, browserSyscallFailure, type BrowserObservation } from "./browser-observation"
+import {
+  browserObservationError,
+  browserSyscallFailure,
+  createBrowserStderrObservation,
+  type BrowserObservation,
+} from "./browser-observation"
 import { linuxProcessArguments } from "./linux-qualification"
 
 const failure = () => new Error("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
@@ -17,15 +22,16 @@ export type OwnedReviewBrowser = {
 }
 
 /** A retained browser must not retain the qualification controller itself.
- * This releases only our ignored-stdio child handle, without signaling a
+ * This closes our bounded stderr observer and releases the child handle, without signaling a
  * process, deleting a profile, or converting failed cleanup into success. */
 export async function settleReviewBrowserCleanup<T>(
-  child: Pick<ChildProcess, "unref">,
+  child: Pick<ChildProcess, "unref"> & Partial<Pick<ChildProcess, "stderr">>,
   cleanup: () => Promise<T>,
 ): Promise<T> {
   try {
     return await cleanup()
   } finally {
+    child.stderr?.destroy()
     child.unref()
   }
 }
@@ -74,6 +80,38 @@ export function reviewBrowserProfileArgument(commandLine: string, profile: strin
   if (fields.length === 1 && /\s/.test(profile)) return false
   const matching = linuxProcessArguments(commandLine).filter((value) => /^--user-data-dir(?:=|$)/.test(value))
   return matching.length === 1 && matching[0] === `--user-data-dir=${profile}`
+}
+
+/** Empty cmdline alone grants no ownership. A later exact token must belong to
+ * the same live PID/birth/session/group observed before and after every read. */
+export function createReviewBrowserProfileProof(profile: string) {
+  let anchor: ReturnType<typeof reviewBrowserProcess> | undefined
+  const live = (value: ReturnType<typeof reviewBrowserProcess>) => {
+    if (!value.birth || !["R", "S", "D", "T", "t", "I", "P"].includes(value.state ?? "")) throw failure()
+    if (value.group !== value.pid || value.session !== value.pid) throw failure()
+  }
+  const same = (left: ReturnType<typeof reviewBrowserProcess>, right: ReturnType<typeof reviewBrowserProcess>) => {
+    if (
+      ["pid", "birth", "group", "session"].some(
+        (key) => left[key as keyof typeof left] !== right[key as keyof typeof right],
+      )
+    )
+      throw failure()
+  }
+  return (
+    before: ReturnType<typeof reviewBrowserProcess>,
+    after: ReturnType<typeof reviewBrowserProcess>,
+    command: string,
+  ) => {
+    live(before)
+    live(after)
+    same(before, after)
+    if (anchor) same(anchor, before)
+    else anchor = { ...before }
+    if (!command.split("\0").some(Boolean)) return false
+    if (!reviewBrowserProfileArgument(command, profile)) throw failure()
+    return true
+  }
 }
 
 export function reviewBrowserUid(status: string, expected: number) {
@@ -296,10 +334,24 @@ async function startLinuxReviewBrowser(
       env,
       detached: true,
       shell: false,
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     },
   )
   observation.pidObserved = Boolean(child.pid)
+  const stderr = createBrowserStderrObservation()
+  child.stderr!.on("data", (chunk) => {
+    stderr.observe(chunk)
+    Object.assign(observation, stderr.snapshot())
+  })
+  child.on("exit", (code, signal) => {
+    observation.processExited = true
+    if (code !== null && Number.isInteger(code) && code >= 0 && code <= 255) observation.exitCode = code
+    if (signal)
+      observation.termination = ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL"].includes(signal)
+        ? (signal as "SIGABRT" | "SIGSEGV" | "SIGTRAP" | "SIGTERM" | "SIGKILL")
+        : "OTHER"
+  })
+  const profileProof = createReviewBrowserProfileProof(profile)
   let childError = false
   child.on("error", () => {
     childError = true
@@ -413,6 +465,8 @@ async function startLinuxReviewBrowser(
       if (!birth) {
         observation.browserPhase = "identity-stat"
         const stat = reviewBrowserProcess(await readFile(`/proc/${child.pid}/stat`, "utf8"))
+        if (["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"].includes(stat.state ?? ""))
+          observation.processState = stat.state as BrowserObservation["processState"]
         observation.browserPhase = "identity-session"
         if (stat.group !== child.pid || stat.session !== child.pid) throw failure()
         observation.browserPhase = "identity-executable"
@@ -421,9 +475,17 @@ async function startLinuxReviewBrowser(
         reviewBrowserUid(await readFile(`/proc/${child.pid}/status`, "utf8"), uid)
         observation.browserPhase = "identity-argv"
         const command = await readFile(`/proc/${child.pid}/cmdline`, "utf8")
+        observation.argvReads = (observation.argvReads ?? 0) + 1
         observation.argvFields = command.split("\0").filter((value) => value.length > 0).length
         observation.profileTokenMatched = reviewBrowserProfileArgument(command, profile)
-        if (!observation.profileTokenMatched) throw failure()
+        if (observation.argvFields === 0) observation.emptyArgvReads = (observation.emptyArgvReads ?? 0) + 1
+        const after = reviewBrowserProcess(await readFile(`/proc/${child.pid}/stat`, "utf8"))
+        if (["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"].includes(after.state ?? ""))
+          observation.processState = after.state as BrowserObservation["processState"]
+        if (!profileProof(stat, after, command)) {
+          await pause(50)
+          continue
+        }
         birth = stat.birth
         observation.birthVerified = true
       }
