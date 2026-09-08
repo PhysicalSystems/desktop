@@ -118,6 +118,10 @@ jobs:
       - name: Start and stop the actual owned Linux browser factory
         if: runner.os == 'Linux'
         run: timeout --signal=TERM --kill-after=10s 90s xvfb-run -a bun script/desktop-browser-diagnostic.ts
+      - name: Verify Windows process-exit reconciliation with inert callbacks
+        if: runner.os == 'Windows'
+        working-directory: packages/physicalsystems
+        run: bun test ./src/release/windows-review-native.test.ts
       - name: Start and stop the actual owned Windows browser factory
         if: runner.os == 'Windows'
         timeout-minutes: 4

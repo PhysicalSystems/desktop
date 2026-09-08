@@ -24,6 +24,18 @@ previous policy only after confirmed process cleanup. This does not test HTTPS
 provider routing, a real browser handoff, or sign-in. It never changes the default
 browser association.
 
+Windows reserves one loopback port and releases its reservation immediately before
+launching Edge with that exact port. The adapter verifies the browser's process
+identity, profile, debugging arguments and native listener ownership before any
+DevTools request. It neither scans ports nor relies on a `DevToolsActivePort` file.
+An occupied port, stripped debugging arguments or uncertain reservation cleanup
+remains a failure.
+
+Before the Windows browser run, a focused PowerShell regression executes the
+production process-exit reconciliation helper with inert callbacks. It checks
+confirmed absence, live or unreadable PIDs, malformed proofs and identity
+mismatches without querying or stopping real processes.
+
 The five-minute job includes a 90-second Linux command deadline or a four-minute
 Windows step deadline. Windows allows 30 seconds for the read-only preflight,
 which includes native signature verification; policy writes, observations,
