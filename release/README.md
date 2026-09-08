@@ -20,6 +20,12 @@ The dispatch is serialized to avoid concurrent version allocation. Because this 
 
 All jobs check out a fixed SHA. Download caches are keyed by OS, architecture, Node/Bun pins and the lockfile. They contain package, Electron and packaging-tool downloads; they do not contain installed-app profiles, native outputs shared between platforms, credentials or test evidence. Dependencies install with `--frozen-lockfile --ignore-scripts`; the allowlisted preparation step downloads the locked Electron binary explicitly. The workflow does not invoke upstream desktop prebuild or publishing hooks.
 
+Dependency and Electron download caches are saved immediately after successful
+setup, so a later packaged-app test failure does not discard that completed work.
+Packaging-tool downloads use a separate cache saved after a successful job, since
+those downloads may occur during the later build. Installed dependencies and
+application outputs are rebuilt; neither cache substitutes for qualification.
+
 ## Files and commands
 
 | File                                               | Responsibility                                                                                      |
