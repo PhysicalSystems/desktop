@@ -10,6 +10,7 @@ import {
   reviewBrowserProcess,
   reviewBrowserProfileArgument,
   createReviewBrowserProfileProof,
+  reviewBrowserOwnershipScope,
   reviewBrowserSignalIdentity,
   reviewBrowserTargets,
   reviewBrowserUid,
@@ -94,6 +95,29 @@ test("ownership rejects changed PID/birth/session/group and every changed native
   expect(() => reviewBrowserUid(status, 0)).toThrow()
   const fields = ["399", "400", "400", ...Array(15).fill("0"), "123456", "0"]
   expect(reviewBrowserProcess(`400 (Chrome (renderer)) S ${fields.join(" ")}`)).toEqual(identity)
+})
+
+test("unrelated mixed-UID processes are excluded before strict validation of genuinely owned processes", () => {
+  const database = reviewBrowserCrashDatabase("/owned/browser")
+  const mixed = "Uid:\t1001\t0\t0\t0\n"
+  const decide = (sameSession: boolean, command: string, value = mixed) => {
+    const scope = reviewBrowserOwnershipScope({ sameSession, command, database })
+    if (scope !== "unrelated") reviewBrowserUid(value, 1001)
+    return scope
+  }
+  // Prior ordering rejected this same-real-UID process despite its unrelated argv.
+  expect(() => reviewBrowserUid(mixed, 1001)).toThrow("BROWSER_UNCONFIRMED")
+  for (const command of [
+    "/usr/bin/unrelated\0",
+    "--database=/other\0",
+    `--note=--database=${database}\0`,
+    `--database=${database}-other\0`,
+  ])
+    expect(decide(false, command)).toBe("unrelated")
+  expect(() => decide(true, "")).toThrow("BROWSER_UNCONFIRMED")
+  expect(() => decide(false, `--database=${database}\0`)).toThrow("BROWSER_UNCONFIRMED")
+  expect(decide(true, "", status)).toBe("session")
+  expect(decide(false, `--database=${database}\0`, status)).toBe("database")
 })
 
 test("empty argv retries require one immutable live identity; exit, reuse and nonempty mismatch never bind", () => {

@@ -148,6 +148,15 @@ export function reviewBrowserCrashpad(input: { command: string; executable: stri
   )
 }
 
+/** Select ownership before checking all four UIDs. An unrelated same-real-UID
+ * setuid process is not one of our browser processes merely because it exists. */
+export function reviewBrowserOwnershipScope(input: { sameSession: boolean; command: string; database: string }) {
+  if (input.sameSession) return "session" as const
+  return input.command.split("\0").includes(`--database=${input.database}`)
+    ? ("database" as const)
+    : ("unrelated" as const)
+}
+
 /** Read-only discovery can briefly be empty/refused while Chrome initializes.
  * Bound both bytes and total time; callers retry only this probe, never a launch
  * or openExternal mutation. No response contents/errors are logged. */
@@ -367,22 +376,37 @@ async function startLinuxReviewBrowser(
     for (const entry of entries) {
       if (!/^[1-9]\d*$/.test(entry)) continue
       try {
+        delete observation.sameSession
+        delete observation.databaseMatched
+        observation.inspectPhase = "proc-stat"
         const value = reviewBrowserProcess(await readFile(`/proc/${entry}/stat`, "utf8"))
         if (value.state === "Z") continue
+        observation.inspectPhase = "proc-status"
         const status = await readFile(`/proc/${entry}/status`, "utf8")
+        observation.sameSession = value.session === child.pid
         if (value.session !== child.pid && Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]) !== uid) continue
-        reviewBrowserUid(status, uid)
+        let command = ""
         if (value.session !== child.pid) {
           // Crashpad deliberately creates another session. Its executable and
           // exact owned database flag bind it independently to this browser.
           // An unreadable same-user process cannot silently count as absent.
-          const command = await readFile(`/proc/${entry}/cmdline`, "utf8")
-          if (!command.split("\0").includes(`--database=${database}`)) continue
+          observation.inspectPhase = "cmdline"
+          command = await readFile(`/proc/${entry}/cmdline`, "utf8")
+          observation.databaseMatched =
+            reviewBrowserOwnershipScope({ sameSession: false, command, database }) === "database"
+          if (!observation.databaseMatched) continue
+        }
+        observation.inspectPhase = "uid"
+        reviewBrowserUid(status, uid)
+        if (value.session !== child.pid) {
+          observation.inspectPhase = "crashpad-executable"
           if (!reviewBrowserCrashpad({ command, executable: await readlink(`/proc/${entry}/exe`), database }))
             throw failure()
         }
+        observation.inspectPhase = "birth"
         if (!birth || BigInt(value.birth!) < BigInt(birth)) throw failure()
         members.push(value)
+        observation.ownedProcesses = members.length
       } catch (error) {
         if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) continue
         observation.syscallFailure ??= browserSyscallFailure(error)

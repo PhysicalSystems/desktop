@@ -52,6 +52,8 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
     { browserPhase: "identity-argv", processState: "PRIVATE" },
     { browserPhase: "identity-argv", exitCode: 256 },
     { browserPhase: "identity-argv", stderrCategory: "PRIVATE" },
+    { browserPhase: "cleanup-observe", inspectPhase: "PRIVATE" },
+    { browserPhase: "cleanup-observe", sameSession: "PRIVATE" },
     {},
     [],
     null,
@@ -104,4 +106,15 @@ test("bounded private stderr observes fixed categories across chunks and never r
     stderrCategory: "sandbox",
     emptyArgvReads: 1,
   })
+})
+
+test("cleanup branch observation carries only exact scope booleans and a fixed inspection phase", () => {
+  const value = {
+    browserPhase: "cleanup-observe",
+    inspectPhase: "uid",
+    sameSession: false,
+    databaseMatched: true,
+    ownedProcesses: 2,
+  } as const
+  expect(readBrowserObservation({ browserObservation: value })).toEqual(value)
 })

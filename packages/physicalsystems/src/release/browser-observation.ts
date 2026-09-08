@@ -50,6 +50,9 @@ export type BrowserObservation = {
   termination?: "SIGABRT" | "SIGSEGV" | "SIGTRAP" | "SIGTERM" | "SIGKILL" | "OTHER"
   stderrCategory?: "sandbox" | "display" | "dbus" | "other"
   stderrTruncated?: boolean
+  inspectPhase?: "proc-stat" | "proc-status" | "cmdline" | "uid" | "crashpad-executable" | "birth"
+  sameSession?: boolean
+  databaseMatched?: boolean
   ownedProcesses?: number
   targetCount?: number
   syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "OTHER"
@@ -71,6 +74,8 @@ const bools = [
   "profileTokenMatched",
   "processExited",
   "stderrTruncated",
+  "sameSession",
+  "databaseMatched",
 ]
 const counts = ["ownedProcesses", "targetCount", "argvFields", "argvReads", "emptyArgvReads"]
 function validate(value: unknown): BrowserObservation | undefined {
@@ -89,7 +94,9 @@ function validate(value: unknown): BrowserObservation | undefined {
               ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
               : key === "stderrCategory"
                 ? ["sandbox", "display", "dbus", "other"]
-                : undefined
+                : key === "inspectPhase"
+                  ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
+                  : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)
