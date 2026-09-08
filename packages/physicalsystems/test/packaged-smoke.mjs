@@ -29,6 +29,8 @@ import { observePrivateLog, startupCheckpointDetail } from "../src/release/start
 import { isDiagnosticsPublicKey, sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { windowsAppShutdownNative } from "../src/release/windows-app-shutdown-native.ts"
 import { classifyWindowsAppShutdown } from "../src/release/windows-app-shutdown-observation.ts"
+import { captureLinuxAppShutdown } from "../src/release/linux-app-shutdown-observation.ts"
+import { observeShutdownTrace } from "../src/release/shutdown-trace.ts"
 import { desktopIdentity } from "../src/release/identity.ts"
 import { agentDatabaseName } from "../src/release/agent-channel.ts"
 import { waitForCredentialAttachment } from "../src/release/native-credentials.ts"
@@ -943,6 +945,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     child.once("error", resolve)
   })
   const startup = observePackagedStartup(child)
+  const shutdownTrace = observeShutdownTrace(child)
   const untilStarted = (fn, label, limit) =>
     until(
       async () => {
@@ -962,6 +965,9 @@ async function launch(executable, credentialPhase, lab, providerReview) {
   let api
   let owned = []
   let shutdownInitial = { snapshot: { status: "UNREADABLE", processes: [] }, quiescence: "confirmed" }
+  let linuxShutdown
+  let closeRequest = "not-requested"
+  let closeRequestedAt
   let attached
   let v2Request
   let credentialReadiness
@@ -1138,6 +1144,14 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         payloadSha256: activePayload.sha256,
         processes,
       })
+      // Observations never establish ownership or authorize later cleanup.
+      // Capture process births while the existing runtime binding is available.
+      linuxShutdown = await captureLinuxAppShutdown({
+        env: process.env,
+        root,
+        runtime: { pid: child.pid, executable },
+        electron: { pid: electronPid, executable: appImageRuntime.executable },
+      }).catch(() => undefined)
     }
     if (!electronPid || state.pids.includes(electronPid)) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
     state.pids.push(electronPid)
@@ -1494,7 +1508,16 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         await evaluate(
           `(async () => { const s = await window.api.physicalSystems.snapshot(); if (s.deviceConnectionsEnabled !== false || s.activeCaptures.length || s.activeRuns.length) throw new Error('UNEXPECTED_HARDWARE_OWNER'); for (const owner of s.activeExperiments) await window.api.physicalSystems.command({ type:'experiment.stop', projectId:owner.projectId, conversationId:owner.conversationId, serverId:owner.serverId, sessionId:owner.sessionId, connectionGeneration:owner.connectionGeneration, experimentId:owner.experiment.id }); })()`,
         )
-        await evaluate("window.close()").catch(() => {})
+        closeRequest = "requested"
+        closeRequestedAt = performance.now()
+        await evaluate("window.close()").then(
+          () => {
+            closeRequest = "resolved"
+          },
+          () => {
+            closeRequest = "unconfirmed"
+          },
+        )
       }
       await new Promise((resolve) => {
         const timer = setTimeout(resolve, 15000)
@@ -1549,6 +1572,36 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         "Owned Electron process and observed descendants exited; private terminal attachment was removed.",
       )
     } catch (error) {
+      if (appImageRuntime) {
+        try {
+          const trace = shutdownTrace.snapshot()
+          shutdownTrace.close()
+          const processes = await linuxShutdown?.observe().catch(() => undefined)
+          check(
+            "linux-app-shutdown-observation",
+            "NOT_TESTED",
+            JSON.stringify({
+              diagnosticOnly: true,
+              closeRequest,
+              closeElapsedMs:
+                closeRequestedAt === undefined
+                  ? null
+                  : Math.min(120000, Math.max(0, Math.floor(performance.now() - closeRequestedAt))),
+              runtimeChildExit:
+                child.exitCode !== null ? "exit-code" : child.signalCode !== null ? "signal" : "not-recorded",
+              trace,
+              processes: processes ?? {
+                diagnosticOnly: true,
+                runtime: { captured: false, state: "unreadable" },
+                electron: { captured: false, state: "unreadable" },
+              },
+            }),
+          )
+        } catch {
+          // Optional observations cannot replace the original cleanup failure
+          // or skip the controller's pipe and process-reference finalization.
+        }
+      }
       if (process.platform === "win32") {
         // Failure-only final read has its own bounded, close-aware helper. It
         // cannot grant cleanup, retry a signal, or extend the 10-second gate.
@@ -1615,6 +1668,11 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       child.stdout.destroy()
       child.stderr.destroy()
       child.unref()
+    }
+    try {
+      shutdownTrace.close()
+    } catch {
+      /* Diagnostic listeners never gate cleanup. */
     }
     backend.dispose()
     socket?.close()
