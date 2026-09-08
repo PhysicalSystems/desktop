@@ -25,6 +25,53 @@ test("the actual encoded native script contains the tested reconciliation helper
   expect(units).toBeLessThanOrEqual(32767)
 })
 
+const fixturePhases = [
+  "bootstrap",
+  "identity",
+  "listener-empty",
+  "listener-loopback",
+  "listener-throw",
+  "listener-error",
+  "listener-partial",
+  "listener-foreign",
+  "json",
+] as const
+function fixtureFailure(error: unknown, stderr: string) {
+  const lines = Buffer.byteLength(stderr) <= 4096 ? stderr.split(/\r?\n/) : []
+  const phase =
+    lines
+      .flatMap((line) => {
+        const value = /^INERT_WINDOWS_FIXTURE_([a-z-]+)$/.exec(line)?.[1]
+        return fixturePhases.includes(value as (typeof fixturePhases)[number]) ? [value!] : []
+      })
+      .at(-1) ?? "unknown"
+  const native = error as { killed?: unknown; signal?: unknown; code?: unknown }
+  const outcome =
+    native?.killed === true
+      ? "timeout"
+      : typeof native?.signal === "string"
+        ? "signal"
+        : typeof native?.code === "number"
+          ? "exit"
+          : "unknown"
+  return Error(`INERT_IDENTITY_FIXTURE_FAILED:${phase}:${outcome}`)
+}
+
+test("inert fixture deadline diagnostics expose only fixed phases and outcomes", () => {
+  expect(
+    fixtureFailure(
+      { killed: true, code: "PRIVATE" },
+      "PRIVATE\nINERT_WINDOWS_FIXTURE_identity\nINERT_WINDOWS_FIXTURE_listener-error\n",
+    ).message,
+  ).toBe("INERT_IDENTITY_FIXTURE_FAILED:listener-error:timeout")
+  expect(fixtureFailure({ code: 1 }, "INERT_WINDOWS_FIXTURE_PRIVATE").message).toBe(
+    "INERT_IDENTITY_FIXTURE_FAILED:unknown:exit",
+  )
+  expect(fixtureFailure({ signal: "PRIVATE" }, "x".repeat(4097)).message).toBe(
+    "INERT_IDENTITY_FIXTURE_FAILED:unknown:signal",
+  )
+})
+
 const hostedWindows =
   process.platform === "win32" &&
   process.env.CI === "true" &&
@@ -45,9 +92,12 @@ test.skipIf(!hostedWindows)(
     const script = String.raw`
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
+function Mark([string]$phase){[Console]::Error.WriteLine('INERT_WINDOWS_FIXTURE_'+$phase);[Console]::Error.Flush()}
+Mark 'bootstrap'
 $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
 trap {[Console]::Error.Write('INERT_IDENTITY_FIXTURE_FAILED');exit 1}
 ${windowsReviewIdentityReadScript}
+Mark 'identity'
 $script:reads=0;$script:proofs=0;$cases=0
 function Require($value) {if($value -ne $true){throw 'fixture-assertion'}}
 function Read-Inert($value) {
@@ -94,6 +144,7 @@ Require ($failed -and $script:proofs -eq $beforeProofs)
 $cases++
 # Shadow the actual cmdlet before executing the exact production snippet. No
 # real CIM, sockets or listeners are read. Common-parameter binding remains real.
+# PSCmdlet.WriteError exercises ErrorAction without unrelated cmdlet autoload.
 $script:queryCalls=0;$listenerCases=0;$request=@{port=23456}
 function Get-CimInstance {
   [CmdletBinding()]param([string]$ClassName,[string]$Namespace,[string]$Filter)
@@ -102,10 +153,10 @@ function Get-CimInstance {
   Require ($Filter -ceq 'LocalPort=23456 AND State=2' -and $PSBoundParameters.ErrorAction -eq 'Stop')
   if($script:mode -eq 'empty'){return}
   if($script:mode -eq 'throw'){throw 'PRIVATE-QUERY-FAILURE'}
-  if($script:mode -eq 'error'){Write-Error 'PRIVATE-PROVIDER-FAILURE';return}
+  if($script:mode -eq 'error'){$PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new([Exception]::new('PRIVATE-PROVIDER-FAILURE'),'inert',[Management.Automation.ErrorCategory]::InvalidOperation,$null));return}
   $address=if($script:mode -eq 'foreign'){'0.0.0.0'}else{'127.0.0.1'}
   [pscustomobject]@{LocalAddress=$address;OwningProcess=4100}
-  if($script:mode -eq 'partial'){Write-Error 'PRIVATE-PARTIAL-FAILURE';return}
+  if($script:mode -eq 'partial'){$PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new([Exception]::new('PRIVATE-PARTIAL-FAILURE'),'inert',[Management.Automation.ErrorCategory]::InvalidOperation,$null));return}
   [pscustomobject]@{LocalAddress='::1';OwningProcess=4100}
 }
 function Read-InertListeners {
@@ -113,6 +164,7 @@ ${windowsReviewListenerReadScript}
   return ,$listening
 }
 foreach($mode in @('empty','loopback')) {
+  Mark ('listener-'+$mode)
   $script:mode=$mode;$before=$script:queryCalls;$value=Read-InertListeners
   Require ($script:queryCalls -eq $before+1)
   if($mode -eq 'empty'){Require ($value.Count -eq 0)}
@@ -120,11 +172,13 @@ foreach($mode in @('empty','loopback')) {
   $listenerCases++
 }
 foreach($mode in @('throw','error','partial','foreign')) {
+  Mark ('listener-'+$mode)
   $script:mode=$mode;$before=$script:queryCalls;$failed=$false
   try {$null=Read-InertListeners} catch {$failed=$true}
   Require ($failed -and $script:queryCalls -eq $before+1)
   $listenerCases++
 }
+Mark 'json'
 [Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls} | ConvertTo-Json -Compress))
 `
     const args = [
@@ -149,10 +203,10 @@ foreach($mode in @('throw','error','partial','foreign')) {
             maxBuffer: 4096,
             timeout: 12000,
           },
-          (error, stdout) => {
+          (error, stdout, stderr) => {
             if (error) {
               child.unref()
-              reject(Error("INERT_IDENTITY_FIXTURE_FAILED"))
+              reject(fixtureFailure(error, stderr))
             } else resolve(stdout)
           },
         )

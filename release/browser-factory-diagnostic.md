@@ -39,7 +39,16 @@ remains a failure.
 Before the Windows browser run, a focused PowerShell regression executes the
 production process-exit reconciliation helper with inert callbacks. It checks
 confirmed absence, live or unreadable PIDs, malformed proofs and identity
-mismatches without querying or stopping real processes.
+mismatches without querying or stopping real processes. The same fixture shadows
+the listener cmdlet to distinguish successful empty queries from failed or partial
+queries. Production uses an exact-port CIM query with terminating errors; a failed
+query can never become an empty listener result.
+
+Windows startup stderr is drained privately and classified within 64 KiB. Only
+fixed message categories and a truncation flag enter the report. A message saying
+DevTools is listening cannot establish ownership or authorize a CDP request.
+Cleanup failures preserve an allowlisted filesystem error category; they never
+include filenames or raw native error text.
 
 The five-minute job includes a 90-second Linux command deadline or a four-minute
 Windows step deadline. Windows allows 30 seconds for the read-only preflight,
