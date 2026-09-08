@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { spawn } from "node:child_process"
 import type { ChildProcess, SpawnOptions } from "node:child_process"
-import { lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises"
+import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises"
+import { createServer, type Server } from "node:net"
 import { join, win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { reviewBrowserTargets, validateBrowserProbeURL } from "./owned-review-browser"
@@ -21,6 +22,66 @@ const pathEqual = (a: string, b: string) => win32.normalize(a).toLowerCase() ===
 const record = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw failure()
   return value as Record<string, unknown>
+}
+
+/** Reserve one loopback port, never scan a port range. Releasing this socket
+ * does not prove browser ownership: native listener identity remains required. */
+export async function reserveWindowsReviewPort(io: { server?: () => Server; timeoutMs?: number } = {}) {
+  const timeoutMs = io.timeoutMs ?? 2000
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2000) throw failure()
+  const server = io.server?.() ?? createServer((socket) => socket.destroy())
+  const abort = new AbortController()
+  server.unref()
+  let bound = false,
+    expired = false
+  let closing: Promise<void> | undefined
+  const release = () =>
+    (closing ??= new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        server.unref()
+        reject(cleanupFailure())
+      }, timeoutMs)
+      server.close((error?: Error) => {
+        clearTimeout(timer)
+        server.unref()
+        if (expired || (error && ((error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" || !bound)))
+          reject(cleanupFailure())
+        else resolve()
+      })
+    }))
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        expired = true
+        abort.abort()
+        reject(cleanupFailure())
+      }, timeoutMs)
+      server.once("error", () => {
+        clearTimeout(timer)
+        reject(failure())
+      })
+      server.listen({ host: "127.0.0.1", port: 0, exclusive: true, signal: abort.signal }, () => {
+        clearTimeout(timer)
+        bound = true
+        server.unref()
+        resolve()
+      })
+    })
+    const address = server.address()
+    if (
+      !address ||
+      typeof address === "string" ||
+      address.address !== "127.0.0.1" ||
+      !Number.isInteger(address.port) ||
+      address.port < 1 ||
+      address.port > 65535
+    )
+      throw failure()
+    return { port: address.port, release }
+  } catch (error) {
+    await release()
+    throw error
+  }
 }
 
 export function windowsReviewPolicy(value: unknown): WindowsReviewPolicy {
@@ -166,6 +227,7 @@ async function acquireWindowsReviewBrowser(
     platform?: NodeJS.Platform
     timeoutMs?: number
     pollMs?: number
+    reservePort?: typeof reserveWindowsReviewPort
   },
   observation: BrowserObservation,
 ) {
@@ -224,13 +286,18 @@ async function acquireWindowsReviewBrowser(
     TEMP: root,
     TMP: root,
   })
+  observation.browserPhase = "windows-port-reserve"
+  const reservation = await (io.reservePort ?? reserveWindowsReviewPort)()
+  const port = reservation.port
+  observation.readinessPortAllocated = Number.isInteger(port) && port > 0 && port <= 65535
+  let portRelease: Promise<void> | undefined
+  const releasePort = () => (portRelease ??= Promise.resolve().then(() => reservation.release()))
   let child: ChildProcess | undefined
   let main: WindowsReviewProcess | undefined
   const known = new Map<number, WindowsReviewProcess>()
   // Keep unknown descendants too: parent exit must not erase an orphan from
   // subsequent native snapshots or authorize deleting its private profile.
   const observed = new Map<number, WindowsReviewProcess>()
-  let port: number | undefined
   let policyAttempted = false
   let closed = false
   let spawnFailed = false
@@ -293,6 +360,9 @@ async function acquireWindowsReviewBrowser(
   const stop = async (options: { retainProfile?: boolean } = {}) => {
     if (stopped) return
     try {
+      observation.browserPhase = "windows-port-release"
+      await releasePort()
+      observation.readinessPortReleased = true
       const until = Date.now() + timeoutMs
       while (true) {
         observation.browserPhase = "cleanup-observe"
@@ -343,9 +413,13 @@ async function acquireWindowsReviewBrowser(
     }
   }
   try {
+    if (!observation.readinessPortAllocated) throw failure()
     policyAttempted = true
     observation.browserPhase = "windows-policy-write"
     if (record(await native({ operation: "set", profile, before: baseline.policy })).written !== true) throw failure()
+    observation.browserPhase = "windows-port-release"
+    await releasePort()
+    observation.readinessPortReleased = true
     observation.browserPhase = "spawn"
     child = (io.spawn ?? spawn)(
       baseline.executable,
@@ -355,7 +429,7 @@ async function acquireWindowsReviewBrowser(
         "--no-default-browser-check",
         "--disable-background-mode",
         "--remote-debugging-address=127.0.0.1",
-        "--remote-debugging-port=0",
+        `--remote-debugging-port=${port}`,
         "about:blank",
       ],
       { cwd: root, env: environment, shell: false, stdio: "ignore", windowsHide: false },
@@ -389,6 +463,12 @@ async function acquireWindowsReviewBrowser(
         observation.profileTokenMatched = observed.args.some(
           (arg) => arg.startsWith("--user-data-dir=") && pathEqual(arg.slice(16), profile),
         )
+        const portArgs = observed.args.filter((arg) => /^--remote-debugging-port(?:=|$)/.test(arg))
+        const addressArgs = observed.args.filter((arg) => /^--remote-debugging-address(?:=|$)/.test(arg))
+        observation.readinessDebugPortMatched =
+          portArgs.length === 1 && portArgs[0] === `--remote-debugging-port=${port}`
+        observation.readinessDebugAddressMatched =
+          addressArgs.length === 1 && addressArgs[0] === "--remote-debugging-address=127.0.0.1"
         if (
           !observation.sidMatched ||
           !pathEqual(observed.executable, baseline.executable) ||
@@ -398,24 +478,9 @@ async function acquireWindowsReviewBrowser(
         main = observed
         observation.birthVerified = true
         known.set(main.pid, main)
+        if (!observation.readinessDebugPortMatched || !observation.readinessDebugAddressMatched) throw failure()
         continue
       }
-      const file = join(profile, "DevToolsActivePort")
-      observation.browserPhase = "port-file"
-      observation.readinessPortFilePresent = false
-      const value = await lstat(file).then(
-        async (stat) => {
-          observation.readinessPortFilePresent = true
-          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256) throw failure()
-          return (await readFile(file, "utf8")).split("\n")[0]
-        },
-        (error: NodeJS.ErrnoException) => {
-          if (error.code !== "ENOENT") throw failure()
-        },
-      )
-      observation.readinessPortLineHasCR = Boolean(value?.includes("\r"))
-      if (value && /^[1-9]\d{0,4}$/.test(value) && Number(value) <= 65535) port = Number(value)
-      observation.readinessPortParsed = Boolean(port)
       observation.browserPhase = "cdp-targets"
       observation.readinessListeners = Math.min(current.listening.length, 65536)
       observation.readinessListenerOwned = current.listening.length === 1 && current.listening[0] === main.pid

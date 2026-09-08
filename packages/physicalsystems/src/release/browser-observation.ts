@@ -22,6 +22,8 @@ const phases = [
   "windows-preflight-shape",
   "windows-policy-write",
   "windows-policy-restore",
+  "windows-port-reserve",
+  "windows-port-release",
 ] as const
 const windowsPhases = [
   "bootstrap",
@@ -104,6 +106,10 @@ export type BrowserObservation = {
   readinessTargetQueried?: boolean
   readinessTargetsAvailable?: boolean
   readinessBlankTarget?: boolean
+  readinessPortAllocated?: boolean
+  readinessPortReleased?: boolean
+  readinessDebugPortMatched?: boolean
+  readinessDebugAddressMatched?: boolean
 }
 const codes = [
   "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
@@ -134,6 +140,10 @@ const bools = [
   "readinessTargetQueried",
   "readinessTargetsAvailable",
   "readinessBlankTarget",
+  "readinessPortAllocated",
+  "readinessPortReleased",
+  "readinessDebugPortMatched",
+  "readinessDebugAddressMatched",
 ]
 const counts = [
   "ownedProcesses",

@@ -3,11 +3,13 @@ import { expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { Writable } from "node:stream"
 import type { ChildProcess } from "node:child_process"
-import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { access, mkdtemp, realpath, rm } from "node:fs/promises"
+import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   startOwnedWindowsReviewBrowser,
+  reserveWindowsReviewPort,
   windowsReviewOwnership,
   windowsReviewPolicy,
   windowsReviewProcesses,
@@ -33,7 +35,13 @@ const processRecord = (profile: string): WindowsReviewProcess => ({
   session: 2,
   sid: "S-1-5-21-111-222-333-1001",
   executable,
-  args: [executable, `--user-data-dir=${profile}`, "about:blank"],
+  args: [
+    executable,
+    `--user-data-dir=${profile}`,
+    "--remote-debugging-port=23456",
+    "--remote-debugging-address=127.0.0.1",
+    "about:blank",
+  ],
 })
 
 async function fixture(
@@ -46,7 +54,9 @@ async function fixture(
     wrongRootSid?: boolean
     reuseOrphanAfterStop?: boolean
     nativeFailure?: "preflight" | "set" | "observe" | "restore"
-    unready?: "missing-port" | "crlf-port" | "wrong-listener" | "targets-unavailable" | "wrong-target"
+    unready?: "wrong-listener" | "targets-unavailable" | "wrong-target"
+    reservationFails?: "allocation" | "release"
+    debugFlag?: "missing-port" | "duplicate-port" | "wrong-port" | "wrong-address" | "duplicate-address"
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "windows-review-fixture-")))
@@ -70,6 +80,7 @@ async function fixture(
     unrefs: 0,
     nativeEnv: {} as NodeJS.ProcessEnv,
     targetQueries: 0,
+    portEvents: [] as string[],
   }
   const child = Object.assign(new EventEmitter(), {
     pid: 4100,
@@ -109,12 +120,19 @@ async function fixture(
     }
     if (request.operation === "observe") {
       state.observedRoots.push([...request.observedPids])
-      if (state.running && options.unready !== "missing-port")
-        await writeFile(
-          join(state.profile, "DevToolsActivePort"),
-          options.unready === "crlf-port" ? "23456\r\n/devtools/browser/inert\r\n" : "23456\n/devtools/browser/inert\n",
-        )
       const main = processRecord(state.profile)
+      if (options.debugFlag === "missing-port")
+        main.args = main.args.filter((arg) => !arg.startsWith("--remote-debugging-port="))
+      if (options.debugFlag === "duplicate-port") main.args.push("--remote-debugging-port=23456")
+      if (options.debugFlag === "wrong-port")
+        main.args = main.args.map((arg) =>
+          arg.startsWith("--remote-debugging-port=") ? "--remote-debugging-port=23457" : arg,
+        )
+      if (options.debugFlag === "wrong-address")
+        main.args = main.args.map((arg) =>
+          arg.startsWith("--remote-debugging-address=") ? "--remote-debugging-address=0.0.0.0" : arg,
+        )
+      if (options.debugFlag === "duplicate-address") main.args.push("--remote-debugging-address=127.0.0.1")
       if (options.wrongRootSid) main.sid = "S-1-5-21-999-222-333-1001"
       if (state.reused) main.birth = "134000000000000999"
       const processes = state.running
@@ -177,10 +195,23 @@ async function fixture(
     platform: "win32" as const,
     timeoutMs: 100,
     pollMs: 1,
+    reservePort: async () => {
+      state.portEvents.push("reserve")
+      if (options.reservationFails === "allocation") throw Error("PRIVATE-ALLOCATION")
+      return {
+        port: 23456,
+        release: async () => {
+          state.portEvents.push("release")
+          if (options.reservationFails === "release") throw Error("PRIVATE-CLOSE")
+        },
+      }
+    },
     spawn: (exe: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) => {
+      expect(state.portEvents).toEqual(["reserve", "release"])
+      state.portEvents.push("spawn")
       expect(exe).toBe(executable)
       expect(args).toContain(`--user-data-dir=${state.profile}`)
-      expect(args).toContain("--remote-debugging-port=0")
+      expect(args).toContain("--remote-debugging-port=23456")
       state.nativeEnv = options.env ?? {}
       state.running = true
       return child
@@ -640,13 +671,7 @@ test("native module discovery uses the fixed OS module directory and an exclusiv
 })
 
 test("failed native readiness retains its port, listener and target facts after confirmed cleanup", async () => {
-  for (const unready of [
-    "missing-port",
-    "crlf-port",
-    "wrong-listener",
-    "targets-unavailable",
-    "wrong-target",
-  ] as const) {
+  for (const unready of ["wrong-listener", "targets-unavailable", "wrong-target"] as const) {
     const f = await fixture({ unready })
     try {
       const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
@@ -657,9 +682,10 @@ test("failed native readiness retains its port, listener and target facts after 
       expect(observation?.ownedProcesses).toBe(0)
       expect(observation?.listenerProcesses).toBe(0)
       expect(observation?.readinessPolls).toBeGreaterThan(1)
-      expect(observation?.readinessPortFilePresent).toBe(unready !== "missing-port")
-      expect(observation?.readinessPortLineHasCR).toBe(unready === "crlf-port")
-      expect(observation?.readinessPortParsed).toBe(!["missing-port", "crlf-port"].includes(unready))
+      expect(observation?.readinessPortAllocated).toBe(true)
+      expect(observation?.readinessPortReleased).toBe(true)
+      expect(observation?.readinessDebugPortMatched).toBe(true)
+      expect(observation?.readinessDebugAddressMatched).toBe(true)
       expect(observation?.readinessUnknownProcesses).toBe(0)
       expect(observation?.readinessTargetCount).toBe(unready === "wrong-target" ? 1 : 0)
       expect(observation?.readinessBlankTarget).toBe(false)
@@ -667,12 +693,128 @@ test("failed native readiness retains its port, listener and target facts after 
       expect(observation?.readinessTargetQueried).toBe(queried)
       expect(observation?.readinessListenerOwned).toBe(queried)
       expect(observation?.readinessTargetsAvailable).toBe(unready === "wrong-target")
-      expect(observation?.readinessListeners).toBe(["missing-port", "crlf-port"].includes(unready) ? 0 : 1)
+      expect(observation?.readinessListeners).toBe(1)
       expect(f.state.targetQueries > 0).toBe(queried)
       expect(f.state.restored).toBe(true)
       expect(JSON.stringify(observation)).not.toContain("PRIVATE")
       expect(JSON.stringify(observation)).not.toContain("23456")
       await expect(access(f.input.root)).rejects.toThrow()
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("actual loopback reservation excludes a competing bind and releases before reuse", async () => {
+  const reservation = await reserveWindowsReviewPort()
+  const competitor = createServer((socket) => socket.destroy())
+  const rebound = createServer((socket) => socket.destroy())
+  try {
+    expect(reservation.port).toBeGreaterThan(0)
+    expect(reservation.port).toBeLessThanOrEqual(65535)
+    const conflict = await new Promise<string | undefined>((resolve) => {
+      competitor.once("error", (error: NodeJS.ErrnoException) => resolve(error.code))
+      competitor.listen({ host: "127.0.0.1", port: reservation.port, exclusive: true }, () => resolve(undefined))
+    })
+    expect(conflict).toBe("EADDRINUSE")
+    const release = reservation.release()
+    expect(reservation.release()).toBe(release)
+    await release
+    await new Promise<void>((resolve, reject) => {
+      rebound.once("error", reject)
+      rebound.listen({ host: "127.0.0.1", port: reservation.port, exclusive: true }, resolve)
+    })
+    expect(rebound.listening).toBe(true)
+  } finally {
+    await reservation.release()
+    await Promise.all(
+      [competitor, rebound].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    )
+  }
+})
+
+test("a pending bind is aborted and cannot turn not-running close into confirmed release", async () => {
+  let signal: AbortSignal | undefined
+  let closeCalls = 0,
+    unrefs = 0
+  const server = Object.assign(new EventEmitter(), {
+    unref() {
+      unrefs++
+      return this
+    },
+    listen(options: { host: string; port: number; signal: AbortSignal }) {
+      expect(options.host).toBe("127.0.0.1")
+      expect(options.port).toBe(0)
+      signal = options.signal
+      expect(signal.aborted).toBe(false)
+      return this
+    },
+    close(callback: (error: NodeJS.ErrnoException) => void) {
+      closeCalls++
+      queueMicrotask(() => callback(Object.assign(Error("PRIVATE"), { code: "ERR_SERVER_NOT_RUNNING" })))
+      return this
+    },
+  }) as unknown as Server
+  await expect(reserveWindowsReviewPort({ server: () => server, timeoutMs: 5 })).rejects.toThrow(
+    "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED",
+  )
+  expect(signal?.aborted).toBe(true)
+  expect(closeCalls).toBe(1)
+  expect(unrefs).toBeGreaterThan(0)
+})
+
+test("reservation and release precede the single native launch, without relying on a port file", async () => {
+  const f = await fixture()
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    expect(f.state.portEvents).toEqual(["reserve", "release", "spawn"])
+    await expect(access(join(f.state.profile, "DevToolsActivePort"))).rejects.toThrow()
+    expect(f.state.targetQueries).toBeGreaterThan(0)
+    await browser.stop()
+    expect(f.state.portEvents).toEqual(["reserve", "release", "spawn"])
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("allocation or unconfirmed release never launches or queries a browser", async () => {
+  for (const reservationFails of ["allocation", "release"] as const) {
+    const f = await fixture({ reservationFails })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(f.state.portEvents).toEqual(reservationFails === "allocation" ? ["reserve"] : ["reserve", "release"])
+      expect(f.state.targetQueries).toBe(0)
+      expect(f.state.running).toBe(false)
+      expect(readBrowserObservation(error)?.pidObserved).toBe(false)
+      if (reservationFails === "release")
+        expect((error as Error).message).toBe("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+      await access(f.input.root)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("stripped, duplicate or mismatched native debugging flags fail before any CDP query", async () => {
+  for (const debugFlag of [
+    "missing-port",
+    "duplicate-port",
+    "wrong-port",
+    "wrong-address",
+    "duplicate-address",
+  ] as const) {
+    const f = await fixture({ debugFlag })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(f.state.portEvents).toEqual(["reserve", "release", "spawn"])
+      expect(f.state.targetQueries).toBe(0)
+      expect(readBrowserObservation(error)?.failedBrowserPhase).toBe("identity-argv")
+      expect(readBrowserObservation(error)?.birthVerified).toBe(true)
+      expect(readBrowserObservation(error)?.browserPhase).toBe("stopped")
+      expect(f.state.restored).toBe(true)
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("23456")
     } finally {
       await f.cleanup()
     }
