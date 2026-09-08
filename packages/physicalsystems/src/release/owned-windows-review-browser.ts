@@ -433,7 +433,10 @@ async function acquireWindowsReviewBrowser(
         if (
           await lstat(root).then(
             () => true,
-            (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+            (error: NodeJS.ErrnoException) => {
+              if (error.code === "ENOENT") return false
+              throw error
+            },
           )
         )
           throw cleanupFailure()
