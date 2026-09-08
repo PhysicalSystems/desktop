@@ -9,6 +9,11 @@ Google Chrome/Xvfb, or Windows 2025 with its installed Microsoft Edge. It uses
 pinned Bun. Its imports need only built-ins and local
 TypeScript, so it skips workspace dependency installation and Electron downloads.
 
+Diagnostics use a separate concurrency group for each reviewed branch and selected
+platform, so they can run alongside a full candidate build. Candidate version
+allocation remains serialized in `desktop-release-candidate`. Neither group
+cancels a running job when another dispatch arrives.
+
 This mode skips candidate preparation, packaging and qualification. It calls the
 same `startOwnedReviewBrowser` or `startOwnedWindowsReviewBrowser` factory used by native smoke, waits for its owned
 `about:blank` target, then calls its ownership-checked `stop()` exactly once. It

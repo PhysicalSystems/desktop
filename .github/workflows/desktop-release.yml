@@ -67,8 +67,9 @@ env:
 
 # Allocation is serialized. Candidate versions are provisional until an independently
 # authorized publisher reserves them; an unsigned candidate does not create a tag.
+# Diagnostics allocate no versions and serialize only within their branch/platform.
 concurrency:
-  group: desktop-release-candidate
+  group: ${{ inputs.browser_factory_diagnostic && format('desktop-browser-diagnostic-{0}-{1}', github.ref, inputs.browser_factory_platform == 'windows-x64' && 'windows-x64' || 'linux-x64') || 'desktop-release-candidate' }}
   cancel-in-progress: false
 
 jobs:
