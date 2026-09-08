@@ -21,6 +21,7 @@ type DirectoryIO = {
   wait?(milliseconds: number): Promise<void>
   entries?(path: string): Promise<string[]>
   inventoryTimeoutMs?: number
+  beforeRemove?(anchors: OwnedBrowserDirectoryAnchors): Promise<void>
   observeFailure?(anchors: OwnedBrowserDirectoryAnchors): Promise<DirectoryProbeObservation>
 }
 export type OwnedBrowserDirectory = Readonly<{ root: string; dev: bigint; ino: bigint }>
@@ -264,6 +265,10 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
   return (owner.removal ??= remove())
 
   async function remove() {
+    const anchors = Object.freeze({
+      root: Object.freeze({ path: identity.root, dev: identity.dev, ino: identity.ino }),
+      parent: Object.freeze({ path: owner!.parent, dev: owner!.parentDev, ino: owner!.parentIno }),
+    })
     let phase: BrowserObservation["directoryFailurePhase"] = "parent-canonical"
     let removalAttempt = 0
     const read = async () => {
@@ -286,6 +291,13 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
         removalAttempt = attempt + 1
         if (delay) await (io.wait ?? wait)(delay)
         if (!(await read())) return
+        if (io.beforeRemove) {
+          phase = "prepare"
+          // A native preparation failure, including an uncertain helper close,
+          // must bypass rm's retries and cannot be reconciled from later absence.
+          await io.beforeRemove(anchors)
+          if (!(await read())) return
+        }
         try {
           // No force, chmod, ACL alteration, symlink following or implicit
           // runtime retries. Each further attempt rechecks the captured root.
@@ -314,9 +326,10 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
         directoryRemovalAttempt: removalAttempt,
         ...errorMetadata(error, identity.root, owner!.parent),
       }
-      const metadata = await remainingMetadata(identity, io).catch(() => ({
-        directoryInventory: "read-failed" as const,
-      }))
+      const metadata =
+        phase === "prepare"
+          ? { directoryInventory: "identity-unconfirmed" as const }
+          : await remainingMetadata(identity, io).catch(() => ({ directoryInventory: "read-failed" as const }))
       let probe: DirectoryProbeObservation = {}
       if (
         io.observeFailure &&
@@ -329,12 +342,7 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
         if (present) {
           probe = { directoryProbeStatus: "UNREADABLE", directoryProbeQuiescence: "unconfirmed" }
           try {
-            const value = await io.observeFailure(
-              Object.freeze({
-                root: Object.freeze({ path: identity.root, dev: identity.dev, ino: identity.ino }),
-                parent: Object.freeze({ path: owner!.parent, dev: owner!.parentDev, ino: owner!.parentIno }),
-              }),
-            )
+            const value = await io.observeFailure(anchors)
             // Diagnostics cannot overwrite the original removal phase or add
             // private fields. Invalid observations leave that failure intact.
             const fields = Object.fromEntries(Object.entries(value).filter(([key]) => key.startsWith("directoryProbe")))
@@ -346,7 +354,16 @@ export function removeOwnedBrowserDirectory(identity: OwnedBrowserDirectory, io:
       }
       // Even later absence or successful access probes cannot reverse the
       // exhausted removal failure or renew its deletion budget.
-      throw failure(error, { ...observation, ...metadata, ...probe })
+      const preparation = phase === "prepare" ? readBrowserObservation(error) : undefined
+      throw failure(error, {
+        ...observation,
+        ...metadata,
+        ...probe,
+        ...(preparation?.directoryPrepareStatus ? { directoryPrepareStatus: preparation.directoryPrepareStatus } : {}),
+        ...(preparation?.directoryPrepareQuiescence
+          ? { directoryPrepareQuiescence: preparation.directoryPrepareQuiescence }
+          : {}),
+      })
     }
   }
 }

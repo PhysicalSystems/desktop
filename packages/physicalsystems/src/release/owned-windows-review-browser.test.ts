@@ -32,6 +32,7 @@ import {
 } from "./windows-review-native"
 import { browserObservationError, readBrowserObservation } from "./browser-observation"
 import { qualificationFailureCode } from "./qualification"
+import type { OwnedBrowserDirectoryAnchors } from "./owned-browser-directory"
 
 test("Windows failure diagnostic isolates its controller and only cleans it after confirmed native closure", async () => {
   for (const mode of ["confirmed", "unconfirmed", "throw", "reparse"] as const) {
@@ -308,6 +309,11 @@ async function fixture(
   }
   const io = {
     native,
+    pruneDirectory: async ({ anchors }: { anchors: OwnedBrowserDirectoryAnchors }) => {
+      expect(anchors.root.path).toBe(root)
+      expect(state.running).toBe(false)
+      expect(state.policy).toEqual(before)
+    },
     platform: "win32" as const,
     timeoutMs: 100,
     pollMs: 1,
@@ -503,6 +509,110 @@ test("owned Windows browser verifies exact native process/CDP and restores the p
           () => false,
         ),
       ).toBe(false)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("unconfirmed native directory preparation retains ownership across later Stop and retain requests", async () => {
+  const f = await fixture()
+  let preparations = 0
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, {
+      ...f.io,
+      pruneDirectory: async (input) => {
+        await f.io.pruneDirectory(input)
+        preparations++
+        expect(f.state.stopped).toBe(true)
+        expect(f.state.restored).toBe(true)
+        throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", undefined, {
+          browserPhase: "cleanup-profile",
+          directoryPrepareStatus: "TRANSPORT_UNCONFIRMED",
+          directoryPrepareQuiescence: "unconfirmed",
+        })
+      },
+    })
+    const error = await browser.stop().catch((error: unknown) => error)
+    expect(readBrowserObservation(error)).toMatchObject({
+      directoryFailurePhase: "prepare",
+      directoryPrepareStatus: "TRANSPORT_UNCONFIRMED",
+      directoryPrepareQuiescence: "unconfirmed",
+    })
+    expect(preparations).toBe(1)
+    const calls = [...f.state.calls]
+    await expect(browser.stop()).rejects.toBe(error)
+    await expect(browser.stop({ retainProfile: true })).rejects.toBe(error)
+    expect(f.state.calls).toEqual(calls)
+    expect(preparations).toBe(1)
+    expect((await lstat(f.input.root)).isDirectory()).toBe(true)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("concurrent retain requests cannot finish while an earlier Stop awaits native directory preparation", async () => {
+  const f = await fixture()
+  const entered = Promise.withResolvers<void>()
+  const finish = Promise.withResolvers<void>()
+  const stopping: Promise<void>[] = []
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, {
+      ...f.io,
+      pruneDirectory: async (input) => {
+        await f.io.pruneDirectory(input)
+        entered.resolve()
+        await finish.promise
+      },
+    })
+    const first = browser.stop()
+    stopping.push(first)
+    await entered.promise
+    const calls = [...f.state.calls]
+    const second = browser.stop({ retainProfile: true })
+    stopping.push(second)
+    expect(second).toBe(first)
+    let settled = false
+    second.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(settled).toBe(false)
+    expect(f.state.calls).toEqual(calls)
+    finish.reject(Error("INERT_UNCONFIRMED_NATIVE_HELPER"))
+    const error = await first.catch((error: unknown) => error)
+    await expect(second).rejects.toBe(error)
+    await expect(browser.stop({ retainProfile: true })).rejects.toBe(error)
+    expect(f.state.calls).toEqual(calls)
+    expect((await lstat(f.input.root)).isDirectory()).toBe(true)
+  } finally {
+    finish.reject(Error("INERT_UNCONFIRMED_NATIVE_HELPER"))
+    await Promise.allSettled(stopping)
+    await f.cleanup()
+  }
+})
+
+test("profile retention and unconfirmed registration restoration never begin junction pruning", async () => {
+  for (const retainProfile of [true, false]) {
+    const f = await fixture({ restoreFails: !retainProfile })
+    let preparations = 0
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, {
+        ...f.io,
+        pruneDirectory: async () => {
+          preparations++
+        },
+      })
+      const stopping = browser.stop({ retainProfile })
+      if (retainProfile) await stopping
+      else await expect(stopping).rejects.toThrow("CLEANUP_UNCONFIRMED")
+      expect(preparations).toBe(0)
+      expect((await lstat(f.input.root)).isDirectory()).toBe(true)
     } finally {
       await f.cleanup()
     }
@@ -726,6 +836,8 @@ test("handoff freezes unknown-reason counts before cleanup and never queries CDP
     if (request.operation === "restore") {
       expect(request.observedPids).toEqual([4100, 4101, 4102])
       expect(f.state.running).toBe(false)
+      expect(request.before).toEqual(f.before)
+      f.state.policy = structuredClone(f.before)
       f.state.restored = true
       return { restored: true }
     }
@@ -881,6 +993,8 @@ test("private unknown-executable sink is bounded and once-only, and sink failure
       if (request.operation === "restore") {
         expect(request.observedPids).toEqual(expectedPids)
         expect(f.state.running).toBe(false)
+        expect(request.before).toEqual(f.before)
+        f.state.policy = structuredClone(f.before)
         f.state.restored = true
         return { restored: true }
       }

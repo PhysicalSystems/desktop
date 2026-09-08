@@ -165,7 +165,25 @@ export type BrowserObservation = {
   handoffTargetCount?: number
   handoffWindowsNativePhase?: (typeof windowsPhases)[number]
   handoffWindowsNativeOutcome?: BrowserObservation["windowsNativeOutcome"]
-  directoryFailurePhase?: "parent-canonical" | "parent-identity" | "root-identity" | "remove" | "absence-check"
+  directoryFailurePhase?:
+    | "parent-canonical"
+    | "parent-identity"
+    | "root-identity"
+    | "prepare"
+    | "remove"
+    | "absence-check"
+  directoryPrepareStatus?:
+    | "COMPLETE"
+    | "BOUNDED"
+    | "IDENTITY_UNCONFIRMED"
+    | "DELETE_UNCONFIRMED"
+    | "UNREADABLE"
+    | "CLOSE_UNCONFIRMED"
+    | "NOT_STARTED"
+    | "INVALID_RESPONSE"
+    | "TRANSPORT_UNCONFIRMED"
+    | "CONTROLLER_UNCONFIRMED"
+  directoryPrepareQuiescence?: "not-started" | "confirmed" | "unconfirmed"
   directoryRemovalAttempt?: number
   directorySyscall?: "rm" | "lstat" | "realpath" | "readdir" | "other" | "absent"
   directoryErrorPath?: "root" | "parent" | "descendant" | "other" | "absent"
@@ -353,7 +371,26 @@ const directoryEnums = new Map<string, readonly string[]>([
       ],
     ],
   ),
-  ["directoryFailurePhase", ["parent-canonical", "parent-identity", "root-identity", "remove", "absence-check"]],
+  [
+    "directoryFailurePhase",
+    ["parent-canonical", "parent-identity", "root-identity", "prepare", "remove", "absence-check"],
+  ],
+  [
+    "directoryPrepareStatus",
+    [
+      "COMPLETE",
+      "BOUNDED",
+      "IDENTITY_UNCONFIRMED",
+      "DELETE_UNCONFIRMED",
+      "UNREADABLE",
+      "CLOSE_UNCONFIRMED",
+      "NOT_STARTED",
+      "INVALID_RESPONSE",
+      "TRANSPORT_UNCONFIRMED",
+      "CONTROLLER_UNCONFIRMED",
+    ],
+  ],
+  ["directoryPrepareQuiescence", ["not-started", "confirmed", "unconfirmed"]],
   ["directorySyscall", ["rm", "lstat", "realpath", "readdir", "other", "absent"]],
   ["directoryErrorPath", ["root", "parent", "descendant", "other", "absent"]],
   ["directoryInventory", ["complete", "bounded", "identity-unconfirmed", "read-failed"]],

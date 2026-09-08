@@ -13,6 +13,7 @@ import {
   type OwnedBrowserDirectoryAnchors,
 } from "./owned-browser-directory"
 import { observeWindowsDirectoryDenial } from "./windows-directory-observation"
+import { pruneOwnedWindowsJunctions } from "./windows-junction-prune"
 import {
   browserObservationError,
   browserSyscallFailure,
@@ -401,6 +402,7 @@ async function acquireWindowsReviewBrowser(
     pollMs?: number
     reservePort?: typeof reserveWindowsReviewPort
     observeDirectory?: typeof observeWindowsDirectoryDenial
+    pruneDirectory?: typeof pruneOwnedWindowsJunctions
   },
   observation: BrowserObservation,
 ) {
@@ -488,6 +490,7 @@ async function acquireWindowsReviewBrowser(
   let closed = false
   let spawnFailed = false
   let stopped = false
+  let directoryCleanupFailure: Error | undefined
   let cleanupStarted = false
   let handoffPending = false
   let unknownExecutableCaptured = false
@@ -558,7 +561,8 @@ async function acquireWindowsReviewBrowser(
       ...ownership,
     }
   }
-  const stop = async (options: { retainProfile?: boolean } = {}) => {
+  const stopOnce = async (options: { retainProfile?: boolean } = {}) => {
+    if (directoryCleanupFailure) throw directoryCleanupFailure
     if (stopped) return
     try {
       cleanupStarted = true
@@ -610,6 +614,7 @@ async function acquireWindowsReviewBrowser(
       if (!options.retainProfile) {
         observation.browserPhase = "cleanup-profile"
         await removeOwnedBrowserDirectory(directory, {
+          beforeRemove: (anchors) => (io.pruneDirectory ?? pruneOwnedWindowsJunctions)({ env: input.env, anchors }),
           observeFailure: (anchors) => observeWindowsReviewDirectoryDenial(input.env, anchors, io.observeDirectory),
         })
       }
@@ -618,13 +623,28 @@ async function acquireWindowsReviewBrowser(
     } catch (error) {
       observation.cleanupFailurePhase = observation.browserPhase
       if (observation.browserPhase === "cleanup-profile") observation.syscallFailure = browserSyscallFailure(error)
-      throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", error, observation)
+      const failed = browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", error, observation)
+      // The directory owner has exhausted or refused cleanup. In particular,
+      // a later retainProfile request cannot bypass an unconfirmed native helper.
+      if (observation.browserPhase === "cleanup-profile") directoryCleanupFailure = failed
+      throw failed
     } finally {
       // This only releases the controller's event-loop reference. Unknown
       // browser ownership remains a failure and its private paths stay intact.
       child?.stderr?.destroy()
       child?.unref()
     }
+  }
+  let stopPending: Promise<void> | undefined
+  const stop = (options: { retainProfile?: boolean } = {}) => {
+    if (stopPending) return stopPending
+    const task = stopOnce(options)
+    stopPending = task
+    const clear = () => {
+      if (stopPending === task) stopPending = undefined
+    }
+    void task.then(clear, clear)
+    return task
   }
   try {
     if (!observation.readinessPortAllocated) throw failure()

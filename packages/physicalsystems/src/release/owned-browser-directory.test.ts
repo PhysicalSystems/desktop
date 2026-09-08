@@ -21,6 +21,95 @@ async function fixture() {
 }
 const denied = (code = "EACCES") => Object.assign(Error("PRIVATE PATH AND ERROR TRAP"), { code })
 
+test("owned removal prepares the same captured anchors before each bounded rm attempt", async () => {
+  const f = await fixture()
+  const order: string[] = []
+  let attempts = 0
+  await removeOwnedBrowserDirectory(f.identity, {
+    beforeRemove: async (anchors) => {
+      order.push("prepare")
+      expect(anchors.root).toEqual({ path: f.root, dev: f.identity.dev, ino: f.identity.ino })
+      const parent = await lstat(f.parent, { bigint: true })
+      expect(anchors.parent).toEqual({ path: f.parent, dev: parent.dev, ino: parent.ino })
+      expect(Object.isFrozen(anchors)).toBe(true)
+      expect(Object.isFrozen(anchors.root)).toBe(true)
+      expect(Object.isFrozen(anchors.parent)).toBe(true)
+      await Promise.resolve()
+    },
+    remove: async (path, options) => {
+      order.push("remove")
+      if (++attempts === 1) throw denied()
+      await rm(path, options)
+    },
+    wait: async (milliseconds) => {
+      order.push("wait:" + milliseconds)
+    },
+  })
+  expect(order).toEqual(["prepare", "remove", "wait:100", "prepare", "remove"])
+  await expect(lstat(f.root)).rejects.toMatchObject({ code: "ENOENT" })
+})
+
+test("unconfirmed preparation cannot retry, delete, inspect the tree or use later absence as success", async () => {
+  for (const mode of ["EACCES", "ENOENT", "unknown", "absent"]) {
+    const f = await fixture()
+    let preparations = 0
+    let removals = 0
+    let waits = 0
+    let inventories = 0
+    let observations = 0
+    const removal = removeOwnedBrowserDirectory(f.identity, {
+      beforeRemove: async () => {
+        preparations++
+        if (mode === "absent") await rm(f.root, { recursive: true })
+        throw denied(mode === "absent" ? "EACCES" : mode)
+      },
+      remove: async () => {
+        removals++
+      },
+      wait: async () => {
+        waits++
+      },
+      entries: async () => {
+        inventories++
+        return []
+      },
+      observeFailure: async () => {
+        observations++
+        return { directoryProbeStatus: "NOT_LOCALIZED" }
+      },
+    })
+    const error = await removal.catch((error: unknown) => error)
+    expect(error).toMatchObject({ message: "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED" })
+    expect(readBrowserObservation(error)).toMatchObject({
+      directoryFailurePhase: "prepare",
+      directoryRemovalAttempt: 1,
+    })
+    expect(preparations).toBe(1)
+    expect([removals, waits, inventories, observations]).toEqual([0, 0, 0, 0])
+    expect(removeOwnedBrowserDirectory(f.identity)).toBe(removal)
+    if (mode !== "absent") expect(await readFile(join(f.root, "private-state"), "utf8")).toBe("INERT PRIVATE FIXTURE")
+  }
+})
+
+test("root replacement during preparation fails before deleting its replacement", async () => {
+  const f = await fixture()
+  let removals = 0
+  await expect(
+    removeOwnedBrowserDirectory(f.identity, {
+      beforeRemove: async () => {
+        await rename(f.root, join(f.parent, "retained-original"))
+        await mkdir(f.root)
+        await writeFile(join(f.root, "foreign"), "DO NOT REMOVE")
+      },
+      remove: async () => {
+        removals++
+      },
+    }),
+  ).rejects.toThrow("CLEANUP_UNCONFIRMED")
+  expect(removals).toBe(0)
+  expect(await readFile(join(f.root, "foreign"), "utf8")).toBe("DO NOT REMOVE")
+})
+
 test("failure observer receives captured anchors once after removal exhaustion and cannot satisfy cleanup", async () => {
   const f = await fixture()
   let attempts = 0
