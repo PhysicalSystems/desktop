@@ -153,6 +153,8 @@ export type BrowserObservation = {
   handoffUnknownSessionProcesses?: number
   handoffUnknownBirthProcesses?: number
   handoffUnknownProfileOrAncestryProcesses?: number
+  handoffUnknownCrashpadTypeProcesses?: number
+  handoffUnknownCrashpadDatabaseProcesses?: number
   handoffTargetCount?: number
   handoffWindowsNativePhase?: (typeof windowsPhases)[number]
   handoffWindowsNativeOutcome?: BrowserObservation["windowsNativeOutcome"]
@@ -222,6 +224,8 @@ const counts = [
   "handoffUnknownSessionProcesses",
   "handoffUnknownBirthProcesses",
   "handoffUnknownProfileOrAncestryProcesses",
+  "handoffUnknownCrashpadTypeProcesses",
+  "handoffUnknownCrashpadDatabaseProcesses",
   "handoffTargetCount",
   "ownedProcesses",
   "targetCount",

@@ -174,6 +174,8 @@ test("handoff facts remain fixed and distinct from cleanup process snapshots", (
     handoffUnknownSessionProcesses: 0,
     handoffUnknownBirthProcesses: 0,
     handoffUnknownProfileOrAncestryProcesses: 0,
+    handoffUnknownCrashpadTypeProcesses: 0,
+    handoffUnknownCrashpadDatabaseProcesses: 0,
     handoffTargetCount: 0,
     handoffWindowsNativePhase: "listener",
     handoffWindowsNativeOutcome: "timeout",
@@ -209,6 +211,8 @@ test("handoff ownership reasons admit bounded counts only, with no process ident
     "handoffUnknownSessionProcesses",
     "handoffUnknownBirthProcesses",
     "handoffUnknownProfileOrAncestryProcesses",
+    "handoffUnknownCrashpadTypeProcesses",
+    "handoffUnknownCrashpadDatabaseProcesses",
   ]) {
     for (const value of [0, 1, 65536]) {
       const observation = { browserPhase: "handoff-targets" as const, [key]: value }

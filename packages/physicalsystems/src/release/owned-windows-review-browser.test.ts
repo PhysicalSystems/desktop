@@ -7,7 +7,7 @@ import type { ChildProcess } from "node:child_process"
 import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, win32 } from "node:path"
 import {
   startOwnedWindowsReviewBrowser,
   reserveWindowsReviewPort,
@@ -519,7 +519,12 @@ test("handoff freezes unknown-reason counts before cleanup and never queries CDP
           parent: 4101,
           birth: "134000000000000003",
           executable: "C:\\PRIVATE-HELPER.exe",
-          args: ["C:\\PRIVATE-HELPER.exe", "PRIVATE-ARGUMENT"],
+          args: [
+            "C:\\PRIVATE-HELPER.exe",
+            "--type=crashpad-handler",
+            `--database=${win32.join(f.state.profile, "Crashpad")}`,
+            "PRIVATE-ARGUMENT",
+          ],
         },
       ],
     }
@@ -539,6 +544,8 @@ test("handoff freezes unknown-reason counts before cleanup and never queries CDP
       handoffUnknownSessionProcesses: 0,
       handoffUnknownBirthProcesses: 0,
       handoffUnknownProfileOrAncestryProcesses: 0,
+      handoffUnknownCrashpadTypeProcesses: 1,
+      handoffUnknownCrashpadDatabaseProcesses: 1,
     })
     f.state.handoff = false
     await browser.stop()
@@ -548,10 +555,51 @@ test("handoff freezes unknown-reason counts before cleanup and never queries CDP
       unknownProcesses: 0,
       handoffUnknownProcesses: 1,
       handoffUnknownExecutableProcesses: 1,
+      handoffUnknownCrashpadTypeProcesses: 1,
+      handoffUnknownCrashpadDatabaseProcesses: 1,
     })
     expect(JSON.stringify(final)).not.toMatch(/PRIVATE|410[012]/)
   } finally {
     await f.cleanup()
+  }
+})
+
+test("Crashpad diagnostic flags require exact single arguments and never grant ownership", () => {
+  const profile = "C:\\PRIVATE-PROFILE"
+  const main = processRecord(profile)
+  const database = `--database=${win32.join(profile, "Crashpad")}`
+  const type = "--type=crashpad-handler"
+  const cases: { args: string[]; type: number; database: number }[] = [
+    { args: [type, database], type: 1, database: 1 },
+    { args: [type], type: 1, database: 0 },
+    { args: [database], type: 0, database: 0 },
+    { args: [type, type, database], type: 0, database: 0 },
+    { args: [type, "--type=renderer", database], type: 0, database: 0 },
+    { args: [type, "--type", "renderer", database], type: 0, database: 0 },
+    { args: [`--note=${type}`, database], type: 0, database: 0 },
+    { args: [type + "-other", database], type: 0, database: 0 },
+    { args: [type, database, database], type: 1, database: 0 },
+    { args: [type, database, "--database=C:\\FOREIGN"], type: 1, database: 0 },
+    { args: [type, database, "--database", "C:\\FOREIGN"], type: 1, database: 0 },
+    { args: [type, `--note=${database}`], type: 1, database: 0 },
+    { args: [type, database + "-foreign"], type: 1, database: 0 },
+    { args: [type, `--database=${profile}\\elsewhere\\..\\Crashpad`], type: 1, database: 0 },
+  ]
+  for (const value of cases) {
+    const other = { ...main, pid: 9000, parent: 42, birth: "134000000000000020", args: [executable, ...value.args] }
+    const result = windowsReviewOwnership({
+      processes: [main, other],
+      known: new Map([[main.pid, main]]),
+      root: main,
+      executable,
+      profile,
+      sid: main.sid,
+    })
+    expect([...result.owned.keys()]).toEqual([main.pid])
+    expect(result.unknown).toEqual([other])
+    expect(result.rejected).toEqual({ executable: 0, sid: 0, session: 0, birth: 0, profileOrAncestry: 1 })
+    expect(result.crashpad).toEqual({ type: value.type, database: value.database })
+    expect(JSON.stringify(result.crashpad)).not.toMatch(/PRIVATE|9000|4100|--/)
   }
 })
 

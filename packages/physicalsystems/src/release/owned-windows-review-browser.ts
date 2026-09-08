@@ -197,6 +197,7 @@ export function windowsReviewOwnership(input: {
   }
   const unknown = input.processes.filter((item) => !owned.has(item.pid))
   const rejected = { executable: 0, sid: 0, session: 0, birth: 0, profileOrAncestry: 0 }
+  const crashpad = { type: 0, database: 0 }
   // Diagnose the unchanged ownership result. Partition reasons in this fixed
   // order; one process can violate several rules but contributes only once.
   for (const item of unknown) {
@@ -207,8 +208,20 @@ export function windowsReviewOwnership(input: {
     else if (BigInt(item.birth) < BigInt(input.root.birth) || (parent && BigInt(item.birth) < BigInt(parent.birth)))
       rejected.birth++
     else rejected.profileOrAncestry++
+    // Literal argument-shape diagnostics only. Chromium's Windows handler uses
+    // --type=crashpad-handler and the resolved user-data directory's Crashpad
+    // database. Edge may differ; absent matches do not identify a bare launcher.
+    // https://github.com/chromium/chromium/blob/main/components/crash/core/app/crashpad_win.cc
+    // https://github.com/chromium/chromium/blob/main/chrome/install_static/install_util.cc
+    // https://github.com/chromium/crashpad/blob/main/client/crashpad_client_win.cc
+    const type = item.args.filter((arg) => arg === "--type" || arg.startsWith("--type="))
+    if (type.length !== 1 || type[0] !== "--type=crashpad-handler") continue
+    crashpad.type++
+    const database = item.args.filter((arg) => arg === "--database" || arg.startsWith("--database="))
+    if (database.length === 1 && database[0] === `--database=${win32.join(input.profile, "Crashpad")}`)
+      crashpad.database++
   }
-  return { owned, unknown, rejected }
+  return { owned, unknown, rejected, crashpad }
 }
 
 /** These four Registry64 observations are not a claim about effective policy. */
@@ -405,6 +418,7 @@ async function acquireWindowsReviewBrowser(
         unknown: processes,
         owned: new Map<number, WindowsReviewProcess>(),
         rejected: undefined,
+        crashpad: undefined,
       }
     observation.windowsObservePhase = "ownership"
     const ownership = windowsReviewOwnership({
@@ -640,6 +654,10 @@ async function acquireWindowsReviewBrowser(
               observation.handoffUnknownSessionProcesses = Math.min(current.rejected.session, 65536)
               observation.handoffUnknownBirthProcesses = Math.min(current.rejected.birth, 65536)
               observation.handoffUnknownProfileOrAncestryProcesses = Math.min(current.rejected.profileOrAncestry, 65536)
+            }
+            if (current.crashpad) {
+              observation.handoffUnknownCrashpadTypeProcesses = Math.min(current.crashpad.type, 65536)
+              observation.handoffUnknownCrashpadDatabaseProcesses = Math.min(current.crashpad.database, 65536)
             }
             // A canceled native read may complete, but must not schedule CDP or
             // another native read while the caller is waiting for quiescence.
