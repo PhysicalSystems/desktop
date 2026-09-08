@@ -14,6 +14,11 @@ import { startOwnedWindowsReviewBrowser } from "../packages/physicalsystems/src/
 import { runWindowsLoopbackDiagnostic } from "../packages/physicalsystems/src/release/windows-loopback-diagnostic"
 import { createBrowserPrivateDiagnostic } from "../packages/physicalsystems/src/release/browser-private-diagnostic"
 import { requireDisposablePublicRunner } from "../packages/physicalsystems/src/release/public-qualification"
+import {
+  captureOwnedBrowserDirectory,
+  removeOwnedBrowserDirectory,
+} from "../packages/physicalsystems/src/release/owned-browser-directory"
+import { readBrowserObservation } from "../packages/physicalsystems/src/release/browser-observation"
 
 try {
   if (process.argv.length !== 2) throw new Error("BROWSER_DIAGNOSTIC_CONTEXT_UNCONFIRMED")
@@ -43,7 +48,16 @@ try {
     mode: 0o600,
     flag: "wx",
   })
-  const root = await mkdtemp(join(temporary, "private-browser-factory-"))
+  // Diagnostic branch only: match the candidate's Windows browser-root depth.
+  // The exclusive enclosing directory is retained on every uncertain outcome.
+  const enclosing = context.platform === "windows-x64" ? join(temporary, "desktop-release") : undefined
+  if (enclosing) await mkdir(enclosing, { mode: 0o700 })
+  const directory = enclosing ? await captureOwnedBrowserDirectory(enclosing) : undefined
+  const qualification = enclosing ? await mkdtemp(join(enclosing, "desktop-qualification-")) : undefined
+  const packaged = qualification ? await mkdtemp(join(qualification, "packaged-")) : undefined
+  const nested = packaged ? join(packaged, "browser-handoff-review") : undefined
+  if (nested) await mkdir(nested, { mode: 0o700 })
+  const root = nested ?? (await mkdtemp(join(temporary, "private-browser-factory-")))
   const acquire = context.platform === "windows-x64" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser
   const result =
     mode === "windows-os-loopback"
@@ -55,6 +69,14 @@ try {
       : await runBrowserFactoryDiagnostic(context, () =>
           acquire({ env: process.env, root, probeURL: browserDiagnosticProbeURL }),
         )
+  if (directory && result.cleanup === "STOPPED" && !result.retentionRequired) {
+    await removeOwnedBrowserDirectory(directory).catch((error) => {
+      result.result = "FAILED"
+      result.cleanup = "UNCONFIRMED"
+      result.retentionRequired = true
+      result.browserObservation = { ...result.browserObservation, ...readBrowserObservation(error) }
+    })
+  }
   const completed = join(reports, "browser-diagnostic.next.json")
   const receipt = Buffer.from(JSON.stringify(result, null, 2) + "\n")
   await writeFile(completed, receipt, { mode: 0o600, flag: "wx" })
