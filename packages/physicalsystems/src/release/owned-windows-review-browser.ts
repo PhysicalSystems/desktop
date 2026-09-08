@@ -372,6 +372,8 @@ async function acquireWindowsReviewBrowser(
     const until = Date.now() + timeoutMs
     let ready = false
     while (Date.now() < until) {
+      // Keep readiness facts separate from cleanup's later process snapshots.
+      observation.readinessPolls = Math.min((observation.readinessPolls ?? 0) + 1, 65536)
       if (!child.pid || spawnFailed || closed || child.exitCode !== null) throw failure()
       observation.browserPhase = "identity-stat"
       const current = await observe()
@@ -400,8 +402,10 @@ async function acquireWindowsReviewBrowser(
       }
       const file = join(profile, "DevToolsActivePort")
       observation.browserPhase = "port-file"
+      observation.readinessPortFilePresent = false
       const value = await lstat(file).then(
         async (stat) => {
+          observation.readinessPortFilePresent = true
           if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256) throw failure()
           return (await readFile(file, "utf8")).split("\n")[0]
         },
@@ -409,17 +413,26 @@ async function acquireWindowsReviewBrowser(
           if (error.code !== "ENOENT") throw failure()
         },
       )
+      observation.readinessPortLineHasCR = Boolean(value?.includes("\r"))
       if (value && /^[1-9]\d{0,4}$/.test(value) && Number(value) <= 65535) port = Number(value)
+      observation.readinessPortParsed = Boolean(port)
       observation.browserPhase = "cdp-targets"
-      if (
-        port &&
-        current.listening.length === 1 &&
-        current.listening[0] === main.pid &&
-        !current.unknown.length &&
-        (await (io.targets ?? reviewBrowserTargets)(`http://127.0.0.1:${port}`))?.some(
-          (target) => target.type === "page" && target.url === "about:blank",
-        )
-      ) {
+      observation.readinessListeners = Math.min(current.listening.length, 65536)
+      observation.readinessListenerOwned = current.listening.length === 1 && current.listening[0] === main.pid
+      observation.readinessUnknownProcesses = current.unknown.length
+      const query = Boolean(
+        port && current.listening.length === 1 && current.listening[0] === main.pid && !current.unknown.length,
+      )
+      observation.readinessTargetQueried = query
+      observation.readinessTargetsAvailable = false
+      observation.readinessTargetCount = 0
+      observation.readinessBlankTarget = false
+      const targets = query ? await (io.targets ?? reviewBrowserTargets)(`http://127.0.0.1:${port}`) : undefined
+      const blank = Boolean(targets?.some((target) => target.type === "page" && target.url === "about:blank"))
+      observation.readinessTargetsAvailable = targets !== undefined
+      observation.readinessTargetCount = Math.min(targets?.length ?? 0, 65536)
+      observation.readinessBlankTarget = blank
+      if (blank) {
         ready = true
         observation.cdpReady = true
         break

@@ -93,6 +93,17 @@ export type BrowserObservation = {
   observedProcesses?: number
   unknownProcesses?: number
   listenerProcesses?: number
+  readinessPolls?: number
+  readinessListeners?: number
+  readinessUnknownProcesses?: number
+  readinessTargetCount?: number
+  readinessPortFilePresent?: boolean
+  readinessPortParsed?: boolean
+  readinessPortLineHasCR?: boolean
+  readinessListenerOwned?: boolean
+  readinessTargetQueried?: boolean
+  readinessTargetsAvailable?: boolean
+  readinessBlankTarget?: boolean
 }
 const codes = [
   "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
@@ -116,6 +127,13 @@ const bools = [
   "databaseMatched",
   "policyOwned",
   "sidMatched",
+  "readinessPortFilePresent",
+  "readinessPortParsed",
+  "readinessPortLineHasCR",
+  "readinessListenerOwned",
+  "readinessTargetQueried",
+  "readinessTargetsAvailable",
+  "readinessBlankTarget",
 ]
 const counts = [
   "ownedProcesses",
@@ -126,6 +144,10 @@ const counts = [
   "observedProcesses",
   "unknownProcesses",
   "listenerProcesses",
+  "readinessPolls",
+  "readinessListeners",
+  "readinessUnknownProcesses",
+  "readinessTargetCount",
 ]
 function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return

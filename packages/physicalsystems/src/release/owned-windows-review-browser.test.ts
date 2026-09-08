@@ -44,6 +44,7 @@ async function fixture(
     wrongRootSid?: boolean
     reuseOrphanAfterStop?: boolean
     nativeFailure?: "preflight" | "set" | "observe" | "restore"
+    unready?: "missing-port" | "crlf-port" | "wrong-listener" | "targets-unavailable" | "wrong-target"
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "windows-review-fixture-")))
@@ -66,6 +67,7 @@ async function fixture(
     observedRoots: [] as number[][],
     unrefs: 0,
     nativeEnv: {} as NodeJS.ProcessEnv,
+    targetQueries: 0,
   }
   const child = Object.assign(new EventEmitter(), {
     pid: 4100,
@@ -105,7 +107,11 @@ async function fixture(
     }
     if (request.operation === "observe") {
       state.observedRoots.push([...request.observedPids])
-      if (state.running) await writeFile(join(state.profile, "DevToolsActivePort"), "23456\n/devtools/browser/inert\n")
+      if (state.running && options.unready !== "missing-port")
+        await writeFile(
+          join(state.profile, "DevToolsActivePort"),
+          options.unready === "crlf-port" ? "23456\r\n/devtools/browser/inert\r\n" : "23456\n/devtools/browser/inert\n",
+        )
       const main = processRecord(state.profile)
       if (options.wrongRootSid) main.sid = "S-1-5-21-999-222-333-1001"
       if (state.reused) main.birth = "134000000000000999"
@@ -128,7 +134,7 @@ async function fixture(
         })
       return {
         processes,
-        listening: state.running && request.port ? [4100] : [],
+        listening: state.running && request.port ? [options.unready === "wrong-listener" ? 4999 : 4100] : [],
         policyOwned: state.policy.value?.data === state.profile,
       }
     }
@@ -178,7 +184,10 @@ async function fixture(
       return child
     },
     targets: async (origin: string) => {
+      state.targetQueries++
       expect(origin).toBe("http://127.0.0.1:23456")
+      if (options.unready === "targets-unavailable") return undefined
+      if (options.unready === "wrong-target") return [{ type: "page", url: "https://PRIVATE-UNKNOWN-TARGET" }]
       return [{ type: "page", url: state.handoff ? "https://auth.openai.com/codex/device" : "about:blank" }]
     },
   }
@@ -534,4 +543,44 @@ test("native module discovery uses the fixed OS module directory and an exclusiv
   const reset = "$env:PSModulePath = [IO.Path]::Combine($PSHOME,'Modules')"
   expect(windowsReviewNativeScript.indexOf(reset)).toBeGreaterThan(0)
   expect(windowsReviewNativeScript.indexOf(reset)).toBeLessThan(windowsReviewNativeScript.indexOf("ConvertFrom-Json"))
+})
+
+test("failed native readiness retains its port, listener and target facts after confirmed cleanup", async () => {
+  for (const unready of [
+    "missing-port",
+    "crlf-port",
+    "wrong-listener",
+    "targets-unavailable",
+    "wrong-target",
+  ] as const) {
+    const f = await fixture({ unready })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      const observation = readBrowserObservation(error)
+      expect(observation?.browserPhase).toBe("stopped")
+      expect(observation?.failedBrowserPhase).toBe("cdp-targets")
+      expect(observation?.cdpReady).toBe(false)
+      expect(observation?.ownedProcesses).toBe(0)
+      expect(observation?.listenerProcesses).toBe(0)
+      expect(observation?.readinessPolls).toBeGreaterThan(1)
+      expect(observation?.readinessPortFilePresent).toBe(unready !== "missing-port")
+      expect(observation?.readinessPortLineHasCR).toBe(unready === "crlf-port")
+      expect(observation?.readinessPortParsed).toBe(!["missing-port", "crlf-port"].includes(unready))
+      expect(observation?.readinessUnknownProcesses).toBe(0)
+      expect(observation?.readinessTargetCount).toBe(unready === "wrong-target" ? 1 : 0)
+      expect(observation?.readinessBlankTarget).toBe(false)
+      const queried = ["targets-unavailable", "wrong-target"].includes(unready)
+      expect(observation?.readinessTargetQueried).toBe(queried)
+      expect(observation?.readinessListenerOwned).toBe(queried)
+      expect(observation?.readinessTargetsAvailable).toBe(unready === "wrong-target")
+      expect(observation?.readinessListeners).toBe(["missing-port", "crlf-port"].includes(unready) ? 0 : 1)
+      expect(f.state.targetQueries > 0).toBe(queried)
+      expect(f.state.restored).toBe(true)
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      expect(JSON.stringify(observation)).not.toContain("23456")
+      await expect(access(f.input.root)).rejects.toThrow()
+    } finally {
+      await f.cleanup()
+    }
+  }
 })

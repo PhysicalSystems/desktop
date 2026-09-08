@@ -56,6 +56,8 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
     { browserPhase: "cleanup-observe", sameSession: "PRIVATE" },
     { browserPhase: "windows-preflight", windowsNativePhase: "PRIVATE" },
     { browserPhase: "windows-preflight", windowsNativeOutcome: "PRIVATE" },
+    { browserPhase: "cdp-targets", readinessTargetCount: 65537 },
+    { browserPhase: "cdp-targets", readinessPortLineHasCR: "PRIVATE" },
     {},
     [],
     null,
