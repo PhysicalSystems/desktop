@@ -33,7 +33,7 @@ type PlatformBase = {
   version?: string
 
   /** Open a web or mail URL in the default system application */
-  openExternal(url: string): void
+  openExternal(url: string): void | Promise<boolean>
 
   /** Open a local path in a local app (desktop only) */
   openPath?(path: string, app?: string): Promise<void>

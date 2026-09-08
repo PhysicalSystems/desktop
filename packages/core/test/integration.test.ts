@@ -285,6 +285,9 @@ describe("Integration", () => {
         status: "expired",
         time: attempt.time,
       })
+      expect(yield* integrations.attempt.complete({ attemptID: attempt.attemptID }).pipe(Effect.flip)).toBeInstanceOf(
+        Integration.AuthorizationError,
+      )
       expect(closed).toBe(true)
       expect(yield* credentials.list(integrationID)).toEqual([])
     }),

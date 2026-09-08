@@ -50,17 +50,25 @@ jobs:
         working-directory: packages/app
         run: bun test --conditions=solid --preload ./happydom.ts ./src/physicalsystems
 
-      - name: Rendered composer readiness regression
+      - name: Rendered composer and provider sign-in regressions
         working-directory: packages/app
-        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts
+        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts
+
+      - name: Provider attempt lifecycle regression
+        working-directory: packages/app
+        run: bun test ./src/utils/oauth-attempt.test.ts
 
       - name: Agent authority and adapter regression tests
         working-directory: packages/opencode
         run: bun test --timeout 30000 ./test/plugin/physicalsystems.test.ts ./test/plugin/physicalsystems-authority.test.ts
 
+      - name: Actual provider credential and OAuth persistence regressions
+        working-directory: packages/core
+        run: bun test ./test/credential-native.test.ts ./test/credential.test.ts ./test/integration.test.ts
+
       - name: Desktop startup diagnostic regression tests
         working-directory: packages/desktop
-        run: bun test ./src/main/startup-trace.test.ts
+        run: bun test ./src/main/startup-trace.test.ts ./src/main/external-url.test.ts
 
       - name: Typecheck integration
         working-directory: packages/physicalsystems
@@ -73,4 +81,7 @@ jobs:
         run: bun typecheck
       - name: Typecheck agent server
         working-directory: packages/opencode
+        run: bun typecheck
+      - name: Typecheck core
+        working-directory: packages/core
         run: bun typecheck
