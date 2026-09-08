@@ -13,6 +13,7 @@ import {
   createReviewBrowserProfileProof,
   reviewBrowserOwnershipScope,
   reviewBrowserSignalIdentity,
+  reviewBrowserSignalProof,
   reviewBrowserTargets,
   reviewBrowserUid,
   settleReviewBrowserCleanup,
@@ -22,6 +23,115 @@ import {
 // signaling, credential store or device is started by these regressions.
 const status = "Name:\tchrome\nUid:\t1001\t1001\t1001\t1001\n"
 const identity = { pid: 400, state: "S", group: 400, session: 400, birth: "123456" }
+
+const processStat = (value = identity) =>
+  `${value.pid} (chrome) ${value.state} ${["399", value.group, value.session, ...Array(15).fill("0"), value.birth, "0"].join(" ")}`
+const procError = (code: string) => Object.assign(Error("INERT_PROC_READ_FAILURE"), { code })
+function signalProofFixture(
+  input: {
+    stats?: (string | Error)[]
+    status?: string | Error
+    command?: string | Error
+    executable?: string | Error
+  } = {},
+) {
+  const database = reviewBrowserCrashDatabase("/owned/browser")
+  const calls: string[] = []
+  const stats = [...(input.stats ?? [processStat(), processStat()])]
+  const read = async (key: string, value: string | Error) => {
+    calls.push(key)
+    if (value instanceof Error) throw value
+    return value
+  }
+  const io = {
+    stat: () => read("stat", stats.shift() ?? processStat()),
+    status: () => read("status", input.status ?? status),
+    command: () => read("command", input.command ?? `chrome_crashpad_handler\0--database=${database}\0`),
+    executable: () => read("executable", input.executable ?? "/opt/google/chrome/chrome_crashpad_handler"),
+  }
+  return { calls, io, input: { session: 999, uid: 1001, database } }
+}
+
+test("pre-signal missing reads skip only after a fresh exact-PID stat confirms disappearance", async () => {
+  for (const code of ["ENOENT", "ESRCH"]) {
+    for (const stage of ["status", "command", "executable", "initial-stat", "final-stat"]) {
+      const missing = procError(code)
+      const f = signalProofFixture({
+        stats:
+          stage === "initial-stat"
+            ? [missing, missing]
+            : stage === "final-stat"
+              ? [processStat(), missing, missing]
+              : [processStat(), missing],
+        ...(stage === "status" ? { status: missing } : {}),
+        ...(stage === "command" ? { command: missing } : {}),
+        ...(stage === "executable" ? { executable: missing } : {}),
+      })
+      let signals = 0
+      if (await reviewBrowserSignalProof(identity, f.input, f.io)) signals++
+      expect(signals).toBe(0)
+      expect(f.calls.at(-1)).toBe("stat")
+      expect(f.calls.filter((call) => call === "stat")).toHaveLength(stage === "final-stat" ? 3 : 2)
+    }
+  }
+})
+
+test("live, reused, unreadable or malformed PID rechecks cannot turn missing auxiliary reads into signal authority", async () => {
+  for (const stage of ["status", "command", "executable"] as const) {
+    for (const last of [
+      processStat(),
+      processStat({ ...identity, birth: "123457" }),
+      processStat({ ...identity, state: "Z" }),
+      "malformed",
+      procError("EACCES"),
+    ]) {
+      const f = signalProofFixture({ stats: [processStat(), last], [stage]: procError("ENOENT") })
+      await expect(reviewBrowserSignalProof(identity, f.input, f.io)).rejects.toThrow()
+      expect(f.calls.at(-1)).toBe("stat")
+    }
+    for (const code of ["EACCES", "EPERM", "EIO"]) {
+      const error = procError(code)
+      const f = signalProofFixture({ [stage]: error })
+      await expect(reviewBrowserSignalProof(identity, f.input, f.io)).rejects.toBe(error)
+      expect(f.calls.filter((call) => call === "stat")).toHaveLength(1)
+    }
+  }
+  for (const last of [processStat(), processStat({ ...identity, birth: "123457" }), "malformed", procError("EACCES")]) {
+    const f = signalProofFixture({ stats: [procError("ENOENT"), last] })
+    await expect(reviewBrowserSignalProof(identity, f.input, f.io)).rejects.toThrow()
+    expect(f.calls).toEqual(["stat", "stat"])
+  }
+  const denied = procError("EPERM")
+  const f = signalProofFixture({ stats: [denied] })
+  await expect(reviewBrowserSignalProof(identity, f.input, f.io)).rejects.toBe(denied)
+  expect(f.calls).toEqual(["stat"])
+})
+
+test("successful signal proof rechecks immutable identity after auxiliary reads and retains every ownership gate", async () => {
+  const safe = signalProofFixture()
+  expect(await reviewBrowserSignalProof(identity, safe.input, safe.io)).toBe(true)
+  expect(safe.calls).toEqual(["stat", "status", "command", "executable", "stat"])
+  const session = signalProofFixture()
+  expect(await reviewBrowserSignalProof(identity, { ...session.input, session: identity.session }, session.io)).toBe(
+    true,
+  )
+  expect(session.calls).toEqual(["stat", "status", "stat"])
+  for (const changed of [{ pid: 401 }, { birth: "123457" }, { session: 401 }, { group: 401 }]) {
+    const final = signalProofFixture({ stats: [processStat(), processStat({ ...identity, ...changed })] })
+    await expect(reviewBrowserSignalProof(identity, final.input, final.io)).rejects.toThrow("BROWSER_UNCONFIRMED")
+    const first = signalProofFixture({ stats: [processStat({ ...identity, ...changed })], status: procError("ENOENT") })
+    await expect(reviewBrowserSignalProof(identity, first.input, first.io)).rejects.toThrow("BROWSER_UNCONFIRMED")
+    expect(first.calls).toEqual(["stat"])
+  }
+  for (const input of [
+    { status: "Uid:\t1001\t0\t1001\t1001\n" },
+    { command: "--database=/foreign\0" },
+    { executable: "/foreign/chrome_crashpad_handler" },
+  ]) {
+    const f = signalProofFixture(input)
+    await expect(reviewBrowserSignalProof(identity, f.input, f.io)).rejects.toThrow("BROWSER_UNCONFIRMED")
+  }
+})
 
 test("Linux fixture rejects Exec paths that require quoting before launching a browser", () => {
   expect(reviewBrowserDesktopEntry("/owned/review-012_fixture/browser")).toContain(

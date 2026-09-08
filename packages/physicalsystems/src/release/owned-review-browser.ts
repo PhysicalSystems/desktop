@@ -131,6 +131,14 @@ export function reviewBrowserSignalIdentity(
   status: string,
   uid: number,
 ) {
+  reviewBrowserSameSignalProcess(before, after)
+  reviewBrowserUid(status, uid)
+}
+
+function reviewBrowserSameSignalProcess(
+  before: ReturnType<typeof reviewBrowserProcess>,
+  after: ReturnType<typeof reviewBrowserProcess>,
+) {
   if (
     before.pid !== after.pid ||
     before.birth !== after.birth ||
@@ -138,7 +146,62 @@ export function reviewBrowserSignalIdentity(
     before.group !== after.group
   )
     throw failure()
-  reviewBrowserUid(status, uid)
+}
+
+/** Read adapters are mandatory so regressions exercise this exact signal proof
+ * with inert process snapshots, without native reads or signals. Missing stat,
+ * status, cmdline or exe entries require one fresh exact-PID stat lookup to
+ * confirm disappearance. A live, reused or unreadable PID remains a failure. */
+export async function reviewBrowserSignalProof(
+  member: ReturnType<typeof reviewBrowserProcess>,
+  input: { session: number; uid: number; database: string },
+  io: {
+    stat(): Promise<string>
+    status(): Promise<string>
+    command(): Promise<string>
+    executable(): Promise<string>
+  },
+) {
+  const anchor = { ...member }
+  const missing = (error: unknown) => ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException)?.code ?? "")
+  const read = async (operation: () => Promise<string>) => {
+    try {
+      return await operation()
+    } catch (error) {
+      if (!missing(error)) throw error
+      let fresh: string
+      try {
+        fresh = await io.stat()
+      } catch (recheck) {
+        if (missing(recheck)) return undefined
+        throw recheck
+      }
+      reviewBrowserSameSignalProcess(anchor, reviewBrowserProcess(fresh))
+      // Even the original PID still present as a zombie is not proof that the
+      // failed auxiliary read was harmless. Do not signal or hide that failure.
+      throw error
+    }
+  }
+  const now = await read(io.stat)
+  if (now === undefined) return false
+  const current = reviewBrowserProcess(now)
+  reviewBrowserSameSignalProcess(anchor, current)
+  const status = await read(io.status)
+  if (status === undefined) return false
+  reviewBrowserSignalIdentity(anchor, current, status, input.uid)
+  if (current.session !== input.session) {
+    const command = await read(io.command)
+    if (command === undefined) return false
+    if (reviewBrowserOwnershipScope({ sameSession: false, command, database: input.database }) !== "database")
+      throw failure()
+    const executable = await read(io.executable)
+    if (executable === undefined) return false
+    if (!reviewBrowserCrashpad({ command, executable, database: input.database })) throw failure()
+  }
+  const final = await read(io.stat)
+  if (final === undefined) return false
+  reviewBrowserSameSignalProcess(anchor, reviewBrowserProcess(final))
+  return true
 }
 
 export function reviewBrowserCrashpad(input: { command: string; executable: string; database: string }) {
@@ -438,22 +501,31 @@ async function startLinuxReviewBrowser(
           observation.browserPhase = "cleanup-observe"
           for (const member of await inspect()) {
             observation.browserPhase = "cleanup-signal"
-            const now = await readFile(`/proc/${member.pid}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => {
-              if (error.code === "ENOENT" || error.code === "ESRCH") return undefined
-              throw failure()
-            })
-            if (!now) continue
-            const current = reviewBrowserProcess(now)
-            reviewBrowserSignalIdentity(member, current, await readFile(`/proc/${member.pid}/status`, "utf8"), uid)
             if (
-              current.session !== child.pid &&
-              !reviewBrowserCrashpad({
-                command: await readFile(`/proc/${member.pid}/cmdline`, "utf8"),
-                executable: await readlink(`/proc/${member.pid}/exe`),
-                database,
-              })
+              !(await reviewBrowserSignalProof(
+                member,
+                { session: child.pid!, uid, database },
+                {
+                  stat: () => {
+                    observation.inspectPhase = "proc-stat"
+                    return readFile(`/proc/${member.pid}/stat`, "utf8")
+                  },
+                  status: () => {
+                    observation.inspectPhase = "proc-status"
+                    return readFile(`/proc/${member.pid}/status`, "utf8")
+                  },
+                  command: () => {
+                    observation.inspectPhase = "cmdline"
+                    return readFile(`/proc/${member.pid}/cmdline`, "utf8")
+                  },
+                  executable: () => {
+                    observation.inspectPhase = "crashpad-executable"
+                    return readlink(`/proc/${member.pid}/exe`)
+                  },
+                },
+              ))
             )
-              throw failure()
+              continue
             try {
               process.kill(member.pid, signal)
             } catch (error) {
