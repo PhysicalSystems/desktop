@@ -5,6 +5,8 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, win32 } from "node:path"
 import { Script } from "node:vm"
+import type { Writable } from "node:stream"
+import { finished } from "node:stream/promises"
 import { fileURLToPath } from "node:url"
 import { openPackagedArchive, packagedArchiveReader } from "./packaged-archive"
 import { qualificationFailureCode } from "./qualification"
@@ -14,7 +16,7 @@ const desktopRequire = createRequire(desktopManifest)
 const builderRequire = createRequire(desktopRequire.resolve("electron-builder/package.json"))
 const appBuilderRequire = createRequire(builderRequire.resolve("app-builder-lib/package.json"))
 const asar = appBuilderRequire("@electron/asar") as {
-  createPackage: (source: string, destination: string) => Promise<void>
+  createPackage: (source: string, destination: string) => Promise<Writable>
   extractFile: (archive: string, member: string) => Buffer
   getRawHeader: (archive: string) => { header: unknown; headerSize: number }
 }
@@ -34,7 +36,9 @@ async function fixture() {
   await writeFile(join(source, "out/legal/malformed.json"), "credential-trap must never leave diagnostics")
   await writeFile(join(source, "package.json"), '{"version":"0.1.0-beta.1"}')
   const archive = join(root, "app.asar")
-  await asar.createPackage(source, archive)
+  // The pinned writer resolves with out.end(), before the pending write has
+  // necessarily finished. Await its actual stream completion before reading.
+  await finished(await asar.createPackage(source, archive))
   return archive
 }
 

@@ -147,6 +147,8 @@ export const dict = {
   "provider.connect.apiKey.label": "{{provider}} API key",
   "provider.connect.apiKey.placeholder": "API key",
   "provider.connect.apiKey.required": "API key is required",
+  "provider.connect.apiKey.saveFailed":
+    "Key storage could not be confirmed. Check that credential storage is available, then try again.",
   "provider.connect.opencodeZen.line1":
     "OpenCode Zen gives you access to a curated set of reliable optimized models for coding agents.",
   "provider.connect.opencodeZen.line2":
@@ -162,6 +164,14 @@ export const dict = {
   "provider.connect.oauth.code.placeholder": "Authorization code",
   "provider.connect.oauth.code.required": "Authorization code is required",
   "provider.connect.oauth.code.invalid": "Invalid authorization code",
+  "provider.connect.oauth.code.unconfirmed":
+    "Sign-in completion could not be confirmed. Start sign-in again to get a new authorization code.",
+  "provider.connect.oauth.restart": "Start sign-in again",
+  "provider.connect.oauth.browser.failed":
+    "The browser launch could not be confirmed. Click the sign-in link to retry, or copy its address into your browser.",
+  "provider.connect.oauth.browser.invalid":
+    "The provider returned an invalid sign-in link. Go back and start sign-in again.",
+  "provider.connect.oauth.expired": "This sign-in attempt expired. Go back and start sign-in again.",
   "provider.connect.oauth.auto.visit.prefix": "Visit ",
   "provider.connect.oauth.auto.visit.link": "this link",
   "provider.connect.oauth.auto.visit.suffix":

@@ -4,8 +4,9 @@
 source validation, native Windows/Linux packaging and packaged simulation smoke.
 It is restricted to an explicit dispatch of the owned repository's `main` branch
 at that workflow's exact commit. There is no mutable source selector or unsigned
-fallback. **The workflow deliberately fails at incomplete native qualification.**
-It does not produce a publisher-eligible qualified distribution.
+fallback. Its final job runs the strict collector: a publisher-eligible bundle is
+created only when every required native check passes for every exact artifact.
+Missing observations fail collection; there is no unconditional terminal stub.
 
 Do not dispatch this workflow until its signing setup has been provisioned and a
 public build has been authorized. Adding the workflow does not provision accounts
@@ -51,24 +52,35 @@ that trusted source necessarily handles signing credentials during packaging.
 
 1. Validate the owned main dispatch and enable variable, then freeze the explicit
    signing policy before dependency builds or access to signing credentials.
-2. Read complete version history and prepare source-verified `ReleaseInputs`.
-   Bind `PublicBuildInputs` to that source and release digest. Export both digests
-   from the trusted prepare job; downstream jobs never calculate their expected
-   anchors from a downloaded artifact.
+2. Read complete version history and freeze separate source-verified input pairs
+   for a strictly lower unreleased lab baseline and the target. Export all four
+   release/public digests and the exact upgrade-plan digest from the trusted
+   prepare job; downstream jobs never self-anchor downloaded input files.
 3. Reuse `desktop-ci.yml` against that same immutable source.
 4. Build Windows x64 NSIS and Linux x64 Debian/AppImage in parallel using
    `desktop-build-public.ts`. Packaging requires the compiled public identity
    marker and main-process hash, signs Windows under the frozen policy, and uses
-   `--publish never`.
+   `--publish never`. Each native job builds the separately versioned lab with
+   the same policy; its installers never enter the target inventory.
 5. Exercise the exact packages in disposable hosted runners with device access
    disabled and the inert model fixture. Public smoke checks the embedded public
    identity and inputs, and observes actual Windows installer/payload signatures.
    Linux formats continue only after confirmed application and installation cleanup;
    an uncertain outcome stops further package access. No developer laptop or live
    hardware is involved in these probes.
-6. Fail with `PUBLIC_NATIVE_QUALIFICATION_INCOMPLETE`. This is intentional even
-   if the implemented smoke checks pass. No `qualified-distribution.json`,
-   `desktop-public-qualified-*`, release tag or website selection is produced.
+6. Author sanitized native receipts from fixed in-process probe IDs. A separate
+   Windows job and Linux job each export a raw SHA-256 for `native-job.json`, plus
+   the immutable IDs of their installer and receipt uploads. The jobs call
+   `desktop-public-package.yml`; no matrix output can overwrite another platform's
+   evidence anchor.
+7. Download those exact artifact IDs, verify each native-job file against its
+   separately trusted output digest, and build the existing `PublicCollectionPlan`
+   only from those verified bindings. Copy only the named installers and receipts
+   into a new flat evidence directory, rechecking copied hashes.
+8. Invoke the strict collector. Complete evidence produces
+   `desktop-public-qualified-<run-id>-<attempt>` and an independently exported
+   `qualification_sha256`; incomplete evidence produces no qualified bundle and
+   fails the producer. Neither outcome signs another artifact or publishes a release.
 
 Input bundles, exact installers, unqualified build records and sanitized smoke
 receipts have run/attempt-specific artifact names and 30-day retention. Uploads
@@ -77,26 +89,58 @@ credential files, runtime attachments and dependency caches are excluded.
 `unqualified-public-desktop-build` says signing `NOT_VERIFIED` and qualification
 `NOT_TESTED`. A separate `unqualified-public-desktop-smoke` receipt may contain
 real signature observations and implemented smoke outcomes, but its overall result
-remains `UNQUALIFIED` and each missing native check stays `NOT_TESTED`.
+remains `UNQUALIFIED`. A separate `public-desktop-native-qualification` receipt
+records all eight required native statuses, including `NOT_TESTED` for missing
+probes. The smoke step can finish successfully while these statuses remain
+untested, allowing both platforms' observations to be gathered; the final strict
+collector still fails until they are complete.
+
+## Fixed native observation contract
+
+`public-native-receipts.ts` maps the reviewed smoke controller's observations:
+
+| Public requirement         | Actual observation required                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Native credential storage  | `native-v2-credential-probe`; the legacy `/auth` canary alone is insufficient                                                     |
+| Provider browser sign-in   | `native-provider-browser-probe`                                                                                                   |
+| Fresh install              | NSIS/Debian package installation and actual launch/isolation/setup checks; AppImage needs `native-fresh-appimage-probe`           |
+| Upgrade                    | `native-upgrade-probe`                                                                                                            |
+| Failed-upgrade recovery    | `native-failed-upgrade-recovery-probe`                                                                                            |
+| Uninstall/reinstall        | `native-reinstall-probe` and package/launcher cleanup                                                                             |
+| Configuration preservation | The same reinstall probe preserves the original session, transcript, completed trials and deliberately changed pinch-zoom setting |
+| Platform display           | `native-platform-display-probe`, within its explicitly tested display environment                                                 |
+
+These mappings also require confirmed application/private-service cleanup, and
+Windows requires verified signing. Missing probes stay `NOT_TESTED`; failed or
+blocked dependencies retain that result. AppImage smoke exercises the original
+extract-and-run runtime and portable replacement within its documented Ubuntu
+AppArmor prerequisite. Configuration preservation
+does not claim every possible user file or a default-profile migration. Display
+evidence must not claim Wayland or optical flicker from an X11/hosted test.
+
+Additional probes are authored in the actual native smoke process. There is no
+manual JSON upload, environment boolean or input flag that grants PASS. A native
+receipt and its job manifest contain fixed IDs/statuses and immutable bindings;
+profiles, provider values, arbitrary diagnostic strings and logs remain excluded.
 
 ## Remaining release boundary
 
-Public native qualification still needs real native credential storage, provider
-browser sign-in, fresh installation, upgrades, failed-upgrade recovery,
-uninstall/reinstall, configuration preservation and platform-display evidence.
+Public native qualification still needs the actual complete observations above
+on signed public artifacts. Candidate native evidence cannot substitute for them.
 The [strict evidence collector](public-collector.md) is implemented and validates
-the exact bytes, signer and independently anchored native receipts. Complete native
-receipt production and the final workflow handoff to that collector are not yet
-implemented. Candidate fixture results cannot substitute for these checks.
+the exact bytes, signer and independently anchored native receipts. Native receipt
+production and workflow handoff are implemented; no helper test establishes that
+the missing operating-system or account-backed probes have actually passed.
 
-Upgrade checks also require an approved previous **public-identity** baseline.
-The first-public-release policy for that baseline is unresolved; the current
-public validator has no `NOT_APPLICABLE` exception. Do not claim a candidate
-installation is an equivalent public upgrade baseline or weaken the gate here.
+Upgrade and recovery use a separately frozen lower-version **public-identity lab
+baseline**, described in [public-upgrade.md](public-upgrade.md). Its actual native
+controllers are implemented for NSIS, Debian and portable AppImage. The fixture
+shares reviewed source/storage schema and is never published; it bootstraps the
+first release without pretending to test historical migrations. All native gates
+remain mandatory and require actual successful public runs.
 
-After those checks and their trusted receipt producers are implemented, the
-collector can produce the qualification bundle for the signed installers required
-by [the public publisher](public-publisher.md).
+After the actual checks pass, the wired collector produces the qualification
+bundle for the signed installers required by [the public publisher](public-publisher.md).
 That publisher currently requires a separate dispatch, verifies its producer
 run/source identity, completes an exact-byte draft, obtains one final protected
 approval and updates the website after public readback. Automatic producer-to-

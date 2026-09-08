@@ -320,27 +320,44 @@ export const locationLayer = Layer.effect(
     }
 
     const settle = Effect.fnUntraced(function* (attemptID: AttemptID, exit: Exit.Exit<Credential.OAuth, unknown>) {
-      const now = yield* Clock.currentTimeMillis
-      const result = yield* SynchronizedRef.modify(attempts, (current) => {
-        const attempt = current.get(attemptID)
-        if (!attempt || attempt.status !== "pending") return [undefined, current]
-        const terminal: TerminalAttempt = Exit.isSuccess(exit)
-          ? { status: "complete", time: attempt.time, removeAt: now + terminalRetention }
-          : { status: "failed", message: message(exit.cause), time: attempt.time, removeAt: now + terminalRetention }
-        return [attempt, new Map(current).set(attemptID, terminal)]
-      })
-      if (!result) return
-      if (Exit.isSuccess(exit)) {
-        const implementation = state.get().integrations.get(result.integrationID)?.implementations.get(result.methodID)
-        yield* credentials.create({
-          integrationID: result.integrationID,
-          label: result.label ?? implementation?.label?.(exit.value),
-          value: exit.value,
-        })
-        yield* events.publish(Event.ConnectionUpdated, { integrationID: result.integrationID })
+      const result = yield* SynchronizedRef.modifyEffect(attempts, (current) =>
+        Effect.gen(function* () {
+          const attempt = current.get(attemptID)
+          if (!attempt || attempt.status !== "pending") return [undefined, current] as const
+          // Commit the credential before exposing completion. The lock serializes
+          // cancellation/expiry with this write; no successful login precedes it.
+          const stored = Exit.isFailure(exit)
+            ? exit
+            : yield* Effect.gen(function* () {
+                const implementation = state
+                  .get()
+                  .integrations.get(attempt.integrationID)
+                  ?.implementations.get(attempt.methodID)
+                yield* credentials.create({
+                  integrationID: attempt.integrationID,
+                  label: attempt.label ?? implementation?.label?.(exit.value),
+                  value: exit.value,
+                })
+              }).pipe(Effect.exit)
+          const now = yield* Clock.currentTimeMillis
+          const terminal: TerminalAttempt = Exit.isSuccess(stored)
+            ? { status: "complete", time: attempt.time, removeAt: now + terminalRetention }
+            : {
+                status: "failed",
+                message: Exit.isFailure(exit) ? message(exit.cause) : "Credential storage failed",
+                time: attempt.time,
+                removeAt: now + terminalRetention,
+              }
+          return [{ attempt, stored }, new Map(current).set(attemptID, terminal)] as const
+        }),
+      )
+      if (!result) return Exit.fail(new Error("OAuth attempt is no longer pending"))
+      yield* Effect.gen(function* () {
+        if (!Exit.isSuccess(result.stored)) return
+        yield* events.publish(Event.ConnectionUpdated, { integrationID: result.attempt.integrationID })
         yield* events.publish(Event.Updated, {})
-      }
-      yield* close(result.scope)
+      }).pipe(Effect.ensuring(close(result.attempt.scope)))
+      return result.stored
     })
 
     const scrub = Effect.fnUntraced(function* () {
@@ -443,7 +460,7 @@ export const locationLayer = Layer.effect(
           if (authorization.mode === "auto") {
             yield* authorization.callback.pipe(
               Effect.exit,
-              Effect.flatMap((exit) => settle(id, exit)),
+              Effect.flatMap((exit) => settle(id, exit).pipe(Effect.uninterruptible)),
               Effect.forkIn(attemptScope, { startImmediately: true }),
             )
           }
@@ -489,7 +506,9 @@ export const locationLayer = Layer.effect(
             return [match, new Map(current).set(input.attemptID, { ...match, completing: true })]
           })
           if (!attempt) return yield* Effect.die(`OAuth attempt not found: ${input.attemptID}`)
-          if (attempt.status !== "pending") return
+          if (attempt.status === "complete") return
+          if (attempt.status !== "pending")
+            return yield* new AuthorizationError({ cause: new Error("OAuth attempt is no longer pending") })
           if (attempt.authorization.mode === "code" && input.code === undefined) {
             return yield* new CodeRequiredError({ attemptID: input.attemptID })
           }
@@ -499,8 +518,10 @@ export const locationLayer = Layer.effect(
               ? attempt.authorization.callback
               : attempt.authorization.callback(input.code as string)
           const exit = yield* authorize(callback).pipe(Effect.exit)
-          yield* settle(input.attemptID, exit)
-          if (Exit.isFailure(exit)) return yield* exit
+          // Once commit starts, finish bounded native persistence and terminal
+          // bookkeeping together even if the HTTP request is disconnected.
+          const stored = yield* settle(input.attemptID, exit).pipe(Effect.uninterruptible)
+          if (Exit.isFailure(stored)) return yield* new AuthorizationError({ cause: Cause.squash(stored.cause) })
         }),
         cancel: Effect.fn("Integration.attempt.cancel")(function* (attemptID) {
           const attempt = yield* SynchronizedRef.modify(attempts, (current) => {

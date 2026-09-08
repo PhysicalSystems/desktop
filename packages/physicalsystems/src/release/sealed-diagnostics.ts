@@ -128,6 +128,12 @@ export async function sealDiagnostics(input: {
   }
 }
 
+/** Allow diagnostic callers to reject an invalid recipient before collecting any
+ * private values. This uses exactly the sealer's existing RSA/SPKI policy. */
+export function isDiagnosticsPublicKey(pem: string) {
+  return !!publicKey(pem)
+}
+
 function publicKey(pem: string) {
   try {
     if (

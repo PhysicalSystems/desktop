@@ -15,7 +15,7 @@ import { createUnresponsiveSampler } from "./unresponsive"
 import { nativeT } from "./native-translations"
 import { createWindowRegistry } from "./window-registry"
 import { safeWindowURL } from "./window-state"
-import { resolveExternalURL, resolveLocalFilePath } from "./external-url"
+import { createExternalURLOpener, resolveLocalFilePath } from "./external-url"
 
 const root = dirname(fileURLToPath(import.meta.url))
 const rendererRoot = join(root, "../renderer")
@@ -233,13 +233,20 @@ export function createMainWindow(id: string = randomUUID()) {
   return win
 }
 
+let externalURLOpener: ReturnType<typeof createExternalURLOpener> | undefined
+
+/** Called once before the main process adopts the app's private XDG profile. */
+export function initializeExternalURLOpener(environment: Readonly<NodeJS.ProcessEnv>) {
+  if (externalURLOpener) return
+  externalURLOpener = createExternalURLOpener({
+    platform: process.platform,
+    environment,
+    open: (url) => shell.openExternal(url),
+  })
+}
+
 export function openExternalURL(value: string) {
-  const url = resolveExternalURL(value)
-  if (!url) {
-    writeLog("window", "blocked external target", { url: value }, "warn")
-    return
-  }
-  void shell.openExternal(url)
+  return externalURLOpener?.(value) ?? Promise.resolve(false)
 }
 
 export function openLocalFileURL(value: string) {

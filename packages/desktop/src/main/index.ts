@@ -28,6 +28,7 @@ import { setupAutoUpdater, showUpdaterDialog } from "./updater"
 import { safeWebContentsURL } from "./window-state"
 import {
   getLastFocusedWindow,
+  initializeExternalURLOpener,
   registerRendererProtocol,
   setRelaunchHandler,
   setAppQuitting,
@@ -45,6 +46,7 @@ import type { PhysicalHost } from "./physical"
 import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycle"
 import { desktopIdentity } from "../../../physicalsystems/src/release/identity"
 import { startupTrace } from "./startup-trace"
+import { shutdownTrace } from "./shutdown-trace"
 const TEST_ONBOARDING = process.env.OPENCODE_TEST_ONBOARDING === "1"
 // Physical Systems' reviewed tool adapter currently targets the bundled v1 server.
 const SIDECAR_VERSION = "v1"
@@ -104,6 +106,7 @@ function ensureLoopbackNoProxy() {
 
 const main = Effect.gen(function* () {
   startupTrace("MAIN_ENTER")
+  initializeExternalURLOpener(process.env)
   const identity = desktopIdentity(import.meta.env.PHYSICALSYSTEMS_BUILD_IDENTITY)
   const physicalRoot = process.env.PHYSICALSYSTEMS_DATA_DIR || join(app.getPath("appData"), identity.profileDirectory)
   const scoped = physicalEnvironment(process.env, physicalRoot)
@@ -173,13 +176,16 @@ const main = Effect.gen(function* () {
     },
   )
   const stopSidecars = async () => {
+    shutdownTrace("SERVERS_BEFORE")
     await killSidecar()
     wslServers.stopAll()
+    shutdownTrace("SERVERS_AFTER")
   }
   const shutdown = createShutdownCoordinator({
     async closeOperator() {
       shutdownStarted = true
-      try { await (physical || await physicalReady)?.close() }
+      shutdownTrace("OPERATOR_BEFORE")
+      try { await (physical || await physicalReady)?.close(); shutdownTrace("OPERATOR_AFTER") }
       catch (error) { shutdownStarted = false; throw error }
     },
     stopServers: stopSidecars,
@@ -187,9 +193,10 @@ const main = Effect.gen(function* () {
       quitAllowed = true
       setAppQuitting()
       if (intent === "relaunch") app.relaunch()
+      shutdownTrace("QUIT_FINISH")
       app.quit()
     },
-    blocked() { physical?.notify() },
+    blocked(error) { shutdownTrace("BLOCKED", error); physical?.notify() },
   })
   const relaunch = () => { void shutdown.request("relaunch") }
 

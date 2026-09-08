@@ -1,5 +1,5 @@
 name: Prepare desktop candidate (no publication)
-run-name: Desktop ${{ inputs.channel }} candidate from ${{ inputs.source_sha || github.sha }}
+run-name: ${{ inputs.browser_factory_diagnostic && format('{0} browser factory diagnostic', inputs.browser_factory_platform || 'linux-x64') || format('Desktop {0} candidate', inputs.channel) }} from ${{ inputs.source_sha || github.sha }}
 
 on:
   workflow_dispatch:
@@ -22,6 +22,41 @@ on:
         description: Optional RSA public PEM (3072+ bits) for encrypted bounded startup logs; never provide a private key
         type: string
         required: false
+      browser_review:
+        description: Verify the native browser handoff against an owned loopback fixture; no provider sign-in
+        type: boolean
+        default: false
+        required: false
+      browser_factory_diagnostic:
+        description: Browser startup and cleanup only; skips desktop build, candidate and provider qualification
+        type: boolean
+        default: false
+        required: false
+      browser_factory_loopback:
+        description: Optional Windows OS loopback handoff inside the factory diagnostic; no desktop or provider qualification
+        type: boolean
+        default: false
+        required: false
+      browser_factory_platform:
+        description: Hosted platform for the optional browser factory diagnostic only
+        type: choice
+        options: [linux-x64, windows-x64]
+        default: linux-x64
+        required: false
+      provider_qa:
+        description: Optional real account review; selected device grant must be authorized by its reviewer
+        type: choice
+        options: [disabled, openai-device]
+        default: disabled
+        required: false
+      provider_qa_public_key:
+        description: Reviewer RSA public PEM only, for the encrypted expiring device-code challenge
+        type: string
+        required: false
+      provider_qa_key_sha256:
+        description: Independently verified SHA-256 of the reviewer public key in DER SPKI format
+        type: string
+        required: false
 
 # These jobs cannot publish releases, push tags, attest, sign or change a website.
 permissions:
@@ -37,13 +72,92 @@ env:
 
 # Allocation is serialized. Candidate versions are provisional until an independently
 # authorized publisher reserves them; an unsigned candidate does not create a tag.
+# Diagnostics allocate no versions and serialize only within their branch/platform.
 concurrency:
-  group: desktop-release-candidate
+  group: ${{ inputs.browser_factory_diagnostic && format('desktop-browser-diagnostic-{0}-{1}', github.ref, inputs.browser_factory_platform == 'windows-x64' && 'windows-x64' || 'linux-x64') || 'desktop-release-candidate' }}
   cancel-in-progress: false
 
 jobs:
+  browser-diagnostic:
+    name: Browser acquisition and cleanup diagnostic (${{ inputs.browser_factory_platform || 'linux-x64' }})
+    if: inputs.browser_factory_diagnostic
+    runs-on: ${{ inputs.browser_factory_platform == 'windows-x64' && 'windows-2025' || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      BROWSER_DIAGNOSTIC_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      BROWSER_DIAGNOSTIC_PLATFORM: ${{ inputs.browser_factory_platform || 'linux-x64' }}
+      BROWSER_DIAGNOSTIC_LOOPBACK: ${{ inputs.browser_factory_loopback && '1' || '0' }}
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      OPENCODE_DISABLE_MODELS_FETCH: "1"
+    steps:
+      - name: Require the exact dispatched workflow revision before checkout
+        run: |
+          node --input-type=module <<'NODE'
+          const source = process.env.BROWSER_DIAGNOSTIC_SOURCE_SHA;
+          const platform = process.env.BROWSER_DIAGNOSTIC_PLATFORM;
+          if (process.env.GITHUB_REPOSITORY !== 'PhysicalSystems/desktop' ||
+              process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
+              !['linux-x64', 'windows-x64'].includes(platform) || process.env.RUNNER_ARCH !== 'X64' ||
+              !['0', '1'].includes(process.env.BROWSER_DIAGNOSTIC_LOOPBACK) ||
+              (process.env.BROWSER_DIAGNOSTIC_LOOPBACK === '1' && platform !== 'windows-x64') ||
+              process.env.RUNNER_OS !== (platform === 'windows-x64' ? 'Windows' : 'Linux') ||
+              !/^[a-f0-9]{40}$/.test(source || '') || source !== process.env.GITHUB_SHA)
+            throw new Error('Browser diagnostic requires the exact owned workflow revision');
+          NODE
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+        with:
+          install-dependencies: "false"
+      - name: Verify the hosted runner browser and display prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          for executable in /usr/bin/Xvfb /usr/bin/xvfb-run /usr/bin/xauth /opt/google/chrome/chrome; do
+            if [ ! -x "$executable" ]; then
+              echo 'BROWSER_DIAGNOSTIC_PREREQUISITE_UNAVAILABLE' >&2
+              exit 1
+            fi
+          done
+      - name: Start and stop the actual owned Linux browser factory
+        if: runner.os == 'Linux'
+        run: timeout --signal=TERM --kill-after=10s 90s xvfb-run -a bun script/desktop-browser-diagnostic.ts
+      - name: Verify Windows process lifecycle regressions with inert callbacks
+        if: runner.os == 'Windows'
+        working-directory: packages/physicalsystems
+        run: bun test ./src/release/windows-review-native.test.ts ./src/release/windows-review-transport.test.ts ./src/release/windows-loopback-diagnostic.test.ts ./src/release/browser-private-diagnostic.test.ts ./src/release/windows-app-shutdown-native.test.ts ./src/release/windows-app-shutdown-observation.test.ts ./src/release/windows-directory-observation.test.ts ./src/release/windows-junction-prune-native.test.ts ./src/release/windows-junction-prune.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
+      - name: Diagnose the owned Windows browser with optional OS loopback handoff
+        if: runner.os == 'Windows'
+        timeout-minutes: 4
+        env:
+          BROWSER_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
+        run: bun script/desktop-browser-diagnostic.ts
+      - name: Retain only the sanitized browser diagnostic
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-browser-diagnostic-${{ runner.os == 'Windows' && 'windows' || 'linux' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-browser-diagnostic-report/browser-diagnostic.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Retain only optional encrypted executable diagnostics
+        if: always() && inputs.browser_factory_loopback && inputs.diagnostic_public_key != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-browser-sealed-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-browser-sealed-diagnostics/*.sealed.json
+          if-no-files-found: warn
+          retention-days: 3
+
   prepare:
     name: Freeze source and release inputs
+    if: ${{ !inputs.browser_factory_diagnostic }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -53,7 +167,14 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       CHANNEL: ${{ inputs.channel }}
       REQUESTED_VERSION: ${{ inputs.version }}
+      BROWSER_DIAGNOSTIC_LOOPBACK: ${{ inputs.browser_factory_loopback && '1' || '0' }}
     steps:
+      - name: Reject diagnostic-only options in candidate mode
+        run: |
+          if [ "$BROWSER_DIAGNOSTIC_LOOPBACK" != "0" ]; then
+            echo 'BROWSER_DIAGNOSTIC_CONTEXT_UNCONFIRMED' >&2
+            exit 1
+          fi
       - name: Require an immutable source revision
         id: source
         run: |
@@ -158,7 +279,7 @@ jobs:
       - uses: ./.github/actions/setup-desktop-build
       - name: Verify native source archive staging
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts
+        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts ./src/release/windows-app-shutdown-native.test.ts ./src/release/windows-app-shutdown-observation.test.ts ./src/release/windows-directory-observation.test.ts ./src/release/windows-junction-prune-native.test.ts ./src/release/windows-junction-prune.test.ts
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: desktop-inputs-${{ github.run_id }}-${{ github.run_attempt }}
@@ -179,16 +300,17 @@ jobs:
 
       - name: Qualify the actual packaged applications
         id: qualify
+        uses: ./.github/actions/provider-review-runtime
+        with:
+          mode: candidate
         env:
           PS_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
           PS_DIAGNOSTIC_DIRECTORY: ${{ runner.temp }}/desktop-release/sealed-diagnostics
-        run: |
-          args=(script/desktop-release.ts qualify --inputs "$RUNNER_TEMP/desktop-release/inputs/release-inputs.json" --artifacts "$RUNNER_TEMP/desktop-release/artifacts" --output "$RUNNER_TEMP/desktop-release/receipts")
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a bun "${args[@]}"
-          else
-            bun "${args[@]}"
-          fi
+          PS_PROVIDER_REVIEW: ${{ inputs.provider_qa }}
+          PS_BROWSER_REVIEW: ${{ inputs.browser_review && '1' || '0' }}
+          PS_PROVIDER_REVIEW_PUBLIC_KEY_PEM: ${{ inputs.provider_qa_public_key }}
+          PS_PROVIDER_REVIEW_KEY_SHA256: ${{ inputs.provider_qa_key_sha256 }}
+          PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
 
       - name: Verify bytes and sanitized qualification receipts
         id: verify

@@ -20,6 +20,12 @@ The dispatch is serialized to avoid concurrent version allocation. Because this 
 
 All jobs check out a fixed SHA. Download caches are keyed by OS, architecture, Node/Bun pins and the lockfile. They contain package, Electron and packaging-tool downloads; they do not contain installed-app profiles, native outputs shared between platforms, credentials or test evidence. Dependencies install with `--frozen-lockfile --ignore-scripts`; the allowlisted preparation step downloads the locked Electron binary explicitly. The workflow does not invoke upstream desktop prebuild or publishing hooks.
 
+Dependency and Electron download caches are saved immediately after successful
+setup, so a later packaged-app test failure does not discard that completed work.
+Packaging-tool downloads use a separate cache saved after a successful job, since
+those downloads may occur during the later build. Installed dependencies and
+application outputs are rebuilt; neither cache substitutes for qualification.
+
 ## Files and commands
 
 | File                                               | Responsibility                                                                                      |
@@ -33,6 +39,9 @@ All jobs check out a fixed SHA. Download caches are keyed by OS, architecture, N
 | `.github/workflows/desktop-ci.yml`                 | Package-local regression tests and integration, app, desktop and agent-server typechecks            |
 | `.github/workflows/desktop-release.yml`            | Manual, immutable-source candidate orchestration                                                    |
 | `packages/physicalsystems/test/packaged-smoke.mjs` | Isolated qualification of each actual package format                                                |
+
+The [actual provider browser review](provider-browser-review.md) describes the
+opt-in encrypted device-login operation and native account fingerprint checks.
 
 The CLI supports the following sequence on disposable CI runners. Use absolute output paths **outside the checkout** and run it from a clean, committed source tree. Full packaged qualification requires `CI=true`; do not set that flag on the robot laptop to bypass the environment restriction. `history.json` must contain `{ "complete": true, "versions": [...] }` obtained from a successful complete history read; do not manufacture an empty history for an existing release repository.
 
@@ -59,7 +68,7 @@ bun script/desktop-release.ts verify-artifacts \
   --output "$DESKTOP_WORK/reports"
 ```
 
-For Windows, use `--platform windows-x64` on a disposable Windows runner and omit `xvfb-run`. The NSIS install smoke is CI-only and targets a fresh temporary directory. It must not be redirected to an existing installation. Linux qualification installs the `.deb` with its shipped AppArmor policy on an owned GitHub-hosted runner and removes it only after confirmed shutdown. It extracts the AppImage and loads an exact-path temporary AppArmor profile for its sandboxed launch. That AppImage check does not establish stock Ubuntu double-click or FUSE behavior; the website prefers the `.deb` on Linux. Neither path disables Chromium's sandbox.
+For Windows, use `--platform windows-x64` on a disposable Windows runner and omit `xvfb-run`. The NSIS install smoke is CI-only and targets a fresh temporary directory. It must not be redirected to an existing installation. Linux qualification installs the `.deb` with its shipped AppArmor policy on an owned GitHub-hosted runner and removes it only after confirmed shutdown. The AppImage check executes the original artifact with `--appimage-extract-and-run`, after loading an exact-path temporary AppArmor profile for the runtime's extraction location. This advanced mode requires the documented Ubuntu prerequisite; it does not establish stock Ubuntu double-click or FUSE behavior. The website prefers the `.deb` on Linux. Neither path disables Chromium's sandbox. See [AppImage runtime and replacement](appimage-runtime.md) for the exact scope and ownership checks.
 
 The source checks use `bun test` and `bun typecheck` from the affected package directories. Root-level `bun test` is intentionally unsupported in this monorepo. Upstream publishing scripts and the canonical `check:release-packages` command are not part of this desktop workflow.
 
@@ -72,7 +81,7 @@ In GitHub Actions, every consuming CLI command also requires `PHYSICALSYSTEMS_EX
 | Target                        | Files prepared   | Automated qualification boundary                                                                     |
 | ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------- |
 | Windows x64 on `windows-2025` | NSIS `.exe`      | Fresh temporary installation and packaged simulation checks; no signing or real provider credentials |
-| Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Owned Debian install/uninstall and AppImage extraction with scoped sandbox setup, under Xvfb         |
+| Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Owned Debian install/uninstall and original AppImage extract-and-run with scoped sandbox setup, under Xvfb |
 
 Each platform retains the exact installer files, `artifacts.json`, `SHA256SUMS`, per-artifact qualification JSON and a verification report. Failure paths retain available sanitized receipts and `workflow-status.json`; a skipped or missing required check cannot become a pass. The final assessment collects both platform reports and retains `summary.json`, `summary.md`, checksums and `candidate-downloads.json`.
 
@@ -104,7 +113,7 @@ The public installer destination is **PhysicalSystems/physicalsystems**, matchin
 
 The website integration is reviewed in [platform PR #287](https://github.com/PhysicalSystems/platform/pull/287). Its controlled `public/desktop-selection.json` starts with `release: null`. The page offers only installers matching that selection and live GitHub metadata, with bounded requests and explicit recovery. It does not claim to check binary bytes or Windows signatures inside the browser. A successful empty selection withdraws downloads.
 
-The [public producer workflow](public-producer.md) freezes the provisioned signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records public-mode packaged smoke. Signing credentials are scoped to packaging. It deliberately fails at incomplete native qualification and emits only unqualified records; actual signing setup, remaining native checks and qualified-bundle production remain prerequisites.
+The [public producer workflow](public-producer.md) freezes the provisioned signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records actual public-mode native observations. Signing credentials are scoped to packaging. Separate Windows/Linux job outputs anchor the exact bytes and receipts for the strict collector, which emits a qualified bundle only when all required checks pass. Actual signing setup and the remaining native/account-backed checks remain prerequisites; partial observations stay unqualified.
 
 The [public publisher](public-publisher.md) is implemented, with publication disabled until the signed producer, native evidence and protected credentials are available:
 

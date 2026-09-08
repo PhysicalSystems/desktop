@@ -1,0 +1,1784 @@
+// SPDX-License-Identifier: Apache-2.0
+import { expect, test } from "bun:test"
+import { EventEmitter } from "node:events"
+import { statSync } from "node:fs"
+import { PassThrough, Writable } from "node:stream"
+import type { ChildProcess } from "node:child_process"
+import { access, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { createServer, type Server } from "node:net"
+import { tmpdir } from "node:os"
+import { join, win32 } from "node:path"
+import {
+  startOwnedWindowsReviewBrowser,
+  reserveWindowsReviewPort,
+  windowsReviewOwnership,
+  windowsReviewIdentityHelper,
+  windowsReviewPolicy,
+  windowsReviewDebugPolicyObservation,
+  windowsReviewProcesses,
+  observeWindowsReviewDirectoryDenial,
+  type WindowsUnknownExecutableSnapshot,
+} from "./owned-windows-review-browser"
+import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
+import {
+  windowsReviewNative,
+  dispatchWindowsReviewNative,
+  windowsReviewNativeFailure,
+  windowsReviewNativeResult,
+  windowsReviewNativeArguments,
+  windowsReviewScriptBootstrap,
+  windowsReviewNativeEnvironment,
+  windowsReviewNativeScript,
+} from "./windows-review-native"
+import { browserObservationError, readBrowserObservation } from "./browser-observation"
+import { qualificationFailureCode } from "./qualification"
+import type { OwnedBrowserDirectoryAnchors } from "./owned-browser-directory"
+
+test("Windows failure diagnostic isolates its controller and only cleans it after confirmed native closure", async () => {
+  for (const mode of ["confirmed", "unconfirmed", "throw", "reparse"] as const) {
+    const confirmed = mode === "confirmed" || mode === "reparse"
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "windows-denial-controller-")))
+    const root = join(parent, "browser")
+    await mkdir(root)
+    await writeFile(join(root, "private-state"), "INERT BROWSER STATE")
+    const parentStat = await lstat(parent, { bigint: true })
+    const rootStat = await lstat(root, { bigint: true })
+    let controller = ""
+    try {
+      const observation = await observeWindowsReviewDirectoryDenial(
+        {},
+        {
+          root: { path: root, dev: rootStat.dev, ino: rootStat.ino },
+          parent: { path: parent, dev: parentStat.dev, ino: parentStat.ino },
+        },
+        async (input) => {
+          controller = input.controllerRoot
+          expect(controller).not.toBe(root)
+          expect(controller.startsWith(root + (process.platform === "win32" ? "\\" : "/"))).toBe(false)
+          expect(input.root.path).toBe(root)
+          await writeFile(join(controller, "inert-module-cache"), "INERT CONTROLLER")
+          if (mode === "throw") throw Error("PRIVATE NATIVE ERROR")
+          return {
+            quiescence: confirmed ? "confirmed" : "unconfirmed",
+            boundary: "complete" as const,
+            observation: {
+              status: "IDENTITY_UNCONFIRMED",
+              phase: "metadata",
+              kind: mode === "reparse" ? "directory" : "file",
+              nativeStatus: "other",
+              identityReason: mode === "reparse" ? "reparse" : "file-id-mismatch",
+              identityScope: "entry",
+              ...(mode === "reparse"
+                ? { reparseTraversalStatus: "access-denied" as const, reparseDeleteStatus: "success" as const }
+                : {}),
+              ordinal: 2,
+              depth: 2,
+              entriesProbed: 2,
+              rootReadonlyAttribute: false,
+              readonlyAttribute: false,
+              readonlyDirectories: 0,
+              readonlyFiles: 0,
+            },
+          }
+        },
+      )
+      expect(observation.directoryProbeQuiescence).toBe(confirmed ? "confirmed" : "unconfirmed")
+      expect(observation.directoryProbeControllerCleanup).toBe(confirmed ? "removed" : "retained")
+      if (mode !== "throw")
+        expect(observation).toMatchObject({
+          directoryProbeStatus: "IDENTITY_UNCONFIRMED",
+          directoryProbeIdentityReason: mode === "reparse" ? "reparse" : "file-id-mismatch",
+          directoryProbeIdentityScope: "entry",
+          directoryProbeKind: mode === "reparse" ? "directory" : "file",
+          directoryProbeOrdinal: 2,
+          directoryProbeDepth: 2,
+        })
+      if (mode === "reparse")
+        expect(observation).toMatchObject({
+          directoryProbeReparseTraversalStatus: "access-denied",
+          directoryProbeReparseDeleteStatus: "success",
+        })
+      if (confirmed) await expect(lstat(controller)).rejects.toMatchObject({ code: "ENOENT" })
+      else expect(await readFile(join(controller, "inert-module-cache"), "utf8")).toBe("INERT CONTROLLER")
+      expect(await readFile(join(root, "private-state"), "utf8")).toBe("INERT BROWSER STATE")
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      expect(
+        readBrowserObservation({ browserObservation: { browserPhase: "cleanup-profile", ...observation } }),
+      ).toBeDefined()
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  }
+})
+
+const executable = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+const resolvedCommand = `"${executable}" -- "%1"`
+const edgeVersion = "150.0.0.1"
+const identityHelper = {
+  executable: win32.join(win32.dirname(executable), edgeVersion, "identity_helper.exe"),
+  version: edgeVersion,
+}
+const processRecord = (profile: string): WindowsReviewProcess => ({
+  pid: 4100,
+  parent: 100,
+  birth: "134000000000000001",
+  session: 2,
+  sid: "S-1-5-21-111-222-333-1001",
+  executable,
+  args: [
+    executable,
+    `--user-data-dir=${profile}`,
+    "--remote-debugging-port=23456",
+    "--remote-debugging-address=127.0.0.1",
+    "about:blank",
+  ],
+})
+
+async function fixture(
+  options: {
+    ambient?: boolean
+    policySetLost?: boolean
+    restoreFails?: boolean
+    stopLost?: boolean
+    exitDuringStop?: boolean
+    profileMarkers?: "files" | "symlink"
+    startupMessage?: string
+    malformedProcesses?: boolean
+    reusedPid?: boolean
+    wrongRootSid?: boolean
+    reuseOrphanAfterStop?: boolean
+    nativeFailure?: "preflight" | "set" | "observe" | "restore"
+    unready?: "wrong-listener" | "targets-unavailable" | "wrong-target"
+    reservationFails?: "allocation" | "release"
+    debugFlag?: "missing-port" | "duplicate-port" | "wrong-port" | "wrong-address" | "duplicate-address"
+  } = {},
+) {
+  const temporary = await realpath(await mkdtemp(join(tmpdir(), "windows-review-fixture-")))
+  const root = await realpath(await mkdtemp(join(temporary, "owned-")))
+  const before = {
+    keys: [true, true, true, true, true],
+    value: { kind: "ExpandString" as const, data: "C:\\PRIVATE-PREVIOUS-LAUNCHER\\%USERNAME%" },
+  }
+  const state = {
+    calls: [] as string[],
+    schemes: [] as string[],
+    profile: "",
+    policy: structuredClone(before) as ReturnType<typeof windowsReviewPolicy>,
+    running: false,
+    handoff: false,
+    stopped: false,
+    reused: false,
+    restored: false,
+    orphan: false,
+    observedRoots: [] as number[][],
+    unrefs: 0,
+    nativeEnv: {} as NodeJS.ProcessEnv,
+    targetQueries: 0,
+    portEvents: [] as string[],
+  }
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4100,
+    stderr: new PassThrough(),
+    exitCode: null,
+    signalCode: null,
+    unref() {
+      state.unrefs++
+    },
+  }) as unknown as ChildProcess
+  const native: WindowsReviewNative = async (request) => {
+    state.calls.push(request.operation)
+    if (request.operation === options.nativeFailure && request.operation !== "set")
+      throw windowsReviewNativeFailure(
+        "PRIVATE-NATIVE-ERROR\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_" +
+          (request.operation === "preflight"
+            ? "association-progid"
+            : request.operation === "restore"
+              ? "policy-restore"
+              : "process-identity"),
+      )
+    if (request.operation === "preflight" || request.operation === "observe") state.schemes.push(request.scheme)
+    if (request.operation === "set" || request.operation === "restore" || request.operation === "observe")
+      expect(request.executable).toBe(executable)
+    if (request.operation === "preflight")
+      return {
+        executable,
+        resolvedCommand,
+        sid: processRecord("").sid,
+        policy: structuredClone(before),
+        debugPolicy: {
+          machineRemoteDebuggingAllowed: "absent",
+          baseRemoteDebuggingAllowed: "allow",
+          machineDeveloperToolsAvailability: "restricted",
+          baseDeveloperToolsAvailability: "deny",
+        },
+        processes: options.ambient ? [processRecord("C:\\ambient")] : [],
+      }
+    if (request.operation === "set") {
+      expect(request.before).toEqual(before)
+      expect(request.beforeCommand).toBe(resolvedCommand)
+      state.profile = request.profile
+      if (options.profileMarkers) {
+        await writeFile(join(request.profile, "Local State"), "PRIVATE-PROFILE-CONTENTS")
+        if (options.profileMarkers === "files") {
+          await mkdir(join(request.profile, "Default"))
+          await writeFile(join(request.profile, "Default", "Preferences"), "PRIVATE-PREFERENCES")
+        } else await symlink(temporary, join(request.profile, "Default"), "junction")
+      }
+      state.policy = {
+        keys: [true, true, true, true, true],
+        value: { kind: "String", data: `"${executable}" "--user-data-dir=${request.profile}" -- "%1"` },
+      }
+      if (options.nativeFailure === "set")
+        throw windowsReviewNativeFailure("PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_policy-write")
+      if (options.policySetLost) throw Error("PRIVATE-POLICY-WRITE-RESPONSE-LOST")
+      return { written: true }
+    }
+    if (request.operation === "observe") {
+      state.observedRoots.push([...request.observedPids])
+      const main = processRecord(state.profile)
+      if (options.debugFlag === "missing-port")
+        main.args = main.args.filter((arg) => !arg.startsWith("--remote-debugging-port="))
+      if (options.debugFlag === "duplicate-port") main.args.push("--remote-debugging-port=23456")
+      if (options.debugFlag === "wrong-port")
+        main.args = main.args.map((arg) =>
+          arg.startsWith("--remote-debugging-port=") ? "--remote-debugging-port=23457" : arg,
+        )
+      if (options.debugFlag === "wrong-address")
+        main.args = main.args.map((arg) =>
+          arg.startsWith("--remote-debugging-address=") ? "--remote-debugging-address=0.0.0.0" : arg,
+        )
+      if (options.debugFlag === "duplicate-address") main.args.push("--remote-debugging-address=127.0.0.1")
+      if (options.wrongRootSid) main.sid = "S-1-5-21-999-222-333-1001"
+      if (state.reused) main.birth = "134000000000000999"
+      const processes = state.running
+        ? [
+            main,
+            { ...main, pid: 4101, parent: 4100, birth: "134000000000000002", args: [executable, "--type=utility"] },
+          ]
+        : []
+      // A non-Edge helper is visible through its live parent initially. Once
+      // the parent exits it is discoverable only through retained query roots.
+      if (state.orphan && (state.running || request.observedPids.includes(4102)))
+        processes.push({
+          ...main,
+          pid: 4102,
+          parent: 4101,
+          birth: options.reuseOrphanAfterStop && state.stopped ? "134000000000000999" : "134000000000000003",
+          executable: "C:\\Windows\\unexpected-helper.exe",
+          args: ["C:\\Windows\\unexpected-helper.exe"],
+        })
+      return {
+        processes: options.malformedProcesses && !state.stopped ? "PRIVATE-MALFORMED" : processes,
+        listening: state.running && request.port ? [options.unready === "wrong-listener" ? 4999 : 4100] : [],
+        policyOwned: state.policy.value?.data === `"${executable}" "--user-data-dir=${state.profile}" -- "%1"`,
+      }
+    }
+    if (request.operation === "stop") {
+      expect(request.processes.map((item) => item.pid).sort()).toEqual([4100, 4101])
+      expect(request.processes.every((item) => item.sid === processRecord("").sid)).toBe(true)
+      state.running = false
+      state.stopped = true
+      if (options.exitDuringStop) child.emit("close", 255)
+      if (options.stopLost) throw Error("PRIVATE-STOP-RESPONSE-LOST")
+      return { stopped: true }
+    }
+    if (request.operation === "restore") {
+      expect(request.beforeCommand).toBe(resolvedCommand)
+      expect(state.running).toBe(false)
+      if (state.stopped) expect(request.observedPids).toEqual([4100, 4101])
+      expect(request.before).toEqual(before)
+      if (options.restoreFails) throw Error("PRIVATE-CONCURRENT-POLICY")
+      state.policy = structuredClone(before)
+      state.restored = true
+      return { restored: true }
+    }
+    throw Error("unexpected")
+  }
+  const input = {
+    root,
+    env: {
+      CI: "true",
+      GITHUB_ACTIONS: "true",
+      RUNNER_ENVIRONMENT: "github-hosted",
+      RUNNER_OS: "Windows",
+      GITHUB_RUN_ID: "123",
+      RUNNER_TEMP: temporary,
+      SystemRoot: "C:\\Windows",
+      ACTIONS_RUNTIME_TOKEN: "PRIVATE-RUNTIME-TOKEN",
+    },
+  }
+  const io = {
+    native,
+    pruneDirectory: async ({ anchors }: { anchors: OwnedBrowserDirectoryAnchors }) => {
+      expect(anchors.root.path).toBe(root)
+      expect(state.running).toBe(false)
+      expect(state.policy).toEqual(before)
+    },
+    platform: "win32" as const,
+    timeoutMs: 100,
+    pollMs: 1,
+    reservePort: async () => {
+      state.portEvents.push("reserve")
+      if (options.reservationFails === "allocation") throw Error("PRIVATE-ALLOCATION")
+      return {
+        port: 23456,
+        release: async () => {
+          state.portEvents.push("release")
+          if (options.reservationFails === "release") throw Error("PRIVATE-CLOSE")
+        },
+      }
+    },
+    spawn: (exe: string, args: readonly string[], spawnOptions: { env?: NodeJS.ProcessEnv }) => {
+      expect(state.portEvents).toEqual(["reserve", "release"])
+      state.portEvents.push("spawn")
+      expect(exe).toBe(executable)
+      expect(args).toContain(`--user-data-dir=${state.profile}`)
+      expect(args).toContain("--remote-debugging-port=23456")
+      state.nativeEnv = spawnOptions.env ?? {}
+      state.running = true
+      if (options.startupMessage) queueMicrotask(() => child.stderr!.emit("data", Buffer.from(options.startupMessage!)))
+      return child
+    },
+    targets: async (origin: string) => {
+      state.targetQueries++
+      expect(origin).toBe("http://127.0.0.1:23456")
+      if (options.unready === "targets-unavailable") return undefined
+      if (options.unready === "wrong-target") return [{ type: "page", url: "https://PRIVATE-UNKNOWN-TARGET" }]
+      return [{ type: "page", url: state.handoff ? "https://auth.openai.com/codex/device" : "about:blank" }]
+    },
+  }
+  return { input, io, state, before, cleanup: () => rm(temporary, { recursive: true, force: true }) }
+}
+
+test("only the exact native-verified Edge version helper can enter ownership with a current owned parent and exact profile", () => {
+  const profile = "C:\\runner\\owned\\profile"
+  const main = processRecord(profile)
+  const helper = {
+    ...main,
+    pid: 4102,
+    parent: main.pid,
+    birth: "134000000000000002",
+    executable: identityHelper.executable,
+    args: [identityHelper.executable, `--user-data-dir=${profile}`],
+  }
+  const base = {
+    known: new Map<number, WindowsReviewProcess>(),
+    root: main,
+    executable,
+    identityHelper,
+    profile,
+    sid: main.sid,
+  }
+  const good = windowsReviewOwnership({ ...base, processes: [helper, main] })
+  expect([...good.owned.keys()].sort()).toEqual([4100, 4102])
+  expect(good.unknown).toHaveLength(0)
+  const replacedRoot = { ...helper, pid: main.pid, parent: main.parent }
+  expect(windowsReviewOwnership({ ...base, processes: [replacedRoot] }).unknown).toEqual([replacedRoot])
+  expect(windowsReviewOwnership({ ...base, identityHelper: undefined, processes: [main, helper] }).unknown).toEqual([
+    helper,
+  ])
+  for (const mutation of [
+    { executable: "C:\\foreign\\identity_helper.exe" },
+    { executable: win32.join(win32.dirname(executable), "149.0.0.1", "identity_helper.exe") },
+    { sid: "S-1-5-21-999-1001" },
+    { session: main.session + 1 },
+    { birth: "134000000000000000" },
+    { parent: 42 },
+    { args: [identityHelper.executable] },
+    { args: [identityHelper.executable, "--user-data-dir=C:\\foreign"] },
+    { args: [...helper.args, `--user-data-dir=${profile}`] },
+    { args: [...helper.args, "--user-data-dir", profile] },
+  ]) {
+    const changed = { ...helper, ...mutation }
+    expect(windowsReviewOwnership({ ...base, processes: [main, changed] }).unknown).toEqual([changed])
+  }
+  const retained = windowsReviewOwnership({ ...base, known: good.owned, processes: [helper] })
+  expect(retained.owned.get(helper.pid)).toEqual(helper)
+  expect(() =>
+    windowsReviewOwnership({ ...base, known: good.owned, processes: [{ ...helper, birth: "134000000000000003" }] }),
+  ).toThrow()
+})
+
+test("helper preflight shape binds the exact numeric main version and rejects path aliases or version changes before mutation", async () => {
+  expect(windowsReviewIdentityHelper(executable, edgeVersion, identityHelper)).toEqual(identityHelper)
+  expect(windowsReviewIdentityHelper(executable, undefined, null)).toBeUndefined()
+  for (const helper of [
+    { ...identityHelper, executable: "C:\\foreign\\identity_helper.exe" },
+    { ...identityHelper, executable: identityHelper.executable.replace(edgeVersion, "149.0.0.1") },
+    {
+      ...identityHelper,
+      executable: identityHelper.executable.replace("identity_helper.exe", "..\\identity_helper.exe"),
+    },
+    { ...identityHelper, version: "149.0.0.1" },
+  ]) {
+    const f = await fixture()
+    const native = f.io.native
+    f.io.native = async (request) => {
+      const value = await native(request)
+      return request.operation === "preflight" ? { ...(value as object), edgeVersion, identityHelper: helper } : value
+    }
+    try {
+      await expect(startOwnedWindowsReviewBrowser(f.input, f.io)).rejects.toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+      expect(f.state.calls).toEqual(["preflight"])
+    } finally {
+      await f.cleanup()
+    }
+  }
+  for (const version of ["150.0.0.1 suffix", "0150.0.0.1", "150.0.0.65536", "150.0.0", "0.0.0.1"])
+    expect(() => windowsReviewIdentityHelper(executable, version, { ...identityHelper, version })).toThrow()
+})
+
+test("the actual Windows controller admits the verified helper but never accepts it as the main CDP listener", async () => {
+  for (const helperListener of [false, true]) {
+    const f = await fixture()
+    const native = f.io.native
+    let helper: WindowsReviewProcess | undefined
+    let helperStop = false
+    let helperRestored = false
+    f.io.native = async (request) => {
+      if (request.operation === "stop") {
+        expect(
+          request.processes.some((item) => item.pid === 4102 && item.executable === identityHelper.executable),
+        ).toBe(true)
+        helperStop = true
+        return native({ ...request, processes: request.processes.filter((item) => item.pid !== 4102) })
+      }
+      if (request.operation === "restore") {
+        expect(request.observedPids).toContain(4102)
+        helperRestored = true
+        return native({ ...request, observedPids: request.observedPids.filter((pid) => pid !== 4102) })
+      }
+      const value = (await native(request)) as Record<string, unknown>
+      if (request.operation === "preflight") return { ...value, edgeVersion, identityHelper }
+      if (request.operation === "observe" && f.state.running && f.state.handoff) {
+        helper ??= {
+          ...processRecord(f.state.profile),
+          pid: 4102,
+          parent: 4100,
+          birth: "134000000000000002",
+          executable: identityHelper.executable,
+          args: [identityHelper.executable, `--user-data-dir=${f.state.profile}`],
+        }
+        return {
+          ...value,
+          processes: [...(value.processes as WindowsReviewProcess[]), helper],
+          listening: helperListener ? [4102] : value.listening,
+        }
+      }
+      return value
+    }
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+      f.state.handoff = true
+      const queries = f.state.targetQueries
+      if (helperListener) {
+        await expect(browser.confirmHandoff("https://auth.openai.com/codex/device")).rejects.toThrow(
+          "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+        )
+        expect(f.state.targetQueries).toBe(queries)
+      } else expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(true)
+      expect(browser.observation().handoffUnknownProcesses).toBe(0)
+      await browser.stop()
+      expect(helperStop).toBe(true)
+      expect(helperRestored).toBe(true)
+      expect(browser.observation().browserPhase).toBe("stopped")
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("owned Windows browser verifies exact native process/CDP and restores the prior launcher registration only after shutdown", async () => {
+  for (const stopLost of [false, true]) {
+    const f = await fixture({ stopLost })
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+      expect(f.state.calls[0]).toBe("preflight")
+      expect(f.state.nativeEnv.ACTIONS_RUNTIME_TOKEN).toBeUndefined()
+      expect(JSON.stringify(browser.environment)).not.toContain("PRIVATE")
+      f.state.handoff = true
+      expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(true)
+      await browser.stop()
+      expect(f.state.stopped).toBe(true)
+      expect(f.state.restored).toBe(true)
+      expect(f.state.policy).toEqual(f.before)
+      expect(f.state.calls.indexOf("restore")).toBeGreaterThan(f.state.calls.indexOf("stop"))
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(false)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("unconfirmed native directory preparation retains ownership across later Stop and retain requests", async () => {
+  const f = await fixture()
+  let preparations = 0
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, {
+      ...f.io,
+      pruneDirectory: async (input) => {
+        await f.io.pruneDirectory(input)
+        preparations++
+        expect(f.state.stopped).toBe(true)
+        expect(f.state.restored).toBe(true)
+        throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", undefined, {
+          browserPhase: "cleanup-profile",
+          directoryPrepareStatus: "TRANSPORT_UNCONFIRMED",
+          directoryPrepareQuiescence: "unconfirmed",
+        })
+      },
+    })
+    const error = await browser.stop().catch((error: unknown) => error)
+    expect(readBrowserObservation(error)).toMatchObject({
+      directoryFailurePhase: "prepare",
+      directoryPrepareStatus: "TRANSPORT_UNCONFIRMED",
+      directoryPrepareQuiescence: "unconfirmed",
+    })
+    expect(preparations).toBe(1)
+    const calls = [...f.state.calls]
+    await expect(browser.stop()).rejects.toBe(error)
+    await expect(browser.stop({ retainProfile: true })).rejects.toBe(error)
+    expect(f.state.calls).toEqual(calls)
+    expect(preparations).toBe(1)
+    expect((await lstat(f.input.root)).isDirectory()).toBe(true)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("concurrent retain requests cannot finish while an earlier Stop awaits native directory preparation", async () => {
+  const f = await fixture()
+  const entered = Promise.withResolvers<void>()
+  const finish = Promise.withResolvers<void>()
+  const stopping: Promise<void>[] = []
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, {
+      ...f.io,
+      pruneDirectory: async (input) => {
+        await f.io.pruneDirectory(input)
+        entered.resolve()
+        await finish.promise
+      },
+    })
+    const first = browser.stop()
+    stopping.push(first)
+    await entered.promise
+    const calls = [...f.state.calls]
+    const second = browser.stop({ retainProfile: true })
+    stopping.push(second)
+    expect(second).toBe(first)
+    let settled = false
+    second.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      },
+    )
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(settled).toBe(false)
+    expect(f.state.calls).toEqual(calls)
+    finish.reject(Error("INERT_UNCONFIRMED_NATIVE_HELPER"))
+    const error = await first.catch((error: unknown) => error)
+    await expect(second).rejects.toBe(error)
+    await expect(browser.stop({ retainProfile: true })).rejects.toBe(error)
+    expect(f.state.calls).toEqual(calls)
+    expect((await lstat(f.input.root)).isDirectory()).toBe(true)
+  } finally {
+    finish.reject(Error("INERT_UNCONFIRMED_NATIVE_HELPER"))
+    await Promise.allSettled(stopping)
+    await f.cleanup()
+  }
+})
+
+test("profile retention and unconfirmed registration restoration never begin junction pruning", async () => {
+  for (const retainProfile of [true, false]) {
+    const f = await fixture({ restoreFails: !retainProfile })
+    let preparations = 0
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, {
+        ...f.io,
+        pruneDirectory: async () => {
+          preparations++
+        },
+      })
+      const stopping = browser.stop({ retainProfile })
+      if (retainProfile) await stopping
+      else await expect(stopping).rejects.toThrow("CLEANUP_UNCONFIRMED")
+      expect(preparations).toBe(0)
+      expect((await lstat(f.input.root)).isDirectory()).toBe(true)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("a missing or malformed original launcher command prevents registry changes and browser launch", async () => {
+  for (const command of [undefined, null, "", "PRIVATE\nCOMMAND", "PRIVATE\0COMMAND", "x".repeat(32769)]) {
+    const f = await fixture()
+    const native = f.io.native
+    try {
+      await expect(
+        startOwnedWindowsReviewBrowser(f.input, {
+          ...f.io,
+          native: async (request) => {
+            const value = await native(request)
+            return request.operation === "preflight" ? { ...(value as object), resolvedCommand: command } : value
+          },
+        }),
+      ).rejects.toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+      expect(f.state.calls).toEqual(["preflight"])
+      expect(f.state.portEvents).toEqual([])
+      expect(f.state.running).toBe(false)
+      expect(f.state.policy).toEqual(f.before)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("Windows browser starts only after its private standard AppData directories exist", async () => {
+  const f = await fixture()
+  const spawn = f.io.spawn
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, {
+      ...f.io,
+      spawn: (executable, args, options) => {
+        // Model Shell's existing %USERPROFILE%\\AppData known-folder layout,
+        // rather than accepting an uncreated arbitrary LOCALAPPDATA path.
+        expect(options.env?.USERPROFILE).toBe(f.input.root)
+        expect(options.env?.LOCALAPPDATA).toBe(join(f.input.root, "AppData", "Local"))
+        expect(options.env?.APPDATA).toBe(join(f.input.root, "AppData", "Roaming"))
+        expect(statSync(options.env!.LOCALAPPDATA!).isDirectory()).toBe(true)
+        expect(statSync(options.env!.APPDATA!).isDirectory()).toBe(true)
+        expect(args).toContain(`--user-data-dir=${join(f.input.root, "profile")}`)
+        return spawn(executable, args, options)
+      },
+    })
+    await browser.stop()
+    expect(f.state.restored).toBe(true)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("a browser log claiming it is listening cannot substitute for native listener ownership", async () => {
+  const f = await fixture({
+    unready: "wrong-listener",
+    startupMessage: "DevTools listening on ws://127.0.0.1:23456/PRIVATE-TARGET",
+  })
+  try {
+    const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+    expect(readBrowserObservation(error)?.windowsDebugMessage).toBe("listening")
+    expect(readBrowserObservation(error)?.cdpReady).toBe(false)
+    expect(f.state.targetQueries).toBe(0)
+    expect(f.state.restored).toBe(true)
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("an unknown orphan remains observed after its Edge parents exit; reuse never grants kill or cleanup authority", async () => {
+  for (const reuseOrphanAfterStop of [false, true]) {
+    const f = await fixture({ reuseOrphanAfterStop })
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+      f.state.orphan = true
+      await expect(browser.stop()).rejects.toThrow("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+      expect(f.state.stopped).toBe(true)
+      expect(f.state.calls.filter((call) => call === "stop")).toHaveLength(1)
+      expect(f.state.observedRoots.at(-1)).toEqual([4100, 4101, 4102])
+      expect(f.state.calls).not.toContain("restore")
+      expect(f.state.restored).toBe(false)
+      await access(join(f.input.root, "profile"))
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("ambient browser, unknown startup identity, PID reuse and failed launcher restoration never authorize cleanup", async () => {
+  const ambient = await fixture({ ambient: true })
+  try {
+    await expect(startOwnedWindowsReviewBrowser(ambient.input, ambient.io)).rejects.toThrow(
+      "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+    )
+    expect(ambient.state.calls).toEqual(["preflight"])
+  } finally {
+    await ambient.cleanup()
+  }
+  for (const options of [{ wrongRootSid: true }, { reusedPid: true }, { restoreFails: true }]) {
+    const f = await fixture(options)
+    try {
+      if (options.wrongRootSid)
+        await expect(startOwnedWindowsReviewBrowser(f.input, f.io)).rejects.toThrow(
+          "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED",
+        )
+      else {
+        const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+        f.state.reused = options.reusedPid === true
+        await expect(browser.stop()).rejects.toThrow("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+      }
+      if (!options.restoreFails) expect(f.state.calls).not.toContain("stop")
+      expect(f.state.restored).toBe(false)
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(true)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("lost launcher-write response reconciles exact prior state; retained profiles still require restoration", async () => {
+  const lost = await fixture({ policySetLost: true })
+  try {
+    await expect(startOwnedWindowsReviewBrowser(lost.input, lost.io)).rejects.toThrow(
+      "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+    )
+    expect(lost.state.restored).toBe(true)
+    expect(lost.state.calls).not.toContain("stop")
+  } finally {
+    await lost.cleanup()
+  }
+  const f = await fixture()
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    await browser.stop({ retainProfile: true })
+    expect(f.state.restored).toBe(true)
+    expect(
+      await access(f.input.root).then(
+        () => true,
+        () => false,
+      ),
+    ).toBe(true)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("Windows ownership rejects unrelated, recycled and malformed process/policy observations", () => {
+  const main = processRecord("C:\\owned")
+  const other = {
+    ...main,
+    pid: 9999,
+    parent: 42,
+    args: [executable, "https://example.com"],
+    birth: "134000000000000003",
+  }
+  const input = {
+    processes: [main, other],
+    known: new Map([[main.pid, main]]),
+    root: main,
+    executable,
+    profile: "C:\\owned",
+    sid: main.sid,
+  }
+  expect(windowsReviewOwnership(input).unknown.map((item) => item.pid)).toEqual([9999])
+  expect(() => windowsReviewOwnership({ ...input, processes: [{ ...main, birth: "134000000000000002" }] })).toThrow()
+  expect(() => windowsReviewProcesses([main, main])).toThrow()
+  expect(() => windowsReviewPolicy({ keys: [false, true, true, true, true], value: null })).toThrow()
+  expect(() =>
+    windowsReviewPolicy({ keys: [true, true, true, true, true], value: { kind: "Binary", data: "private" } }),
+  ).toThrow()
+  if (process.platform !== "win32")
+    expect(() => windowsReviewNative({}, "/tmp")).toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+})
+
+test("unknown-reason counts partition rejected identities without changing any ownership rule", () => {
+  const main = processRecord("C:\\PRIVATE-PROFILE")
+  const parent = { ...main, pid: 4101, parent: main.pid, birth: "134000000000000010", args: [executable] }
+  const other = { ...main, pid: 9000, parent: 42, birth: "134000000000000020" }
+  const cases = [
+    { ...other, executable: "C:\\PRIVATE-EXECUTABLE.exe", sid: "S-1-PRIVATE" },
+    { ...other, pid: 9001, sid: "S-1-PRIVATE" },
+    { ...other, pid: 9002, session: 999 },
+    { ...other, pid: 9003, birth: "134000000000000000" },
+    { ...other, pid: 9004, parent: parent.pid, birth: "134000000000000009", args: [executable] },
+    { ...other, pid: 9005, args: [executable, "PRIVATE-URL-ARGUMENT"] },
+  ]
+  const input = {
+    processes: [main, parent, ...cases],
+    known: new Map([[main.pid, main]]),
+    root: main,
+    executable,
+    profile: "C:\\PRIVATE-PROFILE",
+    sid: main.sid,
+  }
+  const result = windowsReviewOwnership(input)
+  expect([...result.owned.keys()]).toEqual([main.pid, parent.pid])
+  expect(result.unknown).toEqual(cases)
+  expect(result.rejected).toEqual({ executable: 1, sid: 1, session: 1, birth: 2, profileOrAncestry: 1 })
+  expect(Object.values(result.rejected).reduce((total, value) => total + value, 0)).toBe(result.unknown.length)
+  for (const item of cases) {
+    const single = windowsReviewOwnership({ ...input, processes: [main, parent, item] })
+    expect(single.unknown).toEqual([item])
+    expect(Object.values(single.rejected).reduce((total, value) => total + value, 0)).toBe(1)
+  }
+  expect(JSON.stringify(result.rejected)).not.toMatch(/PRIVATE|900[0-5]|410[01]/)
+})
+
+test("handoff freezes unknown-reason counts before cleanup and never queries CDP while an unknown remains", async () => {
+  const f = await fixture()
+  const native = f.io.native
+  f.io.native = async (request) => {
+    if (request.operation === "restore") {
+      expect(request.observedPids).toEqual([4100, 4101, 4102])
+      expect(f.state.running).toBe(false)
+      expect(request.before).toEqual(f.before)
+      f.state.policy = structuredClone(f.before)
+      f.state.restored = true
+      return { restored: true }
+    }
+    const result = await native(request)
+    if (request.operation !== "observe" || !f.state.handoff) return result
+    const value = result as { processes: WindowsReviewProcess[] }
+    return {
+      ...value,
+      processes: [
+        ...value.processes,
+        {
+          ...processRecord(f.state.profile),
+          pid: 4102,
+          parent: 4101,
+          birth: "134000000000000003",
+          executable: "C:\\PRIVATE-HELPER.exe",
+          args: [
+            "C:\\PRIVATE-HELPER.exe",
+            "--type=crashpad-handler",
+            `--database=${win32.join(f.state.profile, "Crashpad")}`,
+            "PRIVATE-ARGUMENT",
+          ],
+        },
+      ],
+    }
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const before = f.state.targetQueries
+    f.state.handoff = true
+    expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(false)
+    expect(f.state.targetQueries).toBe(before)
+    const handoff = browser.observation!()
+    expect(handoff).toMatchObject({
+      handoffPhase: "ownership",
+      handoffUnknownProcesses: 1,
+      handoffUnknownExecutableProcesses: 1,
+      handoffUnknownSidProcesses: 0,
+      handoffUnknownSessionProcesses: 0,
+      handoffUnknownBirthProcesses: 0,
+      handoffUnknownProfileOrAncestryProcesses: 0,
+      handoffUnknownCrashpadTypeProcesses: 1,
+      handoffUnknownCrashpadDatabaseProcesses: 1,
+      handoffUnknownCrashpadExecutableProcesses: 0,
+      handoffUnknownConsoleExecutableProcesses: 0,
+      handoffUnknownWerFaultExecutableProcesses: 0,
+      handoffUnknownProxyExecutableProcesses: 0,
+      handoffUnknownOtherExecutableProcesses: 1,
+    })
+    f.state.handoff = false
+    await browser.stop()
+    const final = readBrowserObservation({ browserObservation: browser.observation!() })
+    expect(final).toMatchObject({
+      observedProcesses: 0,
+      unknownProcesses: 0,
+      handoffUnknownProcesses: 1,
+      handoffUnknownExecutableProcesses: 1,
+      handoffUnknownCrashpadTypeProcesses: 1,
+      handoffUnknownCrashpadDatabaseProcesses: 1,
+      handoffUnknownOtherExecutableProcesses: 1,
+    })
+    expect(JSON.stringify(final)).not.toMatch(/PRIVATE|410[012]/)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("Crashpad diagnostic flags require exact single arguments and never grant ownership", () => {
+  const profile = "C:\\PRIVATE-PROFILE"
+  const main = processRecord(profile)
+  const database = `--database=${win32.join(profile, "Crashpad")}`
+  const type = "--type=crashpad-handler"
+  const cases: { args: string[]; type: number; database: number }[] = [
+    { args: [type, database], type: 1, database: 1 },
+    { args: [type], type: 1, database: 0 },
+    { args: [database], type: 0, database: 0 },
+    { args: [type, type, database], type: 0, database: 0 },
+    { args: [type, "--type=renderer", database], type: 0, database: 0 },
+    { args: [type, "--type", "renderer", database], type: 0, database: 0 },
+    { args: [`--note=${type}`, database], type: 0, database: 0 },
+    { args: [type + "-other", database], type: 0, database: 0 },
+    { args: [type, database, database], type: 1, database: 0 },
+    { args: [type, database, "--database=C:\\FOREIGN"], type: 1, database: 0 },
+    { args: [type, database, "--database", "C:\\FOREIGN"], type: 1, database: 0 },
+    { args: [type, `--note=${database}`], type: 1, database: 0 },
+    { args: [type, database + "-foreign"], type: 1, database: 0 },
+    { args: [type, `--database=${profile}\\elsewhere\\..\\Crashpad`], type: 1, database: 0 },
+  ]
+  for (const value of cases) {
+    const other = { ...main, pid: 9000, parent: 42, birth: "134000000000000020", args: [executable, ...value.args] }
+    const result = windowsReviewOwnership({
+      processes: [main, other],
+      known: new Map([[main.pid, main]]),
+      root: main,
+      executable,
+      profile,
+      sid: main.sid,
+    })
+    expect([...result.owned.keys()]).toEqual([main.pid])
+    expect(result.unknown).toEqual([other])
+    expect(result.rejected).toEqual({ executable: 0, sid: 0, session: 0, birth: 0, profileOrAncestry: 1 })
+    expect(result.crashpad).toEqual({ type: value.type, database: value.database })
+    expect(JSON.stringify(result.crashpad)).not.toMatch(/PRIVATE|9000|4100|--/)
+  }
+})
+
+test("fixed executable basename counts partition only executable mismatches and never authorize a known name", () => {
+  const main = processRecord("C:\\PRIVATE-PROFILE")
+  const names = [
+    "msedge_crashpad_handler.exe",
+    "conhost.exe",
+    "OpenConsole.exe",
+    "WerFault.exe",
+    "msedge_proxy.exe",
+    "PRIVATE-OTHER.exe",
+    "msedge.exe",
+    "conhost.exe.PRIVATE",
+  ]
+  const others = names.map((name, index) => ({
+    ...main,
+    pid: 9100 + index,
+    parent: main.pid,
+    birth: "134000000000000020",
+    executable: `C:\\PRIVATE-FOREIGN\\${name}`,
+  }))
+  const sidMismatch = { ...main, pid: 9200, sid: "S-1-PRIVATE" }
+  const result = windowsReviewOwnership({
+    processes: [main, ...others, sidMismatch],
+    known: new Map([[main.pid, main]]),
+    root: main,
+    executable,
+    profile: "C:\\PRIVATE-PROFILE",
+    sid: main.sid,
+  })
+  expect([...result.owned.keys()]).toEqual([main.pid])
+  expect(result.unknown).toEqual([...others, sidMismatch])
+  expect(result.rejected).toEqual({ executable: 8, sid: 1, session: 0, birth: 0, profileOrAncestry: 0 })
+  expect(result.executableShapes).toEqual({ crashpad: 1, console: 2, werFault: 1, proxy: 1, other: 3 })
+  expect(Object.values(result.executableShapes).reduce((total, count) => total + count, 0)).toBe(
+    result.rejected.executable,
+  )
+  expect(JSON.stringify(result.executableShapes)).not.toMatch(/PRIVATE|910[0-7]|9200|4100|\.exe|--/)
+})
+
+test("private unknown-executable sink is bounded and once-only, and sink failures cannot change ownership or cleanup", async () => {
+  for (const mode of ["collect", "throw", "reject"] as const) {
+    const f = await fixture()
+    const native = f.io.native
+    const expectedPids = [4100, 4101, ...Array.from({ length: 9 }, (_, i) => 9300 + i)]
+    let calls = 0
+    let snapshot: WindowsUnknownExecutableSnapshot | undefined
+    f.io.native = async (request) => {
+      if (request.operation === "restore") {
+        expect(request.observedPids).toEqual(expectedPids)
+        expect(f.state.running).toBe(false)
+        expect(request.before).toEqual(f.before)
+        f.state.policy = structuredClone(f.before)
+        f.state.restored = true
+        return { restored: true }
+      }
+      const result = await native(request)
+      if (request.operation !== "observe" || !f.state.handoff) return result
+      const value = result as { processes: WindowsReviewProcess[] }
+      return {
+        ...value,
+        processes: [
+          ...value.processes,
+          ...Array.from({ length: 9 }, (_, i) => ({
+            ...processRecord(f.state.profile),
+            pid: 9300 + i,
+            parent: i === 1 ? 9999 : 4101,
+            session: i === 1 ? 99 : 2,
+            sid: i === 1 ? "S-1-5-21-999-222-333-1001" : processRecord("").sid,
+            birth: i === 1 ? "134000000000000000" : "134000000000000020",
+            executable: `C:\\PRIVATE-UNKNOWN-${i}.exe`,
+            args: i === 1 ? ["PRIVATE-ARGUMENT"] : [`--user-data-dir=${f.state.profile}`, "PRIVATE-URL-ARGUMENT"],
+          })),
+        ],
+      }
+    }
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(
+        {
+          ...f.input,
+          unknownExecutableSink(value) {
+            calls++
+            snapshot = value
+            if (mode === "throw") throw Error("PRIVATE-SINK-FAILURE")
+            if (mode === "reject") return Promise.reject(Error("PRIVATE-ASYNC-SINK-FAILURE"))
+          },
+        },
+        f.io,
+      )
+      expect(calls).toBe(0)
+      const targetQueries = f.state.targetQueries
+      f.state.handoff = true
+      expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(false)
+      expect(await browser.confirmHandoff("https://auth.openai.com/codex/device")).toBe(false)
+      expect(calls).toBe(1)
+      expect(f.state.targetQueries).toBe(targetQueries)
+      expect(snapshot).toHaveLength(8)
+      expect(Object.isFrozen(snapshot)).toBe(true)
+      expect(snapshot!.every(Object.isFrozen)).toBe(true)
+      expect(snapshot![0]).toEqual({
+        executable: "C:\\PRIVATE-UNKNOWN-0.exe",
+        pid: 9300,
+        parent: 4101,
+        parentOwned: true,
+        sameSid: true,
+        sameSession: true,
+        validBirth: true,
+        exactProfile: true,
+      })
+      expect(snapshot![1]).toMatchObject({
+        parentOwned: false,
+        sameSid: false,
+        sameSession: false,
+        validBirth: false,
+        exactProfile: false,
+      })
+      expect(JSON.stringify(snapshot)).not.toMatch(/PRIVATE-ARGUMENT|PRIVATE-URL|S-1-5/)
+      f.state.handoff = false
+      await browser.stop()
+      expect(f.state.restored).toBe(true)
+      const publicObservation = readBrowserObservation({ browserObservation: browser.observation!() })
+      expect(publicObservation).toMatchObject({ observedProcesses: 0, handoffUnknownExecutableProcesses: 9 })
+      expect(JSON.stringify(publicObservation)).not.toMatch(/PRIVATE|930[0-8]|S-1-5|9999/)
+      expect(calls).toBe(1)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("loopback review checks the actual HTTP association and permits only its exact owned URL", async () => {
+  const f = await fixture()
+  const probeURL = "http://127.0.0.1:23456/physicalsystems-browser-review/" + "c".repeat(64)
+  f.io.targets = async () => [{ type: "page", url: f.state.handoff ? probeURL : "about:blank" }]
+  try {
+    const browser = await startOwnedWindowsReviewBrowser({ ...f.input, probeURL }, f.io)
+    await expect(browser.confirmHandoff("https://auth.openai.com/codex/device")).rejects.toThrow()
+    f.state.handoff = true
+    expect(await browser.confirmHandoff(probeURL)).toBe(true)
+    await browser.stop()
+    expect(f.state.schemes.length).toBeGreaterThan(1)
+    expect(new Set(f.state.schemes)).toEqual(new Set(["http"]))
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("provider diagnostics retain only fixed reviewed failure codes", () => {
+  for (const code of [
+    "PROVIDER_REVIEW_UNCONFIRMED",
+    "PROVIDER_REVIEW_ACCOUNT_UNCONFIRMED",
+    "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED",
+    "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
+    "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED",
+    "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+  ] as const) {
+    const error = new Error(code)
+    error.stack = "PRIVATE-CREDENTIAL-PATH"
+    expect(qualificationFailureCode(error)).toBe(code)
+    expect(qualificationFailureCode(new Error(`${code} PRIVATE-CREDENTIAL-PATH`))).toBe(
+      "QUALIFICATION_UNEXPECTED_ERROR",
+    )
+  }
+})
+
+test("Windows acquisition and cleanup preserve exact fixed native phases without private values", async () => {
+  for (const nativeFailure of ["preflight", "set", "observe", "restore"] as const) {
+    const f = await fixture({ nativeFailure })
+    try {
+      const error =
+        nativeFailure === "restore"
+          ? await (await startOwnedWindowsReviewBrowser(f.input, f.io)).stop().catch((error: unknown) => error)
+          : await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      const observation = readBrowserObservation(
+        browserObservationError("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED", error, {
+          reviewPhase: "browser-cleanup",
+          failedReviewPhase: "browser-acquisition",
+        }),
+      )
+      expect(observation).toBeDefined()
+      if (nativeFailure === "preflight") {
+        expect(observation?.failedBrowserPhase).toBe("windows-preflight")
+        expect(observation?.failedWindowsNativePhase).toBe("association-progid")
+        expect(observation?.pidObserved).toBe(false)
+      } else if (nativeFailure === "set") {
+        expect(observation?.failedBrowserPhase).toBe("windows-policy-write")
+        expect(observation?.failedWindowsNativePhase).toBe("policy-write")
+        expect(f.state.restored).toBe(true)
+      } else if (nativeFailure === "observe") {
+        expect(observation?.failedBrowserPhase).toBe("identity-stat")
+        expect(observation?.cleanupFailurePhase).toBe("cleanup-observe")
+        expect(observation?.failedWindowsNativePhase).toBe("process-identity")
+      } else {
+        expect(observation?.cleanupFailurePhase).toBe("windows-policy-restore")
+        expect(observation?.windowsNativePhase).toBe("policy-restore")
+        expect(observation?.ownedProcesses).toBe(0)
+      }
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      if (f.state.profile) expect(JSON.stringify(observation)).not.toContain(f.state.profile)
+      if (["observe", "restore"].includes(nativeFailure)) {
+        expect(f.state.unrefs).toBeGreaterThan(0)
+        await access(f.input.root)
+      }
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("native phase parser accepts only one authored marker, never raw native errors or identities", () => {
+  const privateValue = "PRIVATE-PATH-SID-CREDENTIAL"
+  const result = windowsReviewNativeFailure(`${privateValue}\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\n`)
+  expect(readBrowserObservation(result)?.windowsNativePhase).toBe("signature")
+  expect(JSON.stringify(readBrowserObservation(result))).not.toContain(privateValue)
+  for (const value of [
+    privateValue,
+    `PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_${privateValue}`,
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature",
+    "x".repeat(1024 * 1024 + 1),
+  ])
+    expect(readBrowserObservation(windowsReviewNativeFailure(value))?.windowsNativePhase).toBeUndefined()
+})
+
+test("native timeout preserves the last live checkpoint through the actual result decoder and cleanup wrapper", () => {
+  const privateValue = "PRIVATE-SID-PATH-TOKEN"
+  const stderr = [
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_bootstrap",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-read",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-parse",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_add-type",
+    privateValue,
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_add-type PRIVATE",
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_unrecognized",
+  ].join("\r\n")
+  let failure: unknown
+  try {
+    windowsReviewNativeResult({
+      stdout: "",
+      stderr,
+      error: { killed: true, signal: "SIGTERM", code: null, message: privateValue },
+    })
+  } catch (error) {
+    failure = error
+  }
+  expect(failure).toBeInstanceOf(Error)
+  const wrapped = browserObservationError("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED", failure, {
+    browserPhase: "windows-preflight",
+    failedBrowserPhase: "windows-preflight",
+    reviewPhase: "browser-cleanup",
+  })
+  expect(readBrowserObservation(wrapped)).toEqual({
+    browserPhase: "windows-preflight",
+    failedBrowserPhase: "windows-preflight",
+    reviewPhase: "browser-cleanup",
+    windowsNativePhase: "add-type",
+    windowsNativeOutcome: "timeout",
+  })
+  expect(JSON.stringify(readBrowserObservation(wrapped))).not.toContain(privateValue)
+  expect(
+    readBrowserObservation(windowsReviewNativeFailure("", "x".repeat(1024 * 1024) + stderr))?.windowsNativePhase,
+  ).toBeUndefined()
+  expect(
+    readBrowserObservation(windowsReviewNativeFailure("", "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-read\n"))
+      ?.windowsNativePhase,
+  ).toBe("input-read")
+})
+
+test("native result decoder keeps success JSON unchanged and classifies only fixed callback outcomes", () => {
+  const value = { private: "PRIVATE-NATIVE-RETURN-VALUE", values: [1, 2] }
+  expect(
+    windowsReviewNativeResult({
+      stdout: `\uFEFF${JSON.stringify(value)}`,
+      stderr: "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_output\n",
+    }),
+  ).toEqual(value)
+  for (const [error, outcome] of [
+    [{ code: "ETIMEDOUT" }, "timeout"],
+    [{ signal: "SIGKILL" }, "signal"],
+    [{ code: 1 }, "exit"],
+    [{ code: "ENOENT", path: "PRIVATE" }, "start"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "output-limit"],
+    [{ message: "PRIVATE" }, "unknown"],
+    [undefined, "invalid-json"],
+  ] as const) {
+    let failure: unknown
+    try {
+      windowsReviewNativeResult({
+        stdout: "PRIVATE invalid JSON",
+        stderr: "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_input-parse\nPRIVATE",
+        error,
+      })
+    } catch (error) {
+      failure = error
+    }
+    const observation = readBrowserObservation(failure)
+    expect(observation?.windowsNativeOutcome).toBe(outcome)
+    expect(observation?.windowsNativePhase).toBe("input-parse")
+    expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+  }
+})
+
+test("native transport gives slow signature preflight headroom while preserving single-call mutation deadlines", async () => {
+  const policy = { keys: [false, false, false, false, false], value: null }
+  const requests: Parameters<WindowsReviewNative>[0][] = [
+    { operation: "preflight", scheme: "http" },
+    {
+      operation: "set",
+      scheme: "http",
+      executable,
+      beforeCommand: resolvedCommand,
+      profile: "C:\\owned\\profile",
+      before: policy,
+    },
+    { operation: "observe", executable, profile: "C:\\owned\\profile", scheme: "http", observedPids: [] },
+    { operation: "stop", processes: [] },
+    {
+      operation: "restore",
+      scheme: "http",
+      executable,
+      beforeCommand: resolvedCommand,
+      profile: "C:\\owned\\profile",
+      before: policy,
+      observedPids: [],
+    },
+  ]
+  for (const request of requests) {
+    let calls = 0
+    let written = ""
+    let observedDeadline = 0
+    // A fake execFile callback models 20s of OS work without sleeping or
+    // starting any native process. This previously exceeded every deadline.
+    const result = dispatchWindowsReviewNative(request, (options, complete) => {
+      calls++
+      observedDeadline = options.timeout
+      expect(Object.isFrozen(options)).toBe(true)
+      return {
+        stdin: new Writable({
+          write(chunk, _encoding, done) {
+            written += chunk.toString()
+            done()
+          },
+          final(done) {
+            queueMicrotask(() => {
+              complete(
+                options.timeout < 20000 ? { killed: true, signal: "SIGTERM", code: null, message: "PRIVATE" } : null,
+                JSON.stringify({ fixtureOnly: true }),
+                "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\nPRIVATE",
+              )
+            })
+            done()
+          },
+        }),
+      }
+    })
+    if (request.operation === "preflight") {
+      expect(await result).toEqual({ fixtureOnly: true })
+      expect(observedDeadline).toBe(30000)
+    } else {
+      let failure: unknown
+      try {
+        await result
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(Error)
+      expect(readBrowserObservation(failure)?.windowsNativeOutcome).toBe("timeout")
+      expect(observedDeadline).toBe(12000)
+      expect(JSON.stringify(readBrowserObservation(failure))).not.toContain("PRIVATE")
+    }
+    expect(JSON.parse(written)).toEqual(request)
+    expect(calls).toBe(1)
+  }
+})
+
+test("extended preflight never retries or accepts native trust failure or expiry", async () => {
+  for (const error of [{ code: 1 }, { killed: true, signal: "SIGTERM", code: null }]) {
+    let calls = 0
+    const result = dispatchWindowsReviewNative({ operation: "preflight", scheme: "https" }, (options, complete) => {
+      calls++
+      expect(options.timeout).toBe(30000)
+      return {
+        stdin: new Writable({
+          write(_chunk, _encoding, done) {
+            done()
+          },
+          final(done) {
+            queueMicrotask(() => complete(error, "PRIVATE", "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\n"))
+            done()
+          },
+        }),
+      }
+    })
+    let failure: unknown
+    try {
+      await result
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    expect(readBrowserObservation(failure)).toMatchObject({
+      windowsNativePhase: "signature",
+      windowsNativeOutcome: "killed" in error ? "timeout" : "exit",
+    })
+    expect(JSON.stringify(readBrowserObservation(failure))).not.toContain("PRIVATE")
+    expect(calls).toBe(1)
+  }
+})
+
+test("the real encoded diagnostic script fits CreateProcess including executable and argument overhead", () => {
+  const args = windowsReviewNativeArguments("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+  expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+  expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).toBe(
+    windowsReviewScriptBootstrap(windowsReviewNativeScript),
+  )
+  expect(() => windowsReviewNativeArguments(`C:\\${"x".repeat(20000)}\\powershell.exe`)).toThrow(
+    "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+  )
+})
+
+test("native module discovery uses the fixed OS module directory and an exclusively owned cache", () => {
+  const env = windowsReviewNativeEnvironment(
+    {
+      SystemRoot: "C:\\Windows",
+      ProgramFiles: "C:\\Program Files",
+      PSModulePath: "PRIVATE-MODULES",
+      PSMODULEPATH: "PRIVATE-MODULES-UPPER",
+      PSModuleAnalysisCachePath: "PRIVATE-CACHE",
+      PSModuleAutoLoadingPreference: "PRIVATE-AUTOLOAD",
+      PSDisableModuleAnalysisCacheCleanup: "PRIVATE-CLEANUP",
+      USERPROFILE: "PRIVATE-PROFILE",
+      LOCALAPPDATA: "PRIVATE-PROFILE",
+      PATH: "PRIVATE-PATH",
+      NODE_OPTIONS: "PRIVATE-LOADER",
+    },
+    "C:\\runner\\owned-browser",
+  )
+  expect(env.PSModulePath).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules")
+  expect(env.PSModuleAnalysisCachePath).toBe("C:\\runner\\owned-browser\\ModuleAnalysisCache")
+  expect(env.TEMP).toBe("C:\\runner\\owned-browser")
+  expect(env.ProgramFiles).toBe("C:\\Program Files")
+  expect(env.PATH).toBe("C:\\Windows\\System32")
+  expect(JSON.stringify(env)).not.toContain("PRIVATE")
+  expect(env.PSMODULEPATH).toBeUndefined()
+  expect(windowsReviewNativeEnvironment({ SYSTEMROOT: "D:\\Windows" }, "D:\\owned").PSModulePath).toBe(
+    "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules",
+  )
+  for (const SystemRoot of [undefined, "relative", "C:\\Windows\\..\\other", 'C:\\bad"path'])
+    expect(() => windowsReviewNativeEnvironment({ SystemRoot }, "C:\\owned")).toThrow(
+      "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+    )
+  const reset = "$env:PSModulePath = [IO.Path]::Combine($PSHOME,'Modules')"
+  expect(windowsReviewNativeScript.indexOf(reset)).toBeGreaterThan(0)
+  expect(windowsReviewNativeScript.indexOf(reset)).toBeLessThan(windowsReviewNativeScript.indexOf("ConvertFrom-Json"))
+})
+
+test("failed native readiness retains its port, listener and target facts after confirmed cleanup", async () => {
+  for (const unready of ["wrong-listener", "targets-unavailable", "wrong-target"] as const) {
+    const f = await fixture({ unready })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      const observation = readBrowserObservation(error)
+      expect(observation?.browserPhase).toBe("stopped")
+      expect(observation?.failedBrowserPhase).toBe("cdp-targets")
+      expect(observation?.cdpReady).toBe(false)
+      expect(observation?.ownedProcesses).toBe(0)
+      expect(observation?.listenerProcesses).toBe(0)
+      expect(observation?.readinessPolls).toBeGreaterThan(1)
+      expect(observation?.readinessPortAllocated).toBe(true)
+      expect(observation?.readinessPortReleased).toBe(true)
+      expect(observation?.readinessDebugPortMatched).toBe(true)
+      expect(observation?.readinessDebugAddressMatched).toBe(true)
+      expect(observation?.readinessUnknownProcesses).toBe(0)
+      expect(observation?.readinessTargetCount).toBe(unready === "wrong-target" ? 1 : 0)
+      expect(observation?.readinessBlankTarget).toBe(false)
+      const queried = ["targets-unavailable", "wrong-target"].includes(unready)
+      expect(observation?.readinessTargetQueried).toBe(queried)
+      expect(observation?.readinessListenerOwned).toBe(queried)
+      expect(observation?.readinessTargetsAvailable).toBe(unready === "wrong-target")
+      expect(observation?.readinessListeners).toBe(1)
+      expect(f.state.targetQueries > 0).toBe(queried)
+      expect(f.state.restored).toBe(true)
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      expect(JSON.stringify(observation)).not.toContain("23456")
+      await expect(access(f.input.root)).rejects.toThrow()
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("actual loopback reservation excludes a competing bind and releases before reuse", async () => {
+  const reservation = await reserveWindowsReviewPort()
+  const competitor = createServer((socket) => socket.destroy())
+  const rebound = createServer((socket) => socket.destroy())
+  try {
+    expect(reservation.port).toBeGreaterThan(0)
+    expect(reservation.port).toBeLessThanOrEqual(65535)
+    const conflict = await new Promise<string | undefined>((resolve) => {
+      competitor.once("error", (error: NodeJS.ErrnoException) => resolve(error.code))
+      competitor.listen({ host: "127.0.0.1", port: reservation.port, exclusive: true }, () => resolve(undefined))
+    })
+    expect(conflict).toBe("EADDRINUSE")
+    const release = reservation.release()
+    expect(reservation.release()).toBe(release)
+    await release
+    await new Promise<void>((resolve, reject) => {
+      rebound.once("error", reject)
+      rebound.listen({ host: "127.0.0.1", port: reservation.port, exclusive: true }, resolve)
+    })
+    expect(rebound.listening).toBe(true)
+  } finally {
+    await reservation.release()
+    await Promise.all(
+      [competitor, rebound].map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+    )
+  }
+})
+
+test("a pending bind is aborted and cannot turn not-running close into confirmed release", async () => {
+  let signal: AbortSignal | undefined
+  let closeCalls = 0,
+    unrefs = 0
+  const server = Object.assign(new EventEmitter(), {
+    unref() {
+      unrefs++
+      return this
+    },
+    listen(options: { host: string; port: number; signal: AbortSignal }) {
+      expect(options.host).toBe("127.0.0.1")
+      expect(options.port).toBe(0)
+      signal = options.signal
+      expect(signal.aborted).toBe(false)
+      return this
+    },
+    close(callback: (error: NodeJS.ErrnoException) => void) {
+      closeCalls++
+      queueMicrotask(() => callback(Object.assign(Error("PRIVATE"), { code: "ERR_SERVER_NOT_RUNNING" })))
+      return this
+    },
+  }) as unknown as Server
+  await expect(reserveWindowsReviewPort({ server: () => server, timeoutMs: 5 })).rejects.toThrow(
+    "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED",
+  )
+  expect(signal?.aborted).toBe(true)
+  expect(closeCalls).toBe(1)
+  expect(unrefs).toBeGreaterThan(0)
+})
+
+test("reservation and release precede the single native launch, without relying on a port file", async () => {
+  const f = await fixture()
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    expect(f.state.portEvents).toEqual(["reserve", "release", "spawn"])
+    await expect(access(join(f.state.profile, "DevToolsActivePort"))).rejects.toThrow()
+    expect(f.state.targetQueries).toBeGreaterThan(0)
+    await browser.stop()
+    expect(f.state.portEvents).toEqual(["reserve", "release", "spawn"])
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("allocation or unconfirmed release never launches or queries a browser", async () => {
+  for (const reservationFails of ["allocation", "release"] as const) {
+    const f = await fixture({ reservationFails })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(f.state.portEvents).toEqual(reservationFails === "allocation" ? ["reserve"] : ["reserve", "release"])
+      expect(f.state.targetQueries).toBe(0)
+      expect(f.state.running).toBe(false)
+      expect(readBrowserObservation(error)?.pidObserved).toBe(false)
+      if (reservationFails === "release")
+        expect((error as Error).message).toBe("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+      await access(f.input.root)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("stripped, duplicate or mismatched native debugging flags fail before any CDP query", async () => {
+  for (const debugFlag of [
+    "missing-port",
+    "duplicate-port",
+    "wrong-port",
+    "wrong-address",
+    "duplicate-address",
+  ] as const) {
+    const f = await fixture({ debugFlag })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(f.state.portEvents).toEqual(["reserve", "release", "spawn"])
+      expect(f.state.targetQueries).toBe(0)
+      expect(readBrowserObservation(error)?.failedBrowserPhase).toBe("identity-argv")
+      expect(readBrowserObservation(error)?.birthVerified).toBe(true)
+      expect(readBrowserObservation(error)?.browserPhase).toBe("stopped")
+      expect(f.state.restored).toBe(true)
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("23456")
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("preflight policy observations preserve restricted semantics and reject raw values", () => {
+  for (const value of [
+    undefined,
+    null,
+    [],
+    "PRIVATE",
+    {
+      machineRemoteDebuggingAllowed: "PRIVATE",
+      baseRemoteDebuggingAllowed: "restricted",
+      machineDeveloperToolsAvailability: 0,
+      baseDeveloperToolsAvailability: {},
+    },
+  ]) {
+    expect(windowsReviewDebugPolicyObservation(value)).toEqual({
+      machineRemoteDebugging: "invalid",
+      userRemoteDebugging: "invalid",
+      machineDeveloperTools: "invalid",
+      userDeveloperTools: "invalid",
+    })
+  }
+  for (const state of ["absent", "allow", "deny", "invalid", "restricted"] as const) {
+    const value = windowsReviewDebugPolicyObservation({
+      machineRemoteDebuggingAllowed: state,
+      baseRemoteDebuggingAllowed: state,
+      machineDeveloperToolsAvailability: state,
+      baseDeveloperToolsAvailability: state,
+    })
+    expect(value.machineRemoteDebugging).toBe(state === "restricted" ? "invalid" : state)
+    expect(value.machineDeveloperTools).toBe(state)
+  }
+})
+
+test("failure freezes metadata-only profile markers and child state before cleanup changes them", async () => {
+  for (const profileMarkers of ["files", "symlink"] as const) {
+    const f = await fixture({ unready: "wrong-listener", profileMarkers, exitDuringStop: true })
+    try {
+      const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error) => error)
+      const observation = readBrowserObservation(error)
+      expect(observation).toMatchObject({
+        browserPhase: "stopped",
+        failedBrowserPhase: "cdp-targets",
+        failedWindowsObservePhase: "complete",
+        machineRemoteDebugging: "absent",
+        userRemoteDebugging: "allow",
+        machineDeveloperTools: "restricted",
+        userDeveloperTools: "deny",
+        childExitedAtFailure: false,
+        processExited: true,
+        exitCode: 255,
+        profileMarkerReadComplete: profileMarkers === "files",
+        profileLocalStatePresent: true,
+        profilePreferencesPresent: profileMarkers === "files",
+      })
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      expect(JSON.stringify(observation)).not.toContain(f.input.root)
+      await expect(access(f.input.root)).rejects.toThrow()
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("malformed native process shape retains its first boundary through cleanup uncertainty", async () => {
+  const f = await fixture({ malformedProcesses: true })
+  try {
+    const error = await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error) => error)
+    expect(readBrowserObservation(error)).toMatchObject({
+      failedBrowserPhase: "identity-stat",
+      failedWindowsObservePhase: "processes",
+      childExitedAtFailure: false,
+    })
+    expect(f.state.calls).not.toContain("stop")
+    expect(f.state.calls).not.toContain("restore")
+    expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("cancellation during the actual Windows native handoff read settles without starting CDP or a second read", async () => {
+  const f = await fixture()
+  let releaseRead = () => {}
+  let readStarted = () => {}
+  const pending = new Promise<void>((resolve) => {
+    releaseRead = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve
+  })
+  let hold = false
+  const native = f.io.native
+  f.io.native = async (request) => {
+    if (hold && request.operation === "observe") {
+      readStarted()
+      await pending
+    }
+    return native(request)
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const beforeQueries = f.state.targetQueries
+    const beforeReads = f.state.calls.filter((call) => call === "observe").length
+    hold = true
+    const cancellation = new AbortController()
+    const confirming = browser.confirmHandoff("https://auth.openai.com/codex/device", { signal: cancellation.signal })
+    await started
+    cancellation.abort()
+    releaseRead()
+    expect(await confirming).toBe(false)
+    expect(f.state.targetQueries).toBe(beforeQueries)
+    expect(f.state.calls.filter((call) => call === "observe")).toHaveLength(beforeReads + 1)
+    expect(browser.observation()).toMatchObject({
+      handoffPhase: "ownership",
+      handoffOutcome: "canceled",
+      handoffPolicyOwned: true,
+      handoffListeners: 1,
+      handoffListenerOwned: true,
+      handoffUnknownProcesses: 0,
+    })
+    hold = false
+    await browser.stop()
+    expect(browser.observation()).toMatchObject({
+      browserPhase: "stopped",
+      handoffPhase: "ownership",
+      handoffOutcome: "canceled",
+      handoffListenerOwned: true,
+    })
+  } finally {
+    releaseRead()
+    await f.cleanup()
+  }
+})
+
+test("pre-canceled confirmation performs no native or CDP reads; releasing controller does not stop or delete", async () => {
+  const f = await fixture()
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const calls = [...f.state.calls]
+    const queries = f.state.targetQueries
+    const cancellation = new AbortController()
+    cancellation.abort()
+    expect(await browser.confirmHandoff("https://auth.openai.com/codex/device", { signal: cancellation.signal })).toBe(
+      false,
+    )
+    browser.releaseController()
+    expect(f.state.calls).toEqual(calls)
+    expect(f.state.targetQueries).toBe(queries)
+    expect(f.state.unrefs).toBe(1)
+    expect(f.state.running).toBe(true)
+    expect(f.state.restored).toBe(false)
+    await access(f.input.root)
+    await browser.stop()
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("handoff still rejects a foreign listener before querying CDP and freezes ownership failure", async () => {
+  const f = await fixture()
+  let foreign = false
+  const native = f.io.native
+  f.io.native = async (request) => {
+    const result = await native(request)
+    return foreign && request.operation === "observe" ? { ...(result as object), listening: [4999] } : result
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const beforeQueries = f.state.targetQueries
+    foreign = true
+    const error = await browser.confirmHandoff("https://auth.openai.com/codex/device").catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+    expect(readBrowserObservation(error)).toMatchObject({
+      handoffPhase: "ownership",
+      handoffOutcome: "failed",
+      handoffListeners: 1,
+      handoffListenerOwned: false,
+    })
+    expect(f.state.targetQueries).toBe(beforeQueries)
+    foreign = false
+    await browser.stop()
+    expect(browser.observation()).toMatchObject({
+      handoffPhase: "ownership",
+      handoffOutcome: "failed",
+      handoffListenerOwned: false,
+    })
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("owner stop fails closed before any native operation when a confirmation read is still active", async () => {
+  const f = await fixture()
+  let releaseRead = () => {}
+  let readStarted = () => {}
+  const pending = new Promise<void>((resolve) => {
+    releaseRead = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve
+  })
+  let hold = false
+  const native = f.io.native
+  f.io.native = async (request) => {
+    if (hold && request.operation === "observe") {
+      readStarted()
+      await pending
+    }
+    return native(request)
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    hold = true
+    const confirming = browser.confirmHandoff("https://auth.openai.com/codex/device")
+    await started
+    const calls = [...f.state.calls]
+    const error = await browser.stop().catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+    expect(readBrowserObservation(error)).toMatchObject({
+      cleanupFailurePhase: "cleanup-quiescence",
+      handoffQuiescence: "unconfirmed",
+    })
+    expect(f.state.calls).toEqual(calls)
+    expect(f.state.unrefs).toBe(1)
+    expect(f.state.running).toBe(true)
+    await access(f.input.root)
+    releaseRead()
+    expect(await confirming).toBe(false)
+    await expect(browser.confirmHandoff("https://auth.openai.com/codex/device")).rejects.toThrow()
+    expect(f.state.calls.filter((call) => call === "stop")).toHaveLength(0)
+  } finally {
+    releaseRead()
+    await f.cleanup()
+  }
+})

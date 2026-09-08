@@ -42,14 +42,22 @@ runs:
         echo "ELECTRON_CACHE=$RUNNER_TEMP/desktop-downloads/electron" >> "$GITHUB_ENV"
         echo "ELECTRON_BUILDER_CACHE=$RUNNER_TEMP/desktop-downloads/electron-builder" >> "$GITHUB_ENV"
 
-    - name: Restore dependency and packaging downloads
+    - name: Restore dependency and Electron downloads
+      id: downloads
       if: inputs.install-dependencies == 'true'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
           ${{ steps.cache.outputs.bun }}
-          ${{ runner.temp }}/desktop-downloads
+          ${{ runner.temp }}/desktop-downloads/electron
         key: desktop-downloads-${{ runner.os }}-${{ runner.arch }}-node${{ steps.pins.outputs.node }}-bun${{ steps.pins.outputs.bun }}-${{ hashFiles('bun.lock', '.github/actions/setup-desktop-build/action.yml') }}
+
+    - name: Restore packaging-tool downloads
+      if: inputs.install-dependencies == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/desktop-downloads/electron-builder
+        key: desktop-packaging-${{ runner.os }}-${{ runner.arch }}-node${{ steps.pins.outputs.node }}-bun${{ steps.pins.outputs.bun }}-${{ hashFiles('bun.lock', '.github/actions/setup-desktop-build/action.yml') }}
 
     - name: Install frozen dependencies without lifecycle scripts
       if: inputs.install-dependencies == 'true'
@@ -63,3 +71,14 @@ runs:
       shell: bash
       run: |
         node -e 'require(require.resolve("electron/install.js", { paths: [process.cwd() + "/packages/desktop"] }))'
+
+    # Preserve successful setup even when a later packaged-app check fails.
+    # Cache only downloads; never node_modules, built apps, profiles or secrets.
+    - name: Save verified dependency and Electron downloads
+      if: inputs.install-dependencies == 'true' && steps.downloads.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: |
+          ${{ steps.cache.outputs.bun }}
+          ${{ runner.temp }}/desktop-downloads/electron
+        key: ${{ steps.downloads.outputs.cache-primary-key }}

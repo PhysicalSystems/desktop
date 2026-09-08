@@ -1,0 +1,12 @@
+name: Desktop qualification runtime
+description: Run a fixed native qualifier with Actions artifact credentials confined to its controller
+inputs:
+  mode:
+    description: Fixed qualifier command (candidate or public)
+    required: true
+outputs:
+  job_receipt_sha256:
+    description: Exact public native job receipt SHA-256, authored by the fixed public qualifier
+runs:
+  using: node24
+  main: main.mjs

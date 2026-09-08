@@ -187,7 +187,7 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
     },
 
     openExternal(url: string) {
-      window.api.openExternal(url)
+      return window.api.openExternal(url)
     },
     openLocalFile(url: string) {
       window.api.openLocalFile(url)

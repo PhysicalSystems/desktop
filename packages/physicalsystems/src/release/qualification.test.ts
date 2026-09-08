@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
+import { physicalEnvironment } from "../environment"
+import { agentBuildChannel, agentDatabaseName } from "./agent-channel"
 import { afterEach, expect, test } from "bun:test"
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, chmod, lstat } from "node:fs/promises"
 import { join } from "node:path"
@@ -153,7 +155,11 @@ test("failure diagnostics preserve only exact authored codes and never private e
   const error = new Error("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
   error.stack = "private-stack credential=qualification-credential-trap /private/profile"
   expect(qualificationFailureCode(error)).toBe("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
+  expect(qualificationFailureCode(new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED"))).toBe(
+    "PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED",
+  )
   for (const unknown of [
+    new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED private-native-output"),
     new Error("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE credential=qualification-credential-trap"),
     new Error("PACKAGED_NEW_CODE_NOT_REVIEWED"),
     new Error("ENOENT: /private/profile/runtime-attach.json qualification-credential-trap"),
@@ -303,6 +309,8 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
       PHYSICALSYSTEMS_ALLOW_DEVICES: "1",
       PHYSICALSYSTEMS_QUALIFICATION_TRACE: "credential-private-trap",
       OPENCODE_CONFIG: "/real/config",
+      OPENCODE_DISABLE_CHANNEL_DB: "credential-private-trap",
+      OPENCODE_DB: "/private/database",
       DISPLAY: ":44",
     },
     "/owned/profile",
@@ -312,6 +320,13 @@ test("packaged app gets no installed toolchain, provider credentials or ambient 
   expect(env.HOME).toBe("/owned/profile")
   expect(env.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
   expect(env.PHYSICALSYSTEMS_QUALIFICATION_TRACE).toBe("1")
+  expect(env.OPENCODE_DISABLE_CHANNEL_DB).toBeUndefined()
+  const actualSidecar = physicalEnvironment(env, "/owned/profile")
+  expect(actualSidecar.OPENCODE_DISABLE_CHANNEL_DB).toBeUndefined()
+  expect(actualSidecar.OPENCODE_DB).toBeUndefined()
+  expect(agentBuildChannel).toBe("dev")
+  expect(agentDatabaseName).toBe("opencode-dev.db")
+  expect(env.OPENCODE_DB).toBeUndefined()
   expect(JSON.stringify(env)).not.toContain("credential-private-trap")
   expect(env.DISPLAY).toBe(":44")
   for (const key of ["OPENAI_API_KEY", "GH_TOKEN", "NODE_OPTIONS", "OPENCODE_CONFIG"]) expect(env[key]).toBeUndefined()

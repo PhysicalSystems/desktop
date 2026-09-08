@@ -60,7 +60,7 @@ function parseVersion(value: unknown): [number, number, number, number | undefin
   return [numbers[0]!, numbers[1]!, numbers[2]!, numbers[3]]
 }
 
-function compareVersion(left: string, right: string) {
+export function compareVersion(left: string, right: string) {
   const a = parseVersion(left)
   const b = parseVersion(right)
   for (const index of [0, 1, 2] as const) {

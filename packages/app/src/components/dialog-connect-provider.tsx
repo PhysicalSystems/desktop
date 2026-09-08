@@ -22,6 +22,7 @@ import {
   createUniqueId,
   For,
   Match,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -30,6 +31,8 @@ import {
 import { createStore, produce } from "solid-js/store"
 import { useParams } from "@solidjs/router"
 import { ExternalLink } from "@/components/external-link"
+import { OAuthBrowserLink } from "@/components/oauth-browser-link"
+import { createOAuthAttempt } from "@/utils/oauth-attempt"
 import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { useLanguage } from "@/context/language"
@@ -376,7 +379,7 @@ function ProviderPickerV2(props: {
   )
 }
 
-function ProviderConnection(props: {
+export function ProviderConnection(props: {
   provider: string
   directory?: Accessor<string | undefined>
   onBack: () => void
@@ -399,9 +402,15 @@ function ProviderConnection(props: {
 
   const alive = { value: true }
   const timer = { current: undefined as ReturnType<typeof setTimeout> | undefined }
+  const attempt = createOAuthAttempt<{
+    attemptID: string
+    integrationID: string
+    location: ReturnType<typeof location>
+  }>((value) => serverSDK().api.integration.oauth.cancel(value, { signal: AbortSignal.timeout(6000) }))
 
   onCleanup(() => {
     alive.value = false
+    attempt.begin()
     if (timer.current === undefined) return
     clearTimeout(timer.current)
     timer.current = undefined
@@ -539,6 +548,8 @@ function ProviderConnection(props: {
   }
 
   async function selectMethod(index: number, inputs?: Record<string, string>) {
+    const ticket = attempt.begin()
+    const scope = { integrationID: props.provider, location: location() }
     if (timer.current !== undefined) {
       clearTimeout(timer.current)
       timer.current = undefined
@@ -555,13 +566,13 @@ function ProviderConnection(props: {
       dispatch({ type: "auth.pending" })
       await serverSDK()
         .api.integration.oauth.connect({
-          integrationID: props.provider,
+          integrationID: scope.integrationID,
           methodID: method.id,
           inputs: inputs ?? {},
-          location: location(),
+          location: scope.location,
         })
         .then((x) => {
-          if (!alive.value) return
+          if (!attempt.accept(ticket, { ...scope, attemptID: x.data.attemptID })) return
           if (props.provider === "opencode" && platform.platform === "desktop") {
             const url = new URL(x.data.url)
             url.searchParams.set("client_id", "opencode-desktop")
@@ -570,7 +581,7 @@ function ProviderConnection(props: {
           dispatch({ type: "auth.complete", authorization: x.data })
         })
         .catch((e) => {
-          if (!alive.value) return
+          if (!alive.value || !attempt.current(ticket)) return
           dispatch({ type: "auth.error", error: formatError(e, language.t("common.requestFailed")) })
         })
     }
@@ -715,10 +726,13 @@ function ProviderConnection(props: {
     }
   })
 
-  async function complete() {
+  async function complete(ticket = attempt.ticket()) {
+    if (!alive.value || !attempt.current(ticket)) return
     await serverSync()
       .refreshProviders()
       .catch(() => undefined)
+    if (!alive.value || !attempt.current(ticket)) return
+    attempt.begin(false)
     dialog.close()
     showToast({
       variant: "success",
@@ -729,6 +743,9 @@ function ProviderConnection(props: {
   }
 
   function goBack() {
+    attempt.begin()
+    if (timer.current !== undefined) clearTimeout(timer.current)
+    timer.current = undefined
     if (methods().length > 1 && store.methodIndex !== undefined) {
       dispatch({ type: "method.reset" })
       return
@@ -737,6 +754,19 @@ function ProviderConnection(props: {
   }
 
   props.setBack(goBack)
+
+  createEffect(
+    on(
+      () => [props.provider, directory()] as const,
+      () => {
+        attempt.begin()
+        if (timer.current !== undefined) clearTimeout(timer.current)
+        timer.current = undefined
+        dispatch({ type: "method.reset" })
+      },
+      { defer: true },
+    ),
+  )
 
   function MethodSelection() {
     if (newLayout())
@@ -808,6 +838,7 @@ function ProviderConnection(props: {
     const [formStore, setFormStore] = createStore({
       value: "",
       error: undefined as string | undefined,
+      submitting: false,
     })
 
     onMount(() => {
@@ -817,6 +848,9 @@ function ProviderConnection(props: {
 
     async function handleSubmit(e: SubmitEvent) {
       e.preventDefault()
+      if (formStore.submitting) return
+      const ticket = attempt.ticket()
+      const scope = { integrationID: props.provider, location: location() }
 
       const form = e.currentTarget as HTMLFormElement
       const formData = new FormData(form)
@@ -827,13 +861,18 @@ function ProviderConnection(props: {
         return
       }
 
-      setFormStore("error", undefined)
-      await serverSDK().api.integration.connect.key({
-        integrationID: props.provider,
-        location: location(),
-        key: apiKey,
-      })
-      await complete()
+      setFormStore({ error: undefined, submitting: true })
+      const saved = await serverSDK()
+        .api.integration.connect.key({ ...scope, key: apiKey })
+        .then(() => true)
+        .catch(() => false)
+      if (!alive.value || !attempt.current(ticket)) return
+      setFormStore("submitting", false)
+      if (!saved) {
+        setFormStore("error", language.t("provider.connect.apiKey.saveFailed"))
+        return
+      }
+      await complete(ticket)
     }
 
     if (newLayout())
@@ -863,6 +902,7 @@ function ProviderConnection(props: {
               {language.t("provider.connect.apiKey.label", { provider: provider().name })}
               <TextInputV2
                 ref={apiKey}
+                type="password"
                 class="!w-full"
                 name="apiKey"
                 data-input="provider-api-key"
@@ -882,7 +922,12 @@ function ProviderConnection(props: {
                 </div>
               )}
             </Show>
-            <ButtonV2 type="submit" variant="contrast" data-action="provider-connect-submit">
+            <ButtonV2
+              type="submit"
+              variant="contrast"
+              data-action="provider-connect-submit"
+              disabled={formStore.submitting}
+            >
               {language.t("common.continue")}
             </ButtonV2>
           </form>
@@ -915,7 +960,7 @@ function ProviderConnection(props: {
           <TextField
             autofocus={!newLayout()}
             ref={apiKey}
-            type="text"
+            type="password"
             label={language.t("provider.connect.apiKey.label", { provider: provider().name })}
             placeholder={language.t("provider.connect.apiKey.placeholder")}
             name="apiKey"
@@ -924,7 +969,7 @@ function ProviderConnection(props: {
             validationState={formStore.error ? "invalid" : undefined}
             error={formStore.error}
           />
-          <Button class="w-auto" type="submit" size="large" variant="primary">
+          <Button class="w-auto" type="submit" size="large" variant="primary" disabled={formStore.submitting}>
             {language.t("common.continue")}
           </Button>
         </form>
@@ -938,6 +983,8 @@ function ProviderConnection(props: {
     const [formStore, setFormStore] = createStore({
       value: "",
       error: undefined as string | undefined,
+      submitting: false,
+      restart: false,
     })
 
     onMount(() => {
@@ -948,6 +995,12 @@ function ProviderConnection(props: {
     async function handleSubmit(e: SubmitEvent) {
       e.preventDefault()
 
+      if (formStore.submitting || formStore.restart) return
+      const authorization = store.authorization
+      const scope = attempt.authorization()
+      const ticket = attempt.ticket()
+      if (!authorization || !scope || !attempt.current(ticket, authorization.attemptID)) return
+
       const form = e.currentTarget as HTMLFormElement
       const formData = new FormData(form)
       const code = formData.get("code") as string
@@ -957,21 +1010,27 @@ function ProviderConnection(props: {
         return
       }
 
-      setFormStore("error", undefined)
+      setFormStore({ error: undefined, submitting: true })
       const result = await serverSDK()
         .api.integration.oauth.complete({
-          integrationID: props.provider,
-          attemptID: store.authorization!.attemptID,
-          location: location(),
+          integrationID: scope.integrationID,
+          attemptID: authorization.attemptID,
+          location: scope.location,
           code,
         })
         .then(() => ({ ok: true as const }))
         .catch((error) => ({ ok: false as const, error }))
+      if (!alive.value || !attempt.current(ticket, authorization.attemptID)) return
+      setFormStore("submitting", false)
       if (result.ok) {
-        await complete()
+        await complete(ticket)
         return
       }
-      setFormStore("error", formatError(result.error, language.t("provider.connect.oauth.code.invalid")))
+      setFormStore({ error: language.t("provider.connect.oauth.code.unconfirmed"), restart: true })
+    }
+
+    function restart() {
+      if (store.methodIndex !== undefined) void selectMethod(store.methodIndex)
     }
 
     if (newLayout())
@@ -979,9 +1038,9 @@ function ProviderConnection(props: {
         <div class="flex flex-col gap-5 px-3 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-muted">
           <div>
             {language.t("provider.connect.oauth.code.visit.prefix")}
-            <ExternalLink href={store.authorization!.url} class="text-v2-text-text-base">
+            <OAuthBrowserLink url={store.authorization!.url} class="text-v2-text-text-base">
               {language.t("provider.connect.oauth.code.visit.link")}
-            </ExternalLink>
+            </OAuthBrowserLink>
             {language.t("provider.connect.oauth.code.visit.suffix", { provider: provider().name })}
           </div>
           <form onSubmit={handleSubmit} class="flex flex-col items-start gap-5 self-stretch">
@@ -1007,9 +1066,14 @@ function ProviderConnection(props: {
                 </div>
               )}
             </Show>
-            <ButtonV2 type="submit" variant="contrast">
+            <ButtonV2 type="submit" variant="contrast" disabled={formStore.submitting || formStore.restart}>
               {language.t("common.continue")}
             </ButtonV2>
+            <Show when={formStore.restart}>
+              <ButtonV2 type="button" variant="contrast" onClick={restart}>
+                {language.t("provider.connect.oauth.restart")}
+              </ButtonV2>
+            </Show>
           </form>
         </div>
       )
@@ -1018,9 +1082,9 @@ function ProviderConnection(props: {
       <div class="flex flex-col gap-6">
         <div class="text-14-regular text-text-base">
           {language.t("provider.connect.oauth.code.visit.prefix")}
-          <ExternalLink href={store.authorization!.url}>
+          <OAuthBrowserLink url={store.authorization!.url}>
             {language.t("provider.connect.oauth.code.visit.link")}
-          </ExternalLink>
+          </OAuthBrowserLink>
           {language.t("provider.connect.oauth.code.visit.suffix", { provider: provider().name })}
         </div>
         <form onSubmit={handleSubmit} class="flex flex-col items-start gap-4">
@@ -1036,9 +1100,20 @@ function ProviderConnection(props: {
             validationState={formStore.error ? "invalid" : undefined}
             error={formStore.error}
           />
-          <Button class="w-auto" type="submit" size="large" variant="primary">
+          <Button
+            class="w-auto"
+            type="submit"
+            size="large"
+            variant="primary"
+            disabled={formStore.submitting || formStore.restart}
+          >
             {language.t("common.continue")}
           </Button>
+          <Show when={formStore.restart}>
+            <Button type="button" size="large" variant="primary" onClick={restart}>
+              {language.t("provider.connect.oauth.restart")}
+            </Button>
+          </Show>
         </form>
       </div>
     )
@@ -1054,24 +1129,26 @@ function ProviderConnection(props: {
     })
 
     onMount(() => {
+      const authorization = store.authorization
+      const scope = attempt.authorization()
+      const ticket = attempt.ticket()
       const poll = async () => {
-        const authorization = store.authorization
-        if (!authorization || !alive.value) return
+        if (!authorization || !scope || !alive.value || !attempt.current(ticket, authorization.attemptID)) return
         const result = await serverSDK()
           .api.integration.oauth.status({
-            integrationID: props.provider,
+            integrationID: scope.integrationID,
             attemptID: authorization.attemptID,
-            location: location(),
+            location: scope.location,
           })
           .then((value) => ({ ok: true as const, status: value.data }))
           .catch((error) => ({ ok: false as const, error }))
-        if (!alive.value) return
+        if (!alive.value || !attempt.current(ticket, authorization.attemptID)) return
         if (!result.ok) {
           dispatch({ type: "auth.error", error: formatError(result.error, language.t("common.requestFailed")) })
           return
         }
         if (result.status.status === "complete") {
-          await complete()
+          await complete(ticket)
           return
         }
         if (result.status.status === "failed") {
@@ -1079,7 +1156,7 @@ function ProviderConnection(props: {
           return
         }
         if (result.status.status === "expired") {
-          dispatch({ type: "auth.error", error: language.t("common.requestFailed") })
+          dispatch({ type: "auth.error", error: language.t("provider.connect.oauth.expired") })
           return
         }
         timer.current = setTimeout(poll, 1_000)
@@ -1091,9 +1168,9 @@ function ProviderConnection(props: {
       <div class="flex flex-col gap-6">
         <div class="text-14-regular text-text-base">
           {language.t("provider.connect.oauth.auto.visit.prefix")}
-          <ExternalLink href={store.authorization!.url}>
+          <OAuthBrowserLink url={store.authorization!.url}>
             {language.t("provider.connect.oauth.auto.visit.link")}
-          </ExternalLink>
+          </OAuthBrowserLink>
           {language.t("provider.connect.oauth.auto.visit.suffix", { provider: provider().name })}
         </div>
         <TextField

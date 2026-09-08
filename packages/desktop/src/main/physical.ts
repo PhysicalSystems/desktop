@@ -10,6 +10,8 @@ import type { PhysicalCommand, PhysicalSnapshot } from "@opencode-ai/app/physica
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { waitForProcessExit, waitForShutdownStep } from "../../../physicalsystems/src/lifecycle"
 import { credentialTrace } from "./credential-trace"
+import { providerAccountTrace } from "./provider-account-trace"
+import { shutdownTrace } from "./shutdown-trace"
 
 export async function createPhysicalHost(dataDir: string) {
   const spawnWorker = () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), "physical-worker.js"), [], {
@@ -57,6 +59,7 @@ export async function createPhysicalHost(dataDir: string) {
       if (value?.event === "credential") {
         void (value.vault === "operator" ? operatorVault : vault).request(value.operation, value.payload).then(
           (result) => {
+            if (value.vault !== "operator") providerAccountTrace(value.operation, value.payload, result)
             if (value.vault !== "operator" && ["set", "remove"].includes(value.operation)) credentialTrace(safeStorage)
             if (worker === child && !exited) worker.postMessage({ event: "credential-result", id: value.id, result })
           },
@@ -137,9 +140,12 @@ export async function createPhysicalHost(dataDir: string) {
       if (closing) return closing
       closing = (async () => {
         if (!operatorStopped) {
+          shutdownTrace("WORKER_CLOSE_BEFORE")
           await request("close", {}, true)
+          shutdownTrace("WORKER_CLOSE_AFTER")
           operatorStopped = true
         }
+        shutdownTrace("ATTACHMENT_CLEANUP_BEFORE")
         attachment = undefined
         // Finish queued writes before removing the attachment credential, so a
         // delayed write cannot recreate it after shutdown reports completion.
@@ -150,8 +156,11 @@ export async function createPhysicalHost(dataDir: string) {
             throw error
           })
         await waitForShutdownStep(attachmentCleanup, 6500, "ATTACHMENT_CLEANUP_UNCONFIRMED")
+        shutdownTrace("ATTACHMENT_CLEANUP_AFTER")
+        shutdownTrace("WORKER_EXIT_BEFORE")
         if (!exited) child.postMessage({ id: randomUUID(), method: "exit" })
         await waitForProcessExit(workerExit, 6500)
+        shutdownTrace("WORKER_EXIT_AFTER")
         closed = true
       })().finally(() => { closing = undefined })
       return closing

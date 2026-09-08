@@ -253,8 +253,8 @@ export function registerIpcHandlers(deps: Deps) {
     },
   )
 
-  ipcMain.on("open-external", (_event: IpcMainEvent, url: string) => {
-    openExternalURL(url)
+  ipcMain.handle("open-external", (_event: IpcMainInvokeEvent, url: string) => {
+    return openExternalURL(url)
   })
 
   ipcMain.on("open-local-file", (_event: IpcMainEvent, url: string) => {
