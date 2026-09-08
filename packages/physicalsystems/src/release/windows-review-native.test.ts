@@ -43,6 +43,12 @@ const fixturePhases = [
   "listener-loopback",
   "listener-throw",
   "listener-error",
+  "error-record-construct",
+  "error-record-ready",
+  "listener-continue",
+  "error-write",
+  "error-return",
+  "error-catch",
   "listener-partial",
   "listener-foreign",
   "json",
@@ -75,6 +81,18 @@ test("inert fixture deadline diagnostics expose only fixed phases and outcomes",
       "PRIVATE\nINERT_WINDOWS_FIXTURE_identity\nINERT_WINDOWS_FIXTURE_listener-error\n",
     ).message,
   ).toBe("INERT_IDENTITY_FIXTURE_FAILED:listener-error:timeout")
+  for (const phase of [
+    "error-record-construct",
+    "error-record-ready",
+    "listener-continue",
+    "error-write",
+    "error-return",
+    "error-catch",
+  ]) {
+    expect(fixtureFailure({ killed: true }, `PRIVATE\nINERT_WINDOWS_FIXTURE_${phase}\n`).message).toBe(
+      `INERT_IDENTITY_FIXTURE_FAILED:${phase}:timeout`,
+    )
+  }
   expect(fixtureFailure({ code: 1 }, "INERT_WINDOWS_FIXTURE_PRIVATE").message).toBe(
     "INERT_IDENTITY_FIXTURE_FAILED:unknown:exit",
   )
@@ -156,25 +174,48 @@ Require ($failed -and $script:proofs -eq $beforeProofs)
 $cases++
 # Shadow the actual cmdlet before executing the exact production snippet. No
 # real CIM, sockets or listeners are read. Common-parameter binding remains real.
-# PSCmdlet.WriteError exercises ErrorAction without unrelated cmdlet autoload.
-$script:queryCalls=0;$listenerCases=0;$request=@{port=23456}
+# Preconstruct fully-qualified error records outside the expected-error catch.
+# A type/construction failure must fail setup, never masquerade as query rejection.
+# https://learn.microsoft.com/powershell/module/microsoft.powershell.core/about/about_error_handling
+Mark 'error-record-construct'
+$script:queryErrors=@{
+  error=[System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('PRIVATE-PROVIDER-FAILURE'),'inert-query',[System.Management.Automation.ErrorCategory]::InvalidOperation,$null)
+  partial=[System.Management.Automation.ErrorRecord]::new([System.InvalidOperationException]::new('PRIVATE-PARTIAL-FAILURE'),'inert-partial',[System.Management.Automation.ErrorCategory]::InvalidOperation,$null)
+}
+Mark 'error-record-ready'
+$script:queryCalls=0;$script:errorReturns=0;$script:expectedAction='Stop';$listenerCases=0;$request=@{port=23456}
 function Get-CimInstance {
   [CmdletBinding()]param([string]$ClassName,[string]$Namespace,[string]$Filter)
   $script:queryCalls++
   Require ($ClassName -ceq 'MSFT_NetTCPConnection' -and $Namespace -ceq 'root/StandardCimv2')
-  Require ($Filter -ceq 'LocalPort=23456 AND State=2' -and $PSBoundParameters.ErrorAction -eq 'Stop')
+  Require ($Filter -ceq 'LocalPort=23456 AND State=2' -and $PSBoundParameters.ErrorAction -eq $script:expectedAction)
   if($script:mode -eq 'empty'){return}
   if($script:mode -eq 'throw'){throw 'PRIVATE-QUERY-FAILURE'}
-  if($script:mode -eq 'error'){$PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new([Exception]::new('PRIVATE-PROVIDER-FAILURE'),'inert',[Management.Automation.ErrorCategory]::InvalidOperation,$null));return}
+  if($script:mode -eq 'error'){
+    Mark 'error-write'
+    $PSCmdlet.WriteError($script:queryErrors.error)
+    $script:errorReturns++;Mark 'error-return';return
+  }
   $address=if($script:mode -eq 'foreign'){'0.0.0.0'}else{'127.0.0.1'}
   [pscustomobject]@{LocalAddress=$address;OwningProcess=4100}
-  if($script:mode -eq 'partial'){$PSCmdlet.WriteError([Management.Automation.ErrorRecord]::new([Exception]::new('PRIVATE-PARTIAL-FAILURE'),'inert',[Management.Automation.ErrorCategory]::InvalidOperation,$null));return}
+  if($script:mode -eq 'partial'){
+    Mark 'error-write'
+    $PSCmdlet.WriteError($script:queryErrors.partial)
+    $script:errorReturns++;Mark 'error-return';return
+  }
   [pscustomobject]@{LocalAddress='::1';OwningProcess=4100}
 }
 function Read-InertListeners {
 ${windowsReviewListenerReadScript}
   return ,$listening
 }
+# Negative control proves this is a real non-terminating error: Continue must
+# return normally, whereas the exact production Stop query below must not.
+Mark 'listener-continue'
+$script:mode='error';$script:expectedAction='Continue';$before=$script:queryCalls
+$null=Get-CimInstance MSFT_NetTCPConnection -Namespace root/StandardCimv2 -Filter 'LocalPort=23456 AND State=2' -ErrorAction Continue 2>$null
+Require ($script:queryCalls -eq $before+1 -and $script:errorReturns -eq 1)
+$script:expectedAction='Stop'
 foreach($mode in @('empty','loopback')) {
   Mark ('listener-'+$mode)
   $script:mode=$mode;$before=$script:queryCalls;$value=Read-InertListeners
@@ -186,8 +227,15 @@ foreach($mode in @('empty','loopback')) {
 foreach($mode in @('throw','error','partial','foreign')) {
   Mark ('listener-'+$mode)
   $script:mode=$mode;$before=$script:queryCalls;$failed=$false
-  try {$null=Read-InertListeners} catch {$failed=$true}
-  Require ($failed -and $script:queryCalls -eq $before+1)
+  try {$null=Read-InertListeners} catch {
+    if($mode -in @('error','partial')){
+      Mark 'error-catch'
+      $expectedID=$script:queryErrors[$mode].FullyQualifiedErrorId
+      Require ($_.FullyQualifiedErrorId -ceq $expectedID -or $_.FullyQualifiedErrorId.StartsWith($expectedID+','))
+    }
+    $failed=$true
+  }
+  Require ($failed -and $script:queryCalls -eq $before+1 -and $script:errorReturns -eq 1)
   $listenerCases++
 }
 Mark 'launcher'
@@ -205,7 +253,7 @@ foreach($path in @('relative','C:\owned\..\profile','C:\owned\%1','C:\owned\"pro
   }
 }
 Mark 'json'
-[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls;launcherCases=$launcherCases;stdinPreserved=$true} | ConvertTo-Json -Compress))
+[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls;nonterminatingControl=$script:errorReturns;launcherCases=$launcherCases;stdinPreserved=$true} | ConvertTo-Json -Compress))
 `
     const executeScript = (source: string) => {
       const args = [
@@ -258,7 +306,8 @@ Mark 'json'
         reads: 13,
         proofs: 11,
         listenerCases: 6,
-        queryCalls: 6,
+        queryCalls: 7,
+        nonterminatingControl: 1,
         launcherCases: 13,
         stdinPreserved: true,
       })
