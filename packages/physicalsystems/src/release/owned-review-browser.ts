@@ -254,8 +254,20 @@ export function ownedReviewBrowserEnvironment(root: string, base: NodeJS.Process
   }
 }
 
+export function reviewBrowserDesktopEntry(launcher: string) {
+  // Ubuntu 24.04 xdg-utils 1.1.3-4.1ubuntu3's generic Exec parser retains quote
+  // marks in its executable lookup. Use an unquoted path only when it has no
+  // whitespace or shell/Desktop Entry metacharacters; never misparse a path.
+  if (
+    !/^\/(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/.test(launcher) ||
+    launcher.split("/").some((part) => part === "." || part === "..")
+  )
+    throw failure()
+  return `[Desktop Entry]\nType=Application\nName=Owned provider review\nExec=${launcher} %u\nTerminal=false\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n`
+}
+
 /** Actual headed Chrome, its own Linux session and exclusive profile. The XDG
- * handler reuses this exact profile when Electron invokes shell.openExternal.
+ * handler reuses this exact profile when the app invokes its OS browser launcher.
  * No registry/default-browser mutations or unowned Windows launch is attempted. */
 export async function startOwnedReviewBrowser(input: {
   env: NodeJS.ProcessEnv
@@ -293,6 +305,7 @@ async function startLinuxReviewBrowser(
   if (process.platform !== "linux" || !input.env.DISPLAY) throw failure()
   const root = await realpath(input.root)
   if ((await readdir(root)).length) throw failure()
+  const desktopEntry = reviewBrowserDesktopEntry(join(root, "browser"))
   // GitHub's Linux image provides Google Chrome here. Fail closed if absent;
   // never discover an executable through a user-controlled PATH.
   const executable = "/opt/google/chrome/chrome"
@@ -320,15 +333,10 @@ async function startLinuxReviewBrowser(
     mode: 0o700,
     flag: "wx",
   })
-  // Desktop Entry Exec quoting has its own syntax; root cannot contain control
-  // characters and special characters are escaped, never evaluated by a shell.
-  if (/[\r\n\0]/.test(root)) throw failure()
-  const desktopQuote = (text: string) => '"' + text.replace(/[\\"`$]/g, "\\$&").replaceAll("%", "%%") + '"'
-  await writeFile(
-    join(root, "data", "applications", "physical-review.desktop"),
-    `[Desktop Entry]\nType=Application\nName=Owned provider review\nExec=${desktopQuote(join(root, "browser"))} %u\nTerminal=false\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n`,
-    { mode: 0o600, flag: "wx" },
-  )
+  await writeFile(join(root, "data", "applications", "physical-review.desktop"), desktopEntry, {
+    mode: 0o600,
+    flag: "wx",
+  })
   await writeFile(
     join(root, "config", "mimeapps.list"),
     "[Default Applications]\nx-scheme-handler/http=physical-review.desktop\nx-scheme-handler/https=physical-review.desktop\n",

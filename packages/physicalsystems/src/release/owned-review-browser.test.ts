@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
 import { spawn } from "node:child_process"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   reviewBrowserCrashDatabase,
   reviewBrowserCrashpad,
+  reviewBrowserDesktopEntry,
   reviewBrowserProcess,
   reviewBrowserProfileArgument,
   createReviewBrowserProfileProof,
@@ -21,6 +22,104 @@ import {
 // signaling, credential store or device is started by these regressions.
 const status = "Name:\tchrome\nUid:\t1001\t1001\t1001\t1001\n"
 const identity = { pid: 400, state: "S", group: 400, session: 400, birth: "123456" }
+
+test("Linux fixture rejects Exec paths that require quoting before launching a browser", () => {
+  expect(reviewBrowserDesktopEntry("/owned/review-012_fixture/browser")).toContain(
+    "\nExec=/owned/review-012_fixture/browser %u\n",
+  )
+  for (const path of [
+    "relative/browser",
+    "/owned/review browser",
+    "/owned/review\tbrowser",
+    "/owned/review\nbrowser",
+    "/owned/$(inert)/browser",
+    "/owned/`inert`/browser",
+    '/owned/"browser"',
+    "/owned/'browser'",
+    "/owned/%u/browser",
+    "/owned/browser;inert",
+    "/owned/browser:other",
+    "/owned/\\browser",
+    "/owned/../browser",
+    "/owned/./browser",
+    "/owned//browser",
+    "/owned/browser\0",
+  ])
+    expect(() => reviewBrowserDesktopEntry(path)).toThrow("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
+})
+
+test.skipIf(process.platform === "win32")(
+  "Noble generic xdg-open parser dispatches the safe fixture path and preserves its argument",
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "xdg-exec-fixture-"))
+    const launcher = join(root, "browser")
+    const output = join(root, "argument.txt")
+    let cleanupConfirmed = true
+    const url = 'http://127.0.0.1:12345/inert?literal=$(never-run)&quoted="value"&space=one two'
+    // Minimal relevant parser from Ubuntu xdg-utils 1.1.3-4.1ubuntu3's xdg-open,
+    // first_word (lines 129-133) and search_desktop_file (759-760, 811).
+    // The entire xdg-open script is never executed: only an inert owned writer.
+    const parser = `
+    first_word() { read first rest; echo "$first"; }
+    command="$(printf '%s\\n' "$INERT_EXEC" | first_word)"
+    command_exec=\`which $command 2>/dev/null\`
+    "$command_exec" "$INERT_URL"
+  `
+    try {
+      await writeFile(launcher, '#!/bin/sh\nprintf "%s" "$1" > "$INERT_OUTPUT"\n', { mode: 0o700, flag: "wx" })
+      const corrected = reviewBrowserDesktopEntry(launcher)
+        .split("\n")
+        .find((line) => line.startsWith("Exec="))!
+        .slice(5)
+      for (const entry of [`"${launcher}" %u`, corrected]) {
+        const child = spawn("/bin/sh", ["-c", parser], {
+          env: { PATH: "/usr/bin:/bin", INERT_EXEC: entry, INERT_URL: url, INERT_OUTPUT: output },
+          stdio: "ignore",
+        })
+        cleanupConfirmed = false
+        const exit = await new Promise<number | null>((resolve, reject) => {
+          let expired = false
+          let stopTimer: ReturnType<typeof setTimeout> | undefined
+          const timer = setTimeout(() => {
+            expired = true
+            // This child is only the test's inert parser/writer, never a native
+            // browser. Wait for its exit before removing its temporary files.
+            try {
+              child.kill("SIGKILL")
+            } catch {}
+            stopTimer = setTimeout(() => {
+              child.unref()
+              reject(Error("INERT_PARSER_CLEANUP_UNCONFIRMED"))
+            }, 1000)
+          }, 3000)
+          child.once("exit", (code) => {
+            clearTimeout(timer)
+            clearTimeout(stopTimer)
+            cleanupConfirmed = true
+            if (expired) reject(Error("INERT_PARSER_TIMEOUT"))
+            else resolve(code)
+          })
+          child.once("error", () => {
+            clearTimeout(timer)
+            clearTimeout(stopTimer)
+            cleanupConfirmed = child.pid === undefined
+            child.unref()
+            reject(Error("INERT_PARSER_FAILED"))
+          })
+        })
+        if (entry === corrected) {
+          expect(exit).toBe(0)
+          expect(await readFile(output, "utf8")).toBe(url)
+        } else {
+          expect(exit).not.toBe(0)
+          await expect(readFile(output, "utf8")).rejects.toMatchObject({ code: "ENOENT" })
+        }
+      }
+    } finally {
+      if (cleanupConfirmed) await rm(root, { recursive: true, force: true })
+    }
+  },
+)
 
 test("Chrome Crashpad uses exact branded Linux config path, executable and NUL-delimited argument", () => {
   const database = reviewBrowserCrashDatabase("/owned/review browser")
