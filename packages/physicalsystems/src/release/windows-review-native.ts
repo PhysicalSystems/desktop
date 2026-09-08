@@ -465,9 +465,14 @@ $result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolic
     $command=Launcher $request.executable $request.profile
     $effective=[ReviewNative]::Association(1,[string]$request.scheme)
     if($effective -cne $command -and $effective -cne $request.beforeCommand){throw 'changed'}
-    Set-ReviewPhase 'process-tree'
-    foreach($pidValue in (Observed-Pids)) {
-      if(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE ProcessId=$pidValue"){throw 'observed-process-alive'}
+    Set-ReviewPhase 'retained-input'
+    $retainedPids=@(Observed-Pids)
+    foreach($pidValue in $retainedPids) {
+      Set-ReviewPhase 'retained-query'
+      if(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE ProcessId=$pidValue" -ErrorAction Stop){
+        if($pidValue -eq $PID){Set-ReviewPhase 'retained-self'}else{Set-ReviewPhase 'retained-other'}
+        throw 'observed-process-alive'
+      }
     }
     $current=Read-Policy
     Set-ReviewPhase 'policy-compare'

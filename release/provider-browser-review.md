@@ -154,10 +154,12 @@ executable and ProgID must match, and the Shell is notified after each transitio
 Existing machine or user `UserDataDir` policy, DelegateExecute, DDE or DropTarget
 activation prevents acquisition. None of those settings is disabled.
 
-The earlier fixture set `UserDataDir` policy to its temporary folder; Edge then
-rejected remote debugging because the policy made that folder the default profile.
 The launcher registration keeps the test profile separate from Edge's default and
-preserves its security checks. Edge is prelaunched with that separate profile and
+preserves its security checks. The browser also gets an existing, standard private
+`USERPROFILE\AppData\Local` and `AppData\Roaming` layout. Chromium's default-directory
+lookup uses Windows known folders; a failed lookup is treated conservatively by its
+default-profile debugging check. The dedicated `root\profile` stays separate from
+those default locations. Edge is prelaunched with that separate profile and
 [DevTools endpoint](https://learn.microsoft.com/en-us/microsoft-edge/devtools/protocol/).
 The owner binds that endpoint to the actual browser PID, creation time, Windows
 session, user SID and executable. It checks process handles again before stopping

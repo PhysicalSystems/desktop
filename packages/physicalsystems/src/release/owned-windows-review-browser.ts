@@ -319,11 +319,16 @@ async function acquireWindowsReviewBrowser(
   Object.assign(environment, {
     HOME: root,
     USERPROFILE: root,
-    APPDATA: join(root, "roaming"),
-    LOCALAPPDATA: join(root, "local"),
+    APPDATA: join(root, "AppData", "Roaming"),
+    LOCALAPPDATA: join(root, "AppData", "Local"),
     TEMP: root,
     TMP: root,
   })
+  // Shell's default known-folder templates expand USERPROFILE, and Chromium's
+  // SHGetFolderPath lookup requires the base directory to exist. Keep this
+  // standard layout private and distinct from the explicit browser profile.
+  await mkdir(environment.APPDATA!, { recursive: true, mode: 0o700 })
+  await mkdir(environment.LOCALAPPDATA!, { recursive: true, mode: 0o700 })
   observation.browserPhase = "windows-port-reserve"
   const reservation = await (io.reservePort ?? reserveWindowsReviewPort)()
   const port = reservation.port

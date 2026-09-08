@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
+import { statSync } from "node:fs"
 import { PassThrough, Writable } from "node:stream"
 import type { ChildProcess } from "node:child_process"
 import { access, mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
@@ -306,6 +307,31 @@ test("a missing or malformed original launcher command prevents registry changes
     } finally {
       await f.cleanup()
     }
+  }
+})
+
+test("Windows browser starts only after its private standard AppData directories exist", async () => {
+  const f = await fixture()
+  const spawn = f.io.spawn
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, {
+      ...f.io,
+      spawn: (executable, args, options) => {
+        // Model Shell's existing %USERPROFILE%\\AppData known-folder layout,
+        // rather than accepting an uncreated arbitrary LOCALAPPDATA path.
+        expect(options.env?.USERPROFILE).toBe(f.input.root)
+        expect(options.env?.LOCALAPPDATA).toBe(join(f.input.root, "AppData", "Local"))
+        expect(options.env?.APPDATA).toBe(join(f.input.root, "AppData", "Roaming"))
+        expect(statSync(options.env!.LOCALAPPDATA!).isDirectory()).toBe(true)
+        expect(statSync(options.env!.APPDATA!).isDirectory()).toBe(true)
+        expect(args).toContain(`--user-data-dir=${join(f.input.root, "profile")}`)
+        return spawn(executable, args, options)
+      },
+    })
+    await browser.stop()
+    expect(f.state.restored).toBe(true)
+  } finally {
+    await f.cleanup()
   }
 })
 

@@ -296,3 +296,19 @@ test("native listener transport preserves successful zero matches but never acce
     expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
   }
 })
+
+test("retained-process cleanup failures expose only the fixed boundary, never PID details", () => {
+  for (const phase of ["retained-input", "retained-query", "retained-self", "retained-other"] as const) {
+    try {
+      windowsReviewNativeResult({
+        error: { code: 1 },
+        stdout: "PRIVATE-PROCESS-DATA",
+        stderr: `PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_${phase}\n`,
+      })
+      throw Error("expected native failure")
+    } catch (error) {
+      expect(readBrowserObservation(error)?.windowsNativePhase).toBe(phase)
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+    }
+  }
+})
