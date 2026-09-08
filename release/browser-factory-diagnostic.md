@@ -150,3 +150,15 @@ The exclusive temporary `diagnostic.txt` is removed after sealing, including
 failed sealing. Only ciphertext and fixed status metadata are uploaded or logged.
 No private key reaches the runner, and this optional diagnostic adds no
 qualification or publication authority.
+
+Full packaged Windows candidates also collect a failure-only app shutdown
+observation when descendant exit is unconfirmed. Its public report contains
+fixed identity-comparison counts and main-process exit/query-closure categories.
+The existing PID liveness check and ten-second wait remain unchanged. With a
+validated `diagnostic_public_key`, at most eight anomalous process identities
+and fixed Chromium role enums may be included in the existing encrypted
+`diagnostic.txt`; command lines, credentials and profile contents are excluded.
+Unlike the OS-loopback envelope above, this full-candidate envelope remains
+bound to the **installer digest**, source, run and attempt. An unconfirmed
+diagnostic helper close retains installation/profile state; diagnostic results
+cannot authorize cleanup or publication.

@@ -26,7 +26,9 @@ import { allocateLinuxQualificationTemporary } from "../src/release/linux-tempor
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
-import { sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
+import { isDiagnosticsPublicKey, sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
+import { windowsAppShutdownNative } from "../src/release/windows-app-shutdown-native.ts"
+import { classifyWindowsAppShutdown } from "../src/release/windows-app-shutdown-observation.ts"
 import { desktopIdentity } from "../src/release/identity.ts"
 import { agentDatabaseName } from "../src/release/agent-channel.ts"
 import { waitForCredentialAttachment } from "../src/release/native-credentials.ts"
@@ -131,6 +133,9 @@ let appImageRuntime
 let appImageRuntimeCleanup = false
 const appImageReplacementState = { unconfirmed: false }
 let providerReviewCleanupUnconfirmed = false
+let windowsShutdownQuery
+let windowsShutdownPrivate
+const privateShutdownRecipient = isDiagnosticsPublicKey(process.env.PS_DIAGNOSTIC_PUBLIC_KEY_PEM || "")
 let secretService
 const credentialProbe = createNativeV2CredentialProbe({ providerID: "openai" })
 const credentialState = {
@@ -565,7 +570,13 @@ try {
     "Qualification failed at this boundary; inspect the private CI diagnostic log.",
     qualificationFailureCode(error),
   )
-  await writeFile(join(root, "diagnostic.txt"), String(error?.stack || error), { mode: 0o600 })
+  await writeFile(
+    join(root, "diagnostic.txt"),
+    String(error?.stack || error) +
+      (windowsShutdownPrivate ? `\nWINDOWS_APP_SHUTDOWN_DIAGNOSTIC\n${JSON.stringify(windowsShutdownPrivate)}\n` : ""),
+    { mode: 0o600 },
+  )
+  windowsShutdownPrivate = undefined
 } finally {
   const safeToRemove =
     !systemMutationUnconfirmed &&
@@ -950,6 +961,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
   let evaluate
   let api
   let owned = []
+  let shutdownInitial = { snapshot: { status: "UNREADABLE", processes: [] }, quiescence: "confirmed" }
   let attached
   let v2Request
   let credentialReadiness
@@ -1456,7 +1468,23 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     const previous = stage
     stage = "cleanup"
     try {
-      owned = await descendants(child.pid)
+      if (process.platform === "win32") {
+        // Enrich the existing one-time numeric descendant snapshot only. The
+        // PID liveness gate below remains unchanged pending native evidence.
+        windowsShutdownQuery ||= await windowsAppShutdownNative(process.env, root).catch(() => undefined)
+        if (windowsShutdownQuery) {
+          shutdownInitial.quiescence = "unconfirmed"
+          shutdownInitial = await windowsShutdownQuery({ rootPid: child.pid })
+        }
+        if (shutdownInitial.quiescence === "unconfirmed") {
+          systemMutationUnconfirmed = true
+          throw new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED")
+        }
+        owned =
+          shutdownInitial.snapshot.status === "COMPLETE"
+            ? shutdownInitial.snapshot.processes.map((item) => item.pid).filter((pid) => pid !== child.pid)
+            : await descendants(child.pid)
+      } else owned = await descendants(child.pid)
       if (appImageRuntime && !electronPid) throw new Error("APPIMAGE_RUNTIME_OWNER_UNCONFIRMED")
       if (api) {
         const attachment = JSON.parse(await readFile(join(profile, "desktop", "runtime-attach.json"), "utf8"))
@@ -1521,6 +1549,58 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         "Owned Electron process and observed descendants exited; private terminal attachment was removed.",
       )
     } catch (error) {
+      if (process.platform === "win32") {
+        // Failure-only final read has its own bounded, close-aware helper. It
+        // cannot grant cleanup, retry a signal, or extend the 10-second gate.
+        let final = { snapshot: { status: "UNREADABLE", processes: [] }, quiescence: "not-run" }
+        try {
+          if (windowsShutdownQuery && shutdownInitial.quiescence === "confirmed") {
+            final.quiescence = "unconfirmed"
+            final = await windowsShutdownQuery({ rootPid: child.pid, pids: [...new Set([child.pid, ...owned])] })
+          }
+          const diagnostic = classifyWindowsAppShutdown(
+            {
+              rootPid: child.pid,
+              initial: shutdownInitial.snapshot,
+              final: final.snapshot,
+              main: { exitCode: child.exitCode, signalCode: child.signalCode },
+            },
+            { includePrivateRecords: privateShutdownRecipient },
+          )
+          check(
+            "windows-app-shutdown-observation",
+            "NOT_TESTED",
+            JSON.stringify({
+              ...diagnostic.observation,
+              initialQueryQuiescence: shutdownInitial.quiescence,
+              finalQueryQuiescence: final.quiescence,
+            }),
+          )
+          if (privateShutdownRecipient && diagnostic.privateRecords?.length)
+            windowsShutdownPrivate = {
+              sourceRevision: embeddedInputs?.source?.revision,
+              artifactSha256,
+              records: diagnostic.privateRecords,
+            }
+        } catch {
+          // An optional diagnostic cannot replace the original cleanup failure
+          // or interrupt the controller's pipe/provider/log finalization.
+          check(
+            "windows-app-shutdown-observation",
+            "NOT_TESTED",
+            JSON.stringify({
+              diagnosticOnly: true,
+              initialSnapshot: "UNREADABLE",
+              finalSnapshot: "UNREADABLE",
+              initialQueryQuiescence: shutdownInitial.quiescence,
+              finalQueryQuiescence: final.quiescence,
+            }),
+          )
+        } finally {
+          if (shutdownInitial.quiescence === "unconfirmed" || final.quiescence === "unconfirmed")
+            systemMutationUnconfirmed = true
+        }
+      }
       check(
         stage,
         "FAIL",

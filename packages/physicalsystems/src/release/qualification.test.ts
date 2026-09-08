@@ -155,7 +155,11 @@ test("failure diagnostics preserve only exact authored codes and never private e
   const error = new Error("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
   error.stack = "private-stack credential=qualification-credential-trap /private/profile"
   expect(qualificationFailureCode(error)).toBe("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE")
+  expect(qualificationFailureCode(new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED"))).toBe(
+    "PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED",
+  )
   for (const unknown of [
+    new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED private-native-output"),
     new Error("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE credential=qualification-credential-trap"),
     new Error("PACKAGED_NEW_CODE_NOT_REVIEWED"),
     new Error("ENOENT: /private/profile/runtime-attach.json qualification-credential-trap"),
