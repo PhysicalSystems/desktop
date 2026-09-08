@@ -54,6 +54,8 @@ export async function observeWindowsReviewDirectoryDenial(
     const result = await observe({ env, controllerRoot: root, ...anchors })
     observation.directoryProbeQuiescence = result.quiescence
     Object.assign(observation, {
+      directoryProbeBoundary: result.boundary,
+      directoryProbeTransportOutcome: result.transportOutcome,
       directoryProbeStatus: result.observation.status,
       directoryProbePhase: result.observation.phase,
       directoryProbeKind: result.observation.kind,

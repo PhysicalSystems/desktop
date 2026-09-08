@@ -4,7 +4,11 @@ import { lstat, readdir, realpath } from "node:fs/promises"
 import { win32 } from "node:path"
 import { readBrowserObservation } from "./browser-observation"
 import { requireDisposablePublicRunner } from "./public-qualification"
-import { createWindowsReviewRequestTransport, windowsReviewNativeEnvironment } from "./windows-review-native"
+import {
+  createWindowsReviewRequestTransport,
+  windowsReviewNativeEnvironment,
+  windowsReviewScriptBootstrap,
+} from "./windows-review-native"
 
 export type WindowsDirectoryAnchor = Readonly<{ path: string; dev: bigint; ino: bigint }>
 export type WindowsDirectoryRequest = { root: WindowsDirectoryAnchor; parent: WindowsDirectoryAnchor }
@@ -51,20 +55,22 @@ const unavailable = (): WindowsDirectoryObservation =>
 
 /** Unknown native output never becomes a public path or an authority decision. */
 export function windowsDirectoryObservation(value: unknown): WindowsDirectoryObservation {
+  return decodedObservation(value) ?? unavailable()
+}
+
+function decodedObservation(value: unknown): WindowsDirectoryObservation | undefined {
   try {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable()
+    if (!value || typeof value !== "object" || Array.isArray(value)) return
     const row = value as Record<string, unknown>
     const shape = unavailable()
-    if (Object.keys(row).length !== Object.keys(shape).length || Object.keys(row).some((key) => !(key in shape)))
-      return unavailable()
+    if (Object.keys(row).length !== Object.keys(shape).length || Object.keys(row).some((key) => !(key in shape))) return
     for (const [key, allowed] of Object.entries({
       status: statuses,
       phase: phases,
       kind: kinds,
       nativeStatus: nativeStatuses,
     }))
-      if (typeof row[key] !== "string" || !(allowed as readonly string[]).includes(row[key] as string))
-        return unavailable()
+      if (typeof row[key] !== "string" || !(allowed as readonly string[]).includes(row[key] as string)) return
     for (const key of ["ordinal", "depth", "entriesProbed", "readonlyDirectories", "readonlyFiles"])
       if (
         typeof row[key] !== "number" ||
@@ -72,18 +78,47 @@ export function windowsDirectoryObservation(value: unknown): WindowsDirectoryObs
         row[key] < 0 ||
         row[key] > (key === "depth" ? 8 : 128)
       )
-        return unavailable()
+        return
     if (
       typeof row.rootReadonlyAttribute !== "boolean" ||
       typeof row.readonlyAttribute !== "boolean" ||
       (row.ordinal as number) > (row.entriesProbed as number) ||
       (row.readonlyDirectories as number) + (row.readonlyFiles as number) > (row.entriesProbed as number)
     )
-      return unavailable()
+      return
     return Object.freeze({ ...row }) as WindowsDirectoryObservation
   } catch {
-    return unavailable()
+    return
   }
+}
+
+const boundaries = ["complete", "compile", "request", "invoke", "serialize", "schema", "transport"] as const
+export type WindowsDirectoryBoundary = (typeof boundaries)[number]
+type DirectoryTransportOutcome = "output-limit" | "timeout" | "signal" | "exit" | "start" | "unknown" | "invalid-json"
+export type WindowsDirectoryDiagnosticResult = {
+  observation: WindowsDirectoryObservation
+  boundary: WindowsDirectoryBoundary
+  quiescence: "confirmed" | "unconfirmed"
+  transportOutcome?: DirectoryTransportOutcome
+}
+function envelope(value: unknown): { observation: WindowsDirectoryObservation; boundary: WindowsDirectoryBoundary } {
+  const invalid = () => ({ observation: unavailable(), boundary: "schema" as const })
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid()
+  const row = value as Record<string, unknown>
+  if (
+    Object.keys(row).length !== 2 ||
+    !Object.hasOwn(row, "observation") ||
+    typeof row.boundary !== "string" ||
+    !(boundaries as readonly string[]).includes(row.boundary)
+  )
+    return invalid()
+  if (row.boundary === "complete") {
+    const observation = decodedObservation(row.observation)
+    return observation ? { observation, boundary: "complete" } : invalid()
+  }
+  if (!["compile", "request", "invoke", "serialize"].includes(row.boundary) || row.observation !== null)
+    return invalid()
+  return { observation: unavailable(), boundary: row.boundary as WindowsDirectoryBoundary }
 }
 
 function request(value: WindowsDirectoryRequest) {
@@ -297,16 +332,20 @@ $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+$boundary='compile'
 try {
 Add-Type -TypeDefinition @'
 ${windowsDirectoryProbeDefinition}
 '@
+  $boundary='request'
   $line=[Console]::In.ReadLine()
   if($null -eq $line -or $line.Length -gt 16384){throw 'request'}
   $r=$line | ConvertFrom-Json
+  $boundary='invoke'
   $result=[DirectoryDenialProbe]::Run([DirectoryDenialProbe+NativeOps]::new(),$r.parent.path,[IO.Path]::GetFileName($r.root.path),[ulong]$r.parent.dev,[ulong]$r.parent.ino,[ulong]$r.root.dev,[ulong]$r.root.ino)
-  [Console]::Out.Write(($result | ConvertTo-Json -Depth 3 -Compress))
-} catch { [Console]::Out.Write('null') }
+  $boundary='serialize'
+  [Console]::Out.Write((@{boundary='complete';observation=$result} | ConvertTo-Json -Depth 4 -Compress))
+} catch { [Console]::Out.Write(('{"boundary":"'+$boundary+'","observation":null}')) }
 `
 
 export function createWindowsDirectoryObservationTransport(
@@ -314,18 +353,21 @@ export function createWindowsDirectoryObservationTransport(
   closeTimeoutMs = 500,
 ) {
   const native = createWindowsReviewRequestTransport<ReturnType<typeof request>>(execute, () => 12000, closeTimeoutMs)
-  return async (input: WindowsDirectoryRequest) => {
+  return async (input: WindowsDirectoryRequest): Promise<WindowsDirectoryDiagnosticResult> => {
     let validated: ReturnType<typeof request>
     try {
       validated = request(input)
     } catch {
-      return { observation: unavailable(), quiescence: "confirmed" as const }
+      return { observation: unavailable(), boundary: "request" as const, quiescence: "confirmed" as const }
     }
     try {
-      return { observation: windowsDirectoryObservation(await native(validated)), quiescence: "confirmed" as const }
+      return { ...envelope(await native(validated)), quiescence: "confirmed" as const }
     } catch (error) {
       return {
         observation: unavailable(),
+        boundary: "transport" as const,
+        transportOutcome: (readBrowserObservation(error)?.windowsNativeOutcome ??
+          "unknown") as DirectoryTransportOutcome,
         quiescence:
           readBrowserObservation(error)?.handoffQuiescence === "unconfirmed"
             ? ("unconfirmed" as const)
@@ -365,7 +407,7 @@ export async function observeWindowsDirectoryDenial(
       "-NoProfile",
       "-NonInteractive",
       "-EncodedCommand",
-      Buffer.from(windowsDirectoryObservationScript, "utf16le").toString("base64"),
+      Buffer.from(windowsReviewScriptBootstrap(windowsDirectoryObservationScript), "utf16le").toString("base64"),
     ]
     if (executable.length * 2 + 3 + args.reduce((sum, arg) => sum + arg.length + 3, 0) > 32767)
       throw Error("WINDOWS_DIRECTORY_DIAGNOSTIC_UNAVAILABLE")

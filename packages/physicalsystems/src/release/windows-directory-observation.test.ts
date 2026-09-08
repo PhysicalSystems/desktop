@@ -103,11 +103,11 @@ test("directory query binds bigint identities and waits for actual helper close 
     root: { path: "C:\\owned\\browser", dev: "5", ino: "9007199254740994" },
   })
   expect(call.timeout).toBe(12000)
-  call.complete(undefined, JSON.stringify(observed), "PRIVATE-IGNORED")
+  call.complete(undefined, JSON.stringify({ boundary: "complete", observation: observed }), "PRIVATE-IGNORED")
   await Promise.resolve()
   expect(settled).toBe(false)
   call.child.emit("close", 0)
-  expect(await result).toEqual({ observation: observed, quiescence: "confirmed" })
+  expect(await result).toEqual({ observation: observed, boundary: "complete", quiescence: "confirmed" })
 })
 
 test("invalid directory scope fails before spawning, and confirmed query errors never expose native text", async () => {
@@ -133,7 +133,7 @@ test("invalid directory scope fails before spawning, and confirmed query errors 
 test("unconfirmed helper closure quarantines subsequent probes and late close cannot authorize cleanup", async () => {
   const f = fixture()
   const result = f.probe(input)
-  f.calls[0]!.complete(undefined, JSON.stringify(observed), "")
+  f.calls[0]!.complete(undefined, JSON.stringify({ boundary: "complete", observation: observed }), "")
   const value = await result
   expect(value.quiescence).toBe("unconfirmed")
   expect(value.observation.status).toBe("UNREADABLE")
@@ -149,7 +149,39 @@ test("native directory adapter cannot execute locally on non-Windows, and fixed 
     await expect(
       observeWindowsDirectoryDenial({ ...input, env: {}, controllerRoot: "C:\\controller" }),
     ).rejects.toThrow("WINDOWS_DIRECTORY_DIAGNOSTIC_UNAVAILABLE")
-  expect(Buffer.from(windowsDirectoryObservationScript, "utf16le").toString("base64").length + 1024).toBeLessThan(32767)
+  expect(
+    Buffer.from(windowsReviewScriptBootstrap(windowsDirectoryObservationScript), "utf16le").toString("base64").length +
+      1024,
+  ).toBeLessThan(32767)
+})
+
+test("native script and schema boundaries remain distinct without retaining private output", async () => {
+  for (const boundary of ["compile", "request", "invoke", "serialize", "PRIVATE"] as const) {
+    const f = fixture()
+    const result = f.probe(input)
+    f.calls[0]!.complete(undefined, JSON.stringify({ boundary, observation: null }), "PRIVATE")
+    f.calls[0]!.child.emit("close", 0)
+    const value = await result
+    expect(value.boundary).toBe(boundary === "PRIVATE" ? "schema" : boundary)
+    expect(value.observation.status).toBe("UNREADABLE")
+    expect(value.quiescence).toBe("confirmed")
+    expect(JSON.stringify(value)).not.toContain("PRIVATE")
+  }
+  for (const payload of [observed, { boundary: "complete", observation: { ...observed, private: "PRIVATE" } }, null]) {
+    const f = fixture()
+    const result = f.probe(input)
+    f.calls[0]!.complete(undefined, JSON.stringify(payload), "")
+    f.calls[0]!.child.emit("close", 0)
+    expect((await result).boundary).toBe("schema")
+  }
+  const f = fixture()
+  const result = f.probe(input)
+  f.calls[0]!.complete(undefined, "PRIVATE-INVALID-JSON", "")
+  f.calls[0]!.child.emit("close", 0)
+  const value = await result
+  expect(value.boundary).toBe("transport")
+  expect("transportOutcome" in value && value.transportOutcome).toBe("invalid-json")
+  expect(JSON.stringify(value)).not.toContain("PRIVATE")
 })
 
 // Exact production control flow with inert handle/metadata callbacks. None of
@@ -278,7 +310,9 @@ ${inertDefinition}
   foreach($phase in @(${cases.map((value) => "'" + value + "'").join(",")})){
     if(-not [InertDirectoryOps]::Check($phase)){throw 'fixture'}
   }
-  [Console]::Out.Write('{"fixtureOnly":true,"cases":18,"allHandlesClosed":true}')
+  $phase='serialize'
+  $wire=[DirectoryDenialProbe]::Run([InertDirectoryOps]::new('clear'),'C:\owned','browser',5,1,5,2)
+  [Console]::Out.Write((@{fixtureOnly=$true;cases=18;allHandlesClosed=$true;wire=@{boundary='complete';observation=$wire}} | ConvertTo-Json -Depth 5 -Compress))
 }catch{
   [Console]::Out.Write(('{"failure":"'+$phase+'"}'))
 }
@@ -317,10 +351,18 @@ ${inertDefinition}
         const phase = String((value as { failure: unknown }).failure)
         throw Error(
           "INERT_DIRECTORY_FIXTURE_FAILED:" +
-            (["compile", ...cases].includes(phase as (typeof cases)[number]) ? phase : "unknown"),
+            (["compile", "serialize", ...cases].includes(phase as (typeof cases)[number]) ? phase : "unknown"),
         )
       }
-      expect(value).toEqual({ fixtureOnly: true, cases: 18, allHandlesClosed: true })
+      expect(value).toMatchObject({ fixtureOnly: true, cases: 18, allHandlesClosed: true })
+      const f = fixture()
+      const decoded = f.probe(input)
+      f.calls[0]!.complete(undefined, JSON.stringify((value as { wire: unknown }).wire), "")
+      f.calls[0]!.child.emit("close", 0)
+      const serialized = await decoded
+      expect(serialized.boundary).toBe("complete")
+      expect(serialized.observation.status).toBe("NOT_LOCALIZED")
+      expect(serialized.observation.entriesProbed).toBe(3)
     } finally {
       if (!retainRoot) await rm(root, { recursive: true, force: true })
     }
@@ -340,14 +382,61 @@ test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "
       await mkdir(join(root, "nested"))
       await writeFile(join(root, "nested", "inert.txt"), "immutable inert diagnostic fixture")
       const [parentStat, rootStat] = await Promise.all([lstat(parent, { bigint: true }), lstat(root, { bigint: true })])
-      const value = await observeWindowsDirectoryDenial({
+      const request = {
         env: process.env,
         controllerRoot,
         parent: { path: parent, dev: parentStat.dev, ino: parentStat.ino },
         root: { path: root, dev: rootStat.dev, ino: rootStat.ino },
-      })
+      }
+      const value = await observeWindowsDirectoryDenial(request)
       retained = value.quiescence !== "confirmed"
       expect(value.quiescence).toBe("confirmed")
+      // Same exact fixed script, uncompressed, for causal comparison only.
+      // Its failure cannot qualify cleanup; confirmed closure is mandatory.
+      const rawController = join(parent, "uncompressed-controller")
+      await mkdir(rawController)
+      const environment = windowsReviewNativeEnvironment(process.env, rawController)
+      const executable = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+      const args = [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(windowsDirectoryObservationScript, "utf16le").toString("base64"),
+      ]
+      expect(executable.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3).toBeLessThan(32767)
+      retained = true
+      const uncompressed = await createWindowsDirectoryObservationTransport((deadline, complete) =>
+        execFile(
+          executable,
+          args,
+          {
+            cwd: rawController,
+            env: environment,
+            shell: false,
+            windowsHide: true,
+            encoding: "utf8",
+            timeout: deadline.timeout,
+            maxBuffer: 16384,
+          },
+          complete,
+        ),
+      )(request)
+      retained = uncompressed.quiescence !== "confirmed"
+      expect(uncompressed.quiescence).toBe("confirmed")
+      console.log(
+        JSON.stringify({
+          inertDirectoryEncodingComparison: {
+            compressed: { boundary: value.boundary, status: value.observation.status },
+            uncompressed: {
+              boundary: uncompressed.boundary,
+              status: uncompressed.observation.status,
+              ...("transportOutcome" in uncompressed ? { transportOutcome: uncompressed.transportOutcome } : {}),
+            },
+          },
+        }),
+      )
+      expect(value.boundary).toBe("complete")
       expect(value.observation).toEqual({
         status: "NOT_LOCALIZED",
         phase: "none",
@@ -369,5 +458,5 @@ test.skipIf(process.platform !== "win32" || process.env.RUNNER_ENVIRONMENT !== "
       if (!retained) await rm(parent, { recursive: true })
     }
   },
-  20000,
+  35000,
 )

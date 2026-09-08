@@ -17,6 +17,7 @@ test("directory access diagnostics preserve fixed fields and reject paths, arbit
     directoryProbeNativeStatus: "access-denied",
     directoryProbeQuiescence: "confirmed",
     directoryProbeControllerCleanup: "removed",
+    directoryProbeBoundary: "complete",
     directoryProbeOrdinal: 0,
     directoryProbeDepth: 0,
     directoryProbeEntries: 0,
@@ -29,6 +30,8 @@ test("directory access diagnostics preserve fixed fields and reject paths, arbit
   for (const change of [
     { directoryProbePath: "PRIVATE PATH" },
     { directoryProbeNativeStatus: "PRIVATE ERROR" },
+    { directoryProbeBoundary: "PRIVATE ERROR" },
+    { directoryProbeTransportOutcome: "PRIVATE ERROR" },
     { directoryProbeStatus: "PASS" },
     { directoryProbeDepth: 9 },
     { directoryProbeOrdinal: 129 },

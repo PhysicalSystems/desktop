@@ -192,6 +192,8 @@ export type BrowserObservation = {
     | "other"
   directoryProbeQuiescence?: "not-started" | "confirmed" | "unconfirmed"
   directoryProbeControllerCleanup?: "not-created" | "removed" | "retained"
+  directoryProbeBoundary?: "complete" | "compile" | "request" | "invoke" | "serialize" | "schema" | "transport"
+  directoryProbeTransportOutcome?: BrowserObservation["windowsNativeOutcome"]
   directoryProbeOrdinal?: number
   directoryProbeDepth?: number
   directoryProbeEntries?: number
@@ -306,6 +308,8 @@ const directoryEnums = new Map<string, readonly string[]>([
   ],
   ["directoryProbeQuiescence", ["not-started", "confirmed", "unconfirmed"]],
   ["directoryProbeControllerCleanup", ["not-created", "removed", "retained"]],
+  ["directoryProbeBoundary", ["complete", "compile", "request", "invoke", "serialize", "schema", "transport"]],
+  ["directoryProbeTransportOutcome", ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]],
   ["directoryFailurePhase", ["parent-canonical", "parent-identity", "root-identity", "remove", "absence-check"]],
   ["directorySyscall", ["rm", "lstat", "realpath", "readdir", "other", "absent"]],
   ["directoryErrorPath", ["root", "parent", "descendant", "other", "absent"]],

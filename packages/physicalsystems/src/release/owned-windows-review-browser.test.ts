@@ -58,6 +58,7 @@ test("Windows failure diagnostic isolates its controller and only cleans it afte
           if (mode === "throw") throw Error("PRIVATE NATIVE ERROR")
           return {
             quiescence: mode,
+            boundary: "complete" as const,
             observation: {
               status: "NOT_LOCALIZED",
               phase: "none",
