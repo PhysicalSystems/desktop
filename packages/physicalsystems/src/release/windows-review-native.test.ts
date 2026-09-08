@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
-import { execFile } from "node:child_process"
+import { execFile, type ChildProcess } from "node:child_process"
 import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { join, win32 } from "node:path"
+import { gunzipSync } from "node:zlib"
 import {
   windowsReviewIdentityReadScript,
   windowsReviewListenerReadScript,
+  windowsReviewLauncherCommandScript,
+  windowsReviewScriptBootstrap,
   windowsReviewNativeResult,
   windowsReviewNativeArguments,
   windowsReviewNativeEnvironment,
@@ -18,9 +21,16 @@ test("the actual encoded native script contains the tested reconciliation helper
   const executable = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
   const args = windowsReviewNativeArguments(executable)
   const decoded = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-  expect(decoded).toBe(windowsReviewNativeScript)
-  expect(decoded.split(windowsReviewIdentityReadScript)).toHaveLength(2)
-  expect(decoded.split(windowsReviewListenerReadScript)).toHaveLength(2)
+  expect(decoded).toBe(windowsReviewScriptBootstrap(windowsReviewNativeScript))
+  const compressed = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(decoded)?.[1]
+  expect(compressed).toBeDefined()
+  const source = gunzipSync(Buffer.from(compressed!, "base64")).toString("utf8")
+  expect(source).toBe(windowsReviewNativeScript)
+  expect(source.split(windowsReviewIdentityReadScript)).toHaveLength(2)
+  expect(source.split(windowsReviewListenerReadScript)).toHaveLength(2)
+  expect(source.split(windowsReviewLauncherCommandScript)).toHaveLength(2)
+  expect(args).not.toContain("-ExecutionPolicy")
+  expect(args).not.toContain("-File")
   const units = executable.length * 2 + 3 + args.reduce((total, arg) => total + arg.length + 3, 0)
   expect(units).toBeLessThanOrEqual(32767)
 })
@@ -28,6 +38,7 @@ test("the actual encoded native script contains the tested reconciliation helper
 const fixturePhases = [
   "bootstrap",
   "identity",
+  "launcher",
   "listener-empty",
   "listener-loopback",
   "listener-throw",
@@ -96,6 +107,7 @@ function Mark([string]$phase){[Console]::Error.WriteLine('INERT_WINDOWS_FIXTURE_
 Mark 'bootstrap'
 $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
 trap {[Console]::Error.Write('INERT_IDENTITY_FIXTURE_FAILED');exit 1}
+if([Console]::In.ReadToEnd() -cne '{"fixture":"stdin-preserved"}'){throw 'fixture-stdin'}
 ${windowsReviewIdentityReadScript}
 Mark 'identity'
 $script:reads=0;$script:proofs=0;$cases=0
@@ -178,19 +190,32 @@ foreach($mode in @('throw','error','partial','foreign')) {
   Require ($failed -and $script:queryCalls -eq $before+1)
   $listenerCases++
 }
+Mark 'launcher'
+${windowsReviewLauncherCommandScript}
+$exe='C:\Program Files\Microsoft\Edge\Application\msedge.exe'
+$command=Launcher $exe 'D:\runner\owned profile'
+Require ($command -ceq '"C:\Program Files\Microsoft\Edge\Application\msedge.exe" "--user-data-dir=D:\runner\owned profile" -- "%1"')
+$launcherCases=1
+foreach($path in @('relative','C:\owned\..\profile','C:\owned\%1','C:\owned\"profile','C:\profile\',("C:\owned\"+[char]10+"profile"))) {
+  foreach($asExecutable in @($true,$false)) {
+    $failed=$false
+    try {if($asExecutable){$null=Launcher $path 'D:\runner\owned profile'}else{$null=Launcher $exe $path}} catch {$failed=$true}
+    Require $failed
+    $launcherCases++
+  }
+}
 Mark 'json'
-[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls} | ConvertTo-Json -Compress))
+[Console]::Out.Write((@{fixtureOnly=$true;cases=$cases;reads=$script:reads;proofs=$script:proofs;listenerCases=$listenerCases;queryCalls=$script:queryCalls;launcherCases=$launcherCases;stdinPreserved=$true} | ConvertTo-Json -Compress))
 `
-    const args = [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-EncodedCommand",
-      Buffer.from(script, "utf16le").toString("base64"),
-    ]
-    let closed = false
-    try {
-      const result = await new Promise<string>((resolve, reject) => {
+    const executeScript = (source: string) => {
+      const args = [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-EncodedCommand",
+        Buffer.from(windowsReviewScriptBootstrap(source), "utf16le").toString("base64"),
+      ]
+      return new Promise<string>((resolve, reject) => {
         const child = execFile(
           executable,
           args,
@@ -210,22 +235,41 @@ Mark 'json'
             } else resolve(stdout)
           },
         )
+        children.add(child)
         child.once("close", () => {
-          closed = true
+          children.delete(child)
         })
+        child.stdin?.on("error", () => {})
+        child.stdin?.end('{"fixture":"stdin-preserved"}')
       })
+    }
+    const children = new Set<ChildProcess>()
+    try {
+      const result = await executeScript(script)
       let value: unknown
       try {
         value = JSON.parse(result.replace(/^\uFEFF/, ""))
       } catch {
         throw Error("INERT_IDENTITY_FIXTURE_INVALID")
       }
-      expect(value).toEqual({ fixtureOnly: true, cases: 13, reads: 13, proofs: 11, listenerCases: 6, queryCalls: 6 })
+      expect(value).toEqual({
+        fixtureOnly: true,
+        cases: 13,
+        reads: 13,
+        proofs: 11,
+        listenerCases: 6,
+        queryCalls: 6,
+        launcherCases: 13,
+        stdinPreserved: true,
+      })
+      await expect(
+        executeScript("[Console]::Error.WriteLine('INERT_WINDOWS_FIXTURE_listener-error');exit 7"),
+      ).rejects.toThrow("INERT_IDENTITY_FIXTURE_FAILED:listener-error:exit")
     } finally {
-      if (closed) await rm(root, { recursive: true, force: true })
+      if (!children.size) await rm(root, { recursive: true, force: true })
     }
   },
-  20000,
+  30000,
 )
 
 test("native listener transport preserves successful zero matches but never accepts failed or partial query output", () => {

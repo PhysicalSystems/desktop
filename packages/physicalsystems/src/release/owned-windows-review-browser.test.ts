@@ -22,6 +22,7 @@ import {
   windowsReviewNativeFailure,
   windowsReviewNativeResult,
   windowsReviewNativeArguments,
+  windowsReviewScriptBootstrap,
   windowsReviewNativeEnvironment,
   windowsReviewNativeScript,
 } from "./windows-review-native"
@@ -29,6 +30,7 @@ import { browserObservationError, readBrowserObservation } from "./browser-obser
 import { qualificationFailureCode } from "./qualification"
 
 const executable = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+const resolvedCommand = `"${executable}" -- "%1"`
 const processRecord = (profile: string): WindowsReviewProcess => ({
   pid: 4100,
   parent: 100,
@@ -67,8 +69,8 @@ async function fixture(
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "windows-review-fixture-")))
   const root = await realpath(await mkdtemp(join(temporary, "owned-")))
   const before = {
-    keys: [true, true, true],
-    value: { kind: "ExpandString" as const, data: "C:\\PRIVATE-PREVIOUS-POLICY\\%USERNAME%" },
+    keys: [true, true, true, true, true],
+    value: { kind: "ExpandString" as const, data: "C:\\PRIVATE-PREVIOUS-LAUNCHER\\%USERNAME%" },
   }
   const state = {
     calls: [] as string[],
@@ -107,10 +109,13 @@ async function fixture(
               ? "policy-restore"
               : "process-identity"),
       )
-    if ("scheme" in request) state.schemes.push(request.scheme)
+    if (request.operation === "preflight" || request.operation === "observe") state.schemes.push(request.scheme)
+    if (request.operation === "set" || request.operation === "restore" || request.operation === "observe")
+      expect(request.executable).toBe(executable)
     if (request.operation === "preflight")
       return {
         executable,
+        resolvedCommand,
         sid: processRecord("").sid,
         policy: structuredClone(before),
         debugPolicy: {
@@ -123,6 +128,7 @@ async function fixture(
       }
     if (request.operation === "set") {
       expect(request.before).toEqual(before)
+      expect(request.beforeCommand).toBe(resolvedCommand)
       state.profile = request.profile
       if (options.profileMarkers) {
         await writeFile(join(request.profile, "Local State"), "PRIVATE-PROFILE-CONTENTS")
@@ -131,7 +137,10 @@ async function fixture(
           await writeFile(join(request.profile, "Default", "Preferences"), "PRIVATE-PREFERENCES")
         } else await symlink(temporary, join(request.profile, "Default"), "junction")
       }
-      state.policy = { keys: [true, true, true], value: { kind: "String", data: request.profile } }
+      state.policy = {
+        keys: [true, true, true, true, true],
+        value: { kind: "String", data: `"${executable}" "--user-data-dir=${request.profile}" -- "%1"` },
+      }
       if (options.nativeFailure === "set")
         throw windowsReviewNativeFailure("PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_policy-write")
       if (options.policySetLost) throw Error("PRIVATE-POLICY-WRITE-RESPONSE-LOST")
@@ -174,7 +183,7 @@ async function fixture(
       return {
         processes: options.malformedProcesses && !state.stopped ? "PRIVATE-MALFORMED" : processes,
         listening: state.running && request.port ? [options.unready === "wrong-listener" ? 4999 : 4100] : [],
-        policyOwned: state.policy.value?.data === state.profile,
+        policyOwned: state.policy.value?.data === `"${executable}" "--user-data-dir=${state.profile}" -- "%1"`,
       }
     }
     if (request.operation === "stop") {
@@ -187,6 +196,7 @@ async function fixture(
       return { stopped: true }
     }
     if (request.operation === "restore") {
+      expect(request.beforeCommand).toBe(resolvedCommand)
       expect(state.running).toBe(false)
       if (state.stopped) expect(request.observedPids).toEqual([4100, 4101])
       expect(request.before).toEqual(before)
@@ -248,7 +258,7 @@ async function fixture(
   return { input, io, state, before, cleanup: () => rm(temporary, { recursive: true, force: true }) }
 }
 
-test("owned Windows browser verifies exact native process/CDP and restores prior policy only after shutdown", async () => {
+test("owned Windows browser verifies exact native process/CDP and restores the prior launcher registration only after shutdown", async () => {
   for (const stopLost of [false, true]) {
     const f = await fixture({ stopLost })
     try {
@@ -269,6 +279,30 @@ test("owned Windows browser verifies exact native process/CDP and restores prior
           () => false,
         ),
       ).toBe(false)
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("a missing or malformed original launcher command prevents registry changes and browser launch", async () => {
+  for (const command of [undefined, null, "", "PRIVATE\nCOMMAND", "PRIVATE\0COMMAND", "x".repeat(32769)]) {
+    const f = await fixture()
+    const native = f.io.native
+    try {
+      await expect(
+        startOwnedWindowsReviewBrowser(f.input, {
+          ...f.io,
+          native: async (request) => {
+            const value = await native(request)
+            return request.operation === "preflight" ? { ...(value as object), resolvedCommand: command } : value
+          },
+        }),
+      ).rejects.toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+      expect(f.state.calls).toEqual(["preflight"])
+      expect(f.state.portEvents).toEqual([])
+      expect(f.state.running).toBe(false)
+      expect(f.state.policy).toEqual(f.before)
     } finally {
       await f.cleanup()
     }
@@ -312,7 +346,7 @@ test("an unknown orphan remains observed after its Edge parents exit; reuse neve
   }
 })
 
-test("ambient browser, unknown startup identity, PID reuse and failed policy restoration never authorize cleanup", async () => {
+test("ambient browser, unknown startup identity, PID reuse and failed launcher restoration never authorize cleanup", async () => {
   const ambient = await fixture({ ambient: true })
   try {
     await expect(startOwnedWindowsReviewBrowser(ambient.input, ambient.io)).rejects.toThrow(
@@ -348,7 +382,7 @@ test("ambient browser, unknown startup identity, PID reuse and failed policy res
   }
 })
 
-test("lost policy-write response reconciles exact prior state; retained profiles still require policy restoration", async () => {
+test("lost launcher-write response reconciles exact prior state; retained profiles still require restoration", async () => {
   const lost = await fixture({ policySetLost: true })
   try {
     await expect(startOwnedWindowsReviewBrowser(lost.input, lost.io)).rejects.toThrow(
@@ -395,8 +429,10 @@ test("Windows ownership rejects unrelated, recycled and malformed process/policy
   expect(windowsReviewOwnership(input).unknown.map((item) => item.pid)).toEqual([9999])
   expect(() => windowsReviewOwnership({ ...input, processes: [{ ...main, birth: "134000000000000002" }] })).toThrow()
   expect(() => windowsReviewProcesses([main, main])).toThrow()
-  expect(() => windowsReviewPolicy({ keys: [false, true, true], value: null })).toThrow()
-  expect(() => windowsReviewPolicy({ keys: [true, true, true], value: { kind: "Binary", data: "private" } })).toThrow()
+  expect(() => windowsReviewPolicy({ keys: [false, true, true, true, true], value: null })).toThrow()
+  expect(() =>
+    windowsReviewPolicy({ keys: [true, true, true, true, true], value: { kind: "Binary", data: "private" } }),
+  ).toThrow()
   if (process.platform !== "win32")
     expect(() => windowsReviewNative({}, "/tmp")).toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
 })
@@ -573,13 +609,28 @@ test("native result decoder keeps success JSON unchanged and classifies only fix
 })
 
 test("native transport gives slow signature preflight headroom while preserving single-call mutation deadlines", async () => {
-  const policy = { keys: [false, false, false], value: null }
+  const policy = { keys: [false, false, false, false, false], value: null }
   const requests: Parameters<WindowsReviewNative>[0][] = [
     { operation: "preflight", scheme: "http" },
-    { operation: "set", profile: "C:\\owned\\profile", before: policy },
-    { operation: "observe", profile: "C:\\owned\\profile", scheme: "http", observedPids: [] },
+    {
+      operation: "set",
+      scheme: "http",
+      executable,
+      beforeCommand: resolvedCommand,
+      profile: "C:\\owned\\profile",
+      before: policy,
+    },
+    { operation: "observe", executable, profile: "C:\\owned\\profile", scheme: "http", observedPids: [] },
     { operation: "stop", processes: [] },
-    { operation: "restore", profile: "C:\\owned\\profile", before: policy, observedPids: [] },
+    {
+      operation: "restore",
+      scheme: "http",
+      executable,
+      beforeCommand: resolvedCommand,
+      profile: "C:\\owned\\profile",
+      before: policy,
+      observedPids: [],
+    },
   ]
   for (const request of requests) {
     let calls = 0
@@ -667,8 +718,10 @@ test("extended preflight never retries or accepts native trust failure or expiry
 test("the real encoded diagnostic script fits CreateProcess including executable and argument overhead", () => {
   const args = windowsReviewNativeArguments("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
   expect(args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
-  expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).toBe(windowsReviewNativeScript)
-  expect(() => windowsReviewNativeArguments(`C:\\${"x".repeat(2048)}\\powershell.exe`)).toThrow(
+  expect(Buffer.from(args.at(-1)!, "base64").toString("utf16le")).toBe(
+    windowsReviewScriptBootstrap(windowsReviewNativeScript),
+  )
+  expect(() => windowsReviewNativeArguments(`C:\\${"x".repeat(20000)}\\powershell.exe`)).toThrow(
     "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
   )
 })

@@ -145,21 +145,28 @@ requires signed, installed Microsoft Edge with no existing Edge process. For the
 local probe it checks HTTP; for real sign-in it checks HTTPS. It never changes
 default-association hashes or substitutes a browser acknowledgment.
 
-On the disposable runner only, the owner snapshots the exact existing HKCU
-`UserDataDir` value/type and key existence, rejects a machine policy override, and
-temporarily sets the policy to its exclusive profile. Microsoft's
-[policy documentation](https://learn.microsoft.com/en-us/deployedge/microsoft-edge-browser-policies/userdatadir)
-states that it controls the profile location and requires a browser restart.
-Edge is prelaunched with its separate profile and
+On the disposable runner only, the owner snapshots five HKCU keys under
+`Software\Classes\MSEdgeHTM\shell\open\command`, including the exact unnamed
+value and registry type. It temporarily registers a direct command to the same
+signed Edge executable, adding its exclusive `--user-data-dir` and one URL
+argument. UserChoice and its hash remain unchanged. The effective command,
+executable and ProgID must match, and the Shell is notified after each transition.
+Existing machine or user `UserDataDir` policy, DelegateExecute, DDE or DropTarget
+activation prevents acquisition. None of those settings is disabled.
+
+The earlier fixture set `UserDataDir` policy to its temporary folder; Edge then
+rejected remote debugging because the policy made that folder the default profile.
+The launcher registration keeps the test profile separate from Edge's default and
+preserves its security checks. Edge is prelaunched with that separate profile and
 [DevTools endpoint](https://learn.microsoft.com/en-us/microsoft-edge/devtools/protocol/).
 The owner binds that endpoint to the actual browser PID, creation time, Windows
 session, user SID and executable. It checks process handles again before stopping
-owned processes, restores the exact prior policy with readback, and then removes
-the profile. PID reuse, an unexpected helper, another browser or concurrent policy
+owned processes, restores the exact prior registration with readback, and then removes
+the profile. PID reuse, an unexpected helper, another browser or concurrent registration
 changes prevent a cleanup claim. Ambient process command lines are not collected;
 only PID/parent metadata is used to find the owned descendants.
 Every observed descendant remains a query root after its parent exits, including
-unknown helpers. Reused identities block cleanup, and policy restoration requires
+unknown helpers. Reused identities block cleanup, and registration restoration requires
 all retained process IDs to be absent.
 
 Failed or uncertain native startup/cleanup retains private paths and prevents an

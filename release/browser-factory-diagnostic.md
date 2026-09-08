@@ -24,8 +24,10 @@ Existing PR source checks still validate the pushed revision independently.
 A fixed validated loopback sentinel selects the **HTTP** association used by the
 inert handoff test; the sentinel is never opened, fetched or navigated to. Only
 `about:blank` is loaded. Windows verifies its current HTTP handler and temporarily
-applies the existing factory's owned Edge profile policy, restoring the exact
-previous policy only after confirmed process cleanup. This does not test HTTPS
+registers a per-user launch command for the same signed Edge executable with its
+exclusive, non-default profile. It restores the exact previous registration only
+after confirmed process cleanup. Existing profile policies or alternate activation
+handlers prevent acquisition; they are never disabled. This does not test HTTPS
 provider routing, a real browser handoff, or sign-in. It never changes the default
 browser association.
 
@@ -52,8 +54,8 @@ include filenames or raw native error text.
 
 The five-minute job includes a 90-second Linux command deadline or a four-minute
 Windows step deadline. Windows allows 30 seconds for the read-only preflight,
-which includes native signature verification; policy writes, observations,
-process stopping and policy restoration retain their 12-second operation limits.
+which includes native signature verification; registration writes, observations,
+process stopping and registration restoration retain their 12-second operation limits.
 The longer outer deadline leaves room for ownership checks and cleanup. Signature
 requirements and native trust/network behavior are unchanged; the native
 transport does not retry operations when their deadlines expire. It uploads
@@ -64,6 +66,12 @@ fixed failure phases, safe error categories, counts and booleans. Desktop,
 browser handoff and provider login remain `NOT_TESTED`; qualification and
 publication remain false. An interrupted command leaves an explicit `INCOMPLETE`
 report. Inspect the job's timeout outcome alongside that report.
+
+The Windows adapter compresses its fixed, reviewed script into the inline command
+to stay below CreateProcess's 32,767-character limit. The bootstrap reconstructs
+that exact source; requests remain JSON on stdin. It adds no execution-policy
+override or external script file. Round-trip tests and the hosted inert fixture
+exercise the same transport before the browser is acquired.
 
 The factory retains uncertain browser/profile ownership and releases the
 controller's child handle. The diagnostic never retries cleanup or deletes the

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { execFile, type ChildProcess } from "node:child_process"
 import { win32 } from "node:path"
+import { gzipSync } from "node:zlib"
 import { browserObservationError, readBrowserObservation, type BrowserObservation } from "./browser-observation"
 
 /** Parse only the adapter's fixed failure marker; never retain native output. */
@@ -80,15 +81,32 @@ export type WindowsReviewBaseline = {
   sid: string
   policy: WindowsReviewPolicy
   processes: WindowsReviewProcess[]
+  resolvedCommand: string
 }
 export type WindowsReviewObservation = { processes: WindowsReviewProcess[]; listening: number[]; policyOwned: boolean }
 export type WindowsReviewNative = (
   request:
     | { operation: "preflight"; scheme: "http" | "https" }
-    | { operation: "set"; profile: string; before: WindowsReviewPolicy }
-    | { operation: "restore"; profile: string; before: WindowsReviewPolicy; observedPids: number[] }
+    | {
+        operation: "set"
+        profile: string
+        before: WindowsReviewPolicy
+        scheme: "http" | "https"
+        executable: string
+        beforeCommand: string
+      }
+    | {
+        operation: "restore"
+        profile: string
+        before: WindowsReviewPolicy
+        observedPids: number[]
+        scheme: "http" | "https"
+        executable: string
+        beforeCommand: string
+      }
     | {
         operation: "observe"
+        executable: string
         profile: string
         scheme: "http" | "https"
         port?: number
@@ -98,13 +116,26 @@ export type WindowsReviewNative = (
     | { operation: "stop"; processes: WindowsReviewProcess[] },
 ) => Promise<unknown>
 
+/** Pure encoding only. The executor below always binds the committed native
+ * source; callers cannot provide executable script text. No files, inherited
+ * code hooks, cmdlet discovery or execution-policy override are introduced. */
+export function windowsReviewScriptBootstrap(source: string) {
+  const compressed = gzipSync(Buffer.from(source, "utf8")).toString("base64")
+  return `$ErrorActionPreference='Stop'
+$reviewCompressed=[IO.MemoryStream]::new([Convert]::FromBase64String('${compressed}'))
+$reviewInflater=[IO.Compression.GZipStream]::new($reviewCompressed,[IO.Compression.CompressionMode]::Decompress)
+$reviewReader=[IO.StreamReader]::new($reviewInflater,[Text.UTF8Encoding]::new($false,$true))
+try { & ([ScriptBlock]::Create($reviewReader.ReadToEnd())) }
+finally { $reviewReader.Dispose();$reviewInflater.Dispose();$reviewCompressed.Dispose() }`
+}
+
 export function windowsReviewNativeArguments(executable: string) {
   const args = [
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
     "-EncodedCommand",
-    Buffer.from(windowsReviewNativeScript, "utf16le").toString("base64"),
+    Buffer.from(windowsReviewScriptBootstrap(windowsReviewNativeScript), "utf16le").toString("base64"),
   ]
   // CreateProcess accepts at most 32767 UTF-16 code units including NUL.
   // Conservatively reserve doubled executable escaping, quotes, separators,
@@ -213,9 +244,21 @@ if($_.LocalAddress -notin @('127.0.0.1','::1')){throw 'non-loopback'}
 })
 `
 
+/** The Shell substitutes only the quoted %1 token. Authored paths reject
+ * percent/quote/control characters and trailing backslash before interpolation. */
+export const windowsReviewLauncherCommandScript = String.raw`
+function Launcher([string]$exe,[string]$profile){
+foreach($p in @($exe,$profile)){if($p -notmatch '^[A-Za-z]:\\[^"%\r\n\x00]+[^\\"%\r\n\x00]$' -or [IO.Path]::GetFullPath($p) -cne $p){throw 'launcher-path'}}
+'"'+$exe+'" "--user-data-dir='+$profile+'" -- "%1"'
+}
+`
+
 // ASSOCF_IS_PROTOCOL=0x1000 maps the current user default; never FIXED_PROGID.
-// Policy restoration compares its current value before writing and removes only
-// our newly created, still-empty keys. UserChoice and its Hash are read-only.
+// The five-key HKCU Classes snapshot is restored only after exact comparison;
+// only newly created empty keys are removed. UserChoice and its Hash are read-only.
+// https://learn.microsoft.com/en-us/windows/win32/sysinfo/hkey-classes-root-key
+// https://learn.microsoft.com/en-us/windows/win32/api/shlwapi/ne-shlwapi-assocstr
+// https://learn.microsoft.com/en-us/windows/win32/api/shlobj_core/nf-shlobj_core-shchangenotify
 // Process discovery enumerates ambient PID/parent/name only, retaining previously
 // observed descendants as roots even after their parents exit. Full identity is
 // read only for selected processes. A failed read reconciles one fresh exact-PID
@@ -241,10 +284,12 @@ Set-ReviewPhase 'input-read'
 $inputText = [Console]::In.ReadToEnd()
 Set-ReviewPhase 'input-parse'
 $request = $inputText | ConvertFrom-Json
-$paths = @('Software\Policies', 'Software\Policies\Microsoft', 'Software\Policies\Microsoft\Edge')
+$paths=@('Software\Classes','Software\Classes\MSEdgeHTM','Software\Classes\MSEdgeHTM\shell','Software\Classes\MSEdgeHTM\shell\open','Software\Classes\MSEdgeHTM\shell\open\command')
+$edgePolicy='Software\Policies\Microsoft\Edge'
 Set-ReviewPhase 'registry-open'
 $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
 $machine = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+$classes=[Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::ClassesRoot,[Microsoft.Win32.RegistryView]::Registry64)
 Set-ReviewPhase 'caller-identity'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 Set-ReviewPhase 'add-type'
@@ -256,6 +301,7 @@ public static class ReviewNative {
 [DllImport("shlwapi.dll", CharSet=CharSet.Unicode)] static extern uint AssocQueryString(uint flags, uint str, string assoc, string extra, StringBuilder output, ref uint size);
 [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern IntPtr CommandLineToArgvW(string command, out int count);
 [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr value);
+[DllImport("shell32.dll")] public static extern void SHChangeNotify(int eventId,uint flags,IntPtr a,IntPtr b);
 public static string Association(uint kind, string scheme) {
 uint size=32768; var output=new StringBuilder((int)size);
 if(AssocQueryString(0x1000,kind,scheme,"open",output,ref size)!=0) throw new Exception();
@@ -274,10 +320,10 @@ Set-ReviewPhase 'policy-read'
 $keys = @($paths | ForEach-Object { $key=$base.OpenSubKey($_); $present=$null -ne $key; if($key){$key.Dispose()}; $present })
 $key=$base.OpenSubKey($paths[-1]); $value=$null
 try {
-  if($key -and $key.GetValueNames() -contains 'UserDataDir') {
-    $kind=$key.GetValueKind('UserDataDir').ToString()
+  if($key -and $key.GetValueNames() -contains '') {
+    $kind=$key.GetValueKind('').ToString()
     if($kind -notin @('String','ExpandString')) { throw 'invalid' }
-    $data=$key.GetValue('UserDataDir',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $data=$key.GetValue('',$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
     if($data -isnot [string] -or $data.Length -gt 32768) { throw 'invalid' }
     $value=@{kind=$kind;data=$data}
   }
@@ -285,7 +331,7 @@ try {
 @{keys=$keys;value=$value}
 }
 function Debug-Policy($h,$n,$a){
-$k=$h.OpenSubKey($paths[-1]);try{
+$k=$h.OpenSubKey($edgePolicy);try{
 if(!$k -or $k.GetValueNames() -notcontains $n){return 'absent'}
 if($k.GetValueKind($n) -ne 'DWord'){return 'invalid'}
 $x=$k.GetValue($n);if($x -lt 0 -or $x -ge $a.Count){return 'invalid'}
@@ -297,18 +343,32 @@ function Same-Value($a,$b) {
 }
 function Require-NoMachineOverride {
   Set-ReviewPhase 'machine-policy'
-  $key=$machine.OpenSubKey($paths[-1]); try {
-    if($key -and $key.GetValueNames() -contains 'UserDataDir') { throw 'machine-policy' }
-  } finally { if($key){$key.Dispose()} }
+  foreach($hive in @($machine,$base)) {
+    $key=$hive.OpenSubKey($edgePolicy)
+    try {
+      if($key -and $key.GetValueNames() -contains 'UserDataDir') {throw 'profile-policy'}
+    } finally {if($key){$key.Dispose()}}
+  }
 }
+function Require-DirectVerb {
+  foreach($path in @('MSEdgeHTM\shell\open','MSEdgeHTM\shell\open\command')) {
+    $key=$classes.OpenSubKey($path)
+    try {
+      if(!$key -or $key.GetValueNames() -contains 'DelegateExecute' -or
+        $key.GetSubKeyNames() -contains 'ddeexec' -or $key.GetSubKeyNames() -contains 'DropTarget') {throw 'activation'}
+    } finally {if($key){$key.Dispose()}}
+  }
+}
+${windowsReviewLauncherCommandScript}
 function Association {
   Set-ReviewPhase 'association-progid'
+  Require-DirectVerb
   if($request.scheme -notin @('http','https')) {throw 'scheme'}
   if([ReviewNative]::Association(20,[string]$request.scheme) -cne 'MSEdgeHTM') { throw 'association' }
   Set-ReviewPhase 'association-executable'
   $exe=[IO.Path]::GetFullPath([ReviewNative]::Association(2,[string]$request.scheme))
   $allowed=@($env:ProgramFiles,[Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),$env:ProgramW6432) | Where-Object {$_} | ForEach-Object {[IO.Path]::Combine($_,'Microsoft\Edge\Application\msedge.exe')}
-  if($allowed -inotcontains $exe) { throw 'executable' }
+  if($allowed -inotcontains $exe -or ($request.operation -ne 'preflight' -and (!$request.executable -or $exe -ine $request.executable))) {throw 'executable'}
   return $exe
 }
 function Processes {
@@ -380,33 +440,43 @@ if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notma
 Set-ReviewPhase 'debug-policy'
 $rules=@{RemoteDebuggingAllowed=@('deny','allow');DeveloperToolsAvailability=@('restricted','allow','deny')}
 $debug=@{};foreach($h in @('machine','base')){foreach($n in $rules.Keys){$debug[$h+$n]=Debug-Policy (Get-Variable $h -ValueOnly) $n $rules[$n]}}
-$result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolicy=$debug}
+$result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolicy=$debug;resolvedCommand=[ReviewNative]::Association(1,[string]$request.scheme)}
 }
   'set' {
     Require-NoMachineOverride
     Require-NoEdge
+    $null=Association
+    $command=Launcher $request.executable $request.profile
+    if([ReviewNative]::Association(1,[string]$request.scheme) -cne $request.beforeCommand){throw 'changed'}
     $current=Read-Policy
     Set-ReviewPhase 'policy-compare'
     if(!(Same-Value $current.value $request.before.value) -or (($current.keys | ConvertTo-Json -Compress) -cne ($request.before.keys | ConvertTo-Json -Compress))) { throw 'changed' }
     Set-ReviewPhase 'policy-write'
-    $key=$base.CreateSubKey($paths[-1]); try {$key.SetValue('UserDataDir',[string]$request.profile,[Microsoft.Win32.RegistryValueKind]::String)} finally {$key.Dispose()}
-    if(!(Same-Value (Read-Policy).value @{kind='String';data=[string]$request.profile})) { throw 'unconfirmed' }
+    $key=$base.CreateSubKey($paths[-1]); try {$key.SetValue('',$command,[Microsoft.Win32.RegistryValueKind]::String)} finally {$key.Dispose()}
+    [ReviewNative]::SHChangeNotify(0x08000000,0,[IntPtr]::Zero,[IntPtr]::Zero)
+    $null=Association
+    if(!(Same-Value (Read-Policy).value @{kind='String';data=$command}) -or [ReviewNative]::Association(1,[string]$request.scheme) -cne $command){throw 'unconfirmed'}
     $result=@{written=$true}
   }
   'restore' {
     Require-NoEdge
+    Require-NoMachineOverride
+    $null=Association
+    $command=Launcher $request.executable $request.profile
+    $effective=[ReviewNative]::Association(1,[string]$request.scheme)
+    if($effective -cne $command -and $effective -cne $request.beforeCommand){throw 'changed'}
     Set-ReviewPhase 'process-tree'
     foreach($pidValue in (Observed-Pids)) {
       if(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE ProcessId=$pidValue"){throw 'observed-process-alive'}
     }
     $current=Read-Policy
     Set-ReviewPhase 'policy-compare'
-    if(!(Same-Value $current.value @{kind='String';data=[string]$request.profile}) -and !(Same-Value $current.value $request.before.value)) { throw 'changed' }
+    if(!(Same-Value $current.value @{kind='String';data=$command}) -and !(Same-Value $current.value $request.before.value)) { throw 'changed' }
     Set-ReviewPhase 'policy-restore'
     $key=$base.OpenSubKey($paths[-1],$true)
     if($key) { try {
-      if($null -eq $request.before.value) {$key.DeleteValue('UserDataDir',$false)}
-      else {$key.SetValue('UserDataDir',[string]$request.before.value.data,[Enum]::Parse([Microsoft.Win32.RegistryValueKind],[string]$request.before.value.kind))}
+      if($null -eq $request.before.value) {$key.DeleteValue('',$false)}
+      else {$key.SetValue('',[string]$request.before.value.data,[Enum]::Parse([Microsoft.Win32.RegistryValueKind],[string]$request.before.value.kind))}
     } finally {$key.Dispose()} }
     Set-ReviewPhase 'policy-keys'
     for($index=$paths.Count-1;$index -ge 0;$index--) {
@@ -416,6 +486,9 @@ $result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolic
       if(!$empty){throw 'concurrent-policy'}
       $base.DeleteSubKey($paths[$index],$false)
     }
+    [ReviewNative]::SHChangeNotify(0x08000000,0,[IntPtr]::Zero,[IntPtr]::Zero)
+    $null=Association
+    if([ReviewNative]::Association(1,[string]$request.scheme) -cne $request.beforeCommand){throw 'restore-unconfirmed'}
     $after=Read-Policy
     Set-ReviewPhase 'policy-readback'
     if(!(Same-Value $after.value $request.before.value) -or (($after.keys | ConvertTo-Json -Compress) -cne ($request.before.keys | ConvertTo-Json -Compress))) {throw 'restore-unconfirmed'}
@@ -424,12 +497,13 @@ $result=@{executable=$exe;sid=$sid;policy=(Read-Policy);processes=@();debugPolic
 'observe' {
   Require-NoMachineOverride
   $null=Association
+  $command=Launcher $request.executable $request.profile
   $listening=@()
   if($request.port) {
     Set-ReviewPhase 'listener'
 ${windowsReviewListenerReadScript}
   }
-  $result=@{processes=@(Processes);listening=$listening;policyOwned=(Same-Value (Read-Policy).value @{kind='String';data=[string]$request.profile})}
+  $result=@{processes=@(Processes);listening=$listening;policyOwned=((Same-Value (Read-Policy).value @{kind='String';data=$command}) -and [ReviewNative]::Association(1,[string]$request.scheme) -ceq $command)}
 }
   'stop' {
     if(@($request.processes).Count -gt 256){throw 'excessive'}

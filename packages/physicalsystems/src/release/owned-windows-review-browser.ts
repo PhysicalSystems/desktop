@@ -90,11 +90,13 @@ export async function reserveWindowsReviewPort(io: { server?: () => Server; time
   }
 }
 
+/** Legacy wire name; this is the five-key launcher registration snapshot.
+ * The fixture never writes Edge's UserDataDir or debugging policies. */
 export function windowsReviewPolicy(value: unknown): WindowsReviewPolicy {
   const input = record(value)
   if (
     !Array.isArray(input.keys) ||
-    input.keys.length !== 3 ||
+    input.keys.length !== 5 ||
     input.keys.some((key) => typeof key !== "boolean") ||
     input.keys.some((key, index, keys) => key && index > 0 && !keys[index - 1])
   )
@@ -102,7 +104,7 @@ export function windowsReviewPolicy(value: unknown): WindowsReviewPolicy {
   if (input.value === null) return { keys: [...input.keys], value: null }
   const entry = record(input.value)
   if (
-    !input.keys[2] ||
+    !input.keys[4] ||
     !["String", "ExpandString"].includes(String(entry.kind)) ||
     typeof entry.data !== "string" ||
     entry.data.length > 32768
@@ -289,11 +291,16 @@ async function acquireWindowsReviewBrowser(
     typeof raw.executable !== "string" ||
     !/^[A-Za-z]:\\[^\r\n\0]+\\Microsoft\\Edge\\Application\\msedge\.exe$/i.test(raw.executable) ||
     typeof raw.sid !== "string" ||
-    !/^S-1-[0-9-]{1,180}$/.test(raw.sid)
+    !/^S-1-[0-9-]{1,180}$/.test(raw.sid) ||
+    typeof raw.resolvedCommand !== "string" ||
+    !raw.resolvedCommand.length ||
+    raw.resolvedCommand.length > 32768 ||
+    /[\r\n\0]/.test(raw.resolvedCommand)
   )
     throw failure()
   const baseline: WindowsReviewBaseline = {
     executable: raw.executable,
+    resolvedCommand: raw.resolvedCommand,
     sid: raw.sid,
     policy: windowsReviewPolicy(raw.policy),
     processes: windowsReviewProcesses(raw.processes),
@@ -329,7 +336,7 @@ async function acquireWindowsReviewBrowser(
   // Keep unknown descendants too: parent exit must not erase an orphan from
   // subsequent native snapshots or authorize deleting its private profile.
   const observed = new Map<number, WindowsReviewProcess>()
-  let policyAttempted = false
+  let registrationAttempted = false
   let closed = false
   let spawnFailed = false
   let stopped = false
@@ -338,6 +345,7 @@ async function acquireWindowsReviewBrowser(
     const response = await native({
       operation: "observe",
       scheme,
+      executable: baseline.executable,
       profile,
       observedPids: [...observed.keys()],
       ...(port ? { port } : {}),
@@ -421,9 +429,17 @@ async function acquireWindowsReviewBrowser(
       }
       observation.browserPhase = "windows-policy-restore"
       if (
-        policyAttempted &&
+        registrationAttempted &&
         record(
-          await native({ operation: "restore", profile, before: baseline.policy, observedPids: [...observed.keys()] }),
+          await native({
+            operation: "restore",
+            scheme,
+            executable: baseline.executable,
+            beforeCommand: baseline.resolvedCommand,
+            profile,
+            before: baseline.policy,
+            observedPids: [...observed.keys()],
+          }),
         ).restored !== true
       )
         throw cleanupFailure()
@@ -456,9 +472,21 @@ async function acquireWindowsReviewBrowser(
   }
   try {
     if (!observation.readinessPortAllocated) throw failure()
-    policyAttempted = true
+    registrationAttempted = true
     observation.browserPhase = "windows-policy-write"
-    if (record(await native({ operation: "set", profile, before: baseline.policy })).written !== true) throw failure()
+    if (
+      record(
+        await native({
+          operation: "set",
+          scheme,
+          executable: baseline.executable,
+          beforeCommand: baseline.resolvedCommand,
+          profile,
+          before: baseline.policy,
+        }),
+      ).written !== true
+    )
+      throw failure()
     observation.browserPhase = "windows-port-release"
     await releasePort()
     observation.readinessPortReleased = true
