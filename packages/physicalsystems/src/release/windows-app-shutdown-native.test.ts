@@ -309,7 +309,7 @@ $initial=Read-AppShutdownSnapshot ([pscustomobject]@{rootPid=50})
 Mark 'initial-status'
 Require ($initial.status -ceq 'COMPLETE' -and $initial.processes.Count -eq 3)
 Mark 'initial-closure'
-Require ((@($initial.processes | Sort-Object pid | ForEach-Object {$_.pid}) -join ',') -ceq '50,51,52')
+Require ((@($initial.processes | ForEach-Object {[long]$_.pid} | Sort-Object) -join ',') -ceq '50,51,52')
 Mark 'initial-ticks'
 Require (($initial.processes | Where-Object {$_.pid -eq 50}).birth -ceq ([DateTime]::new(2026,9,8,12,0,0)).Ticks.ToString())
 Mark 'initial-missing-metadata'
@@ -317,7 +317,7 @@ Require ($null -eq ($initial.processes | Where-Object {$_.pid -eq 51}).executabl
 Mark 'final-query'
 $final=Read-AppShutdownSnapshot ([pscustomobject]@{rootPid=50;pids=@(52)})
 Mark 'final-closure'
-Require ((@($final.processes | Sort-Object pid | ForEach-Object {$_.pid}) -join ',') -ceq '50,52')
+Require ((@($final.processes | ForEach-Object {[long]$_.pid} | Sort-Object) -join ',') -ceq '50,52')
 $script:mode='failed';$failed=$false
 Mark 'expected-query-failure'
 try {$null=Read-AppShutdownSnapshot ([pscustomobject]@{rootPid=50})}catch{$failed=$true}
