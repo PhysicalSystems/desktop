@@ -10,6 +10,7 @@ import type { PhysicalCommand, PhysicalSnapshot } from "@opencode-ai/app/physica
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { waitForProcessExit, waitForShutdownStep } from "../../../physicalsystems/src/lifecycle"
 import { credentialTrace } from "./credential-trace"
+import { providerAccountTrace } from "./provider-account-trace"
 
 export async function createPhysicalHost(dataDir: string) {
   const spawnWorker = () => utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), "physical-worker.js"), [], {
@@ -57,6 +58,7 @@ export async function createPhysicalHost(dataDir: string) {
       if (value?.event === "credential") {
         void (value.vault === "operator" ? operatorVault : vault).request(value.operation, value.payload).then(
           (result) => {
+            if (value.vault !== "operator") providerAccountTrace(value.operation, value.payload, result)
             if (value.vault !== "operator" && ["set", "remove"].includes(value.operation)) credentialTrace(safeStorage)
             if (worker === child && !exited) worker.postMessage({ event: "credential-result", id: value.id, result })
           },

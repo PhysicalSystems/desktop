@@ -20,13 +20,34 @@ The probe:
    events and confirms both DOM focus and Electron's native window focus.
 3. Captures the actual composer compositor surface, types one fixed inert line
    without submitting, captures again and verifies substantial nonuniform paint
-   changes. A uniform surface, unchanged capture or single blinking caret fails.
+   changes. Each before/after pair uses one fixed region, after a bounded two-frame
+   rendering opportunity. A uniform surface, unchanged capture or single blinking
+   caret fails immediately; captured images are never retried until they pass.
 4. Clears the text using actual Ctrl+A and Backspace keyboard events, changes
    zoom through the existing desktop API, observes real viewport reflow and
    repeats the compositor paint check.
 5. Restores the empty draft, exact original zoom and original focused DOM element,
    and confirms unchanged outer geometry and fullscreen state. Restoration
    uncertainty fails the probe. Mutating protocol calls are never retried.
+
+DOM composer rectangles use CSS pixels; screenshot clips use device-independent
+pixels (DIP). The probe converts coordinates and sizes with the independently
+observed native zoom, including document scroll offsets. This matters after the
+120% zoom operation: passing the original CSS coordinates samples above and left
+of the real composer. The
+[Viewport protocol](https://chromedevtools.github.io/devtools-protocol/tot/Page/#type-Viewport)
+defines DIP and page zoom's CSS-to-DIP ratio. Electron 42.3.3 pins Chromium
+148.0.7778.218, whose
+[PageHandler](https://github.com/chromium/chromium/blob/148.0.7778.218/content/browser/devtools/protocol/page_handler.cc)
+uses the supplied clip offset directly with the device scale factor.
+
+Capture, decode, dimensions, geometry and frame synchronization have separate
+fixed failure codes. Pixel decoding returns only an authored result envelope so
+an exception cannot lose its category through the renderer's error sanitizer.
+The first failed run's generic error discarded that distinction; its historical
+failure phase remains unknown. Unit regressions execute the exact serialized
+comparison with fake browser APIs, including the incorrect zoom clip and stale
+paint cases. Only a subsequent native run can establish the corrected result.
 
 PNG captures remain in memory. An unattached `OffscreenCanvas` decodes the actual
 captures for pixel comparison; it does not draw a replacement widget or overlay.

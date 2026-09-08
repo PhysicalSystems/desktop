@@ -1,0 +1,383 @@
+// SPDX-License-Identifier: Apache-2.0
+import { spawn } from "node:child_process"
+import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } from "node:fs/promises"
+import { join } from "node:path"
+import { requireDisposablePublicRunner } from "./public-qualification"
+
+const failure = () => new Error("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
+const cleanupFailure = () => new Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+/** Read only fixed ownership fields; process command lines never enter evidence. */
+export function reviewBrowserProcess(stat: string) {
+  const match = /^(\d+) \(.*\) ([A-Za-z]) (.*)$/.exec(stat.trim())
+  if (!match) throw failure()
+  const fields = match[3]!.split(" ")
+  const result = {
+    pid: Number(match[1]),
+    state: match[2],
+    group: Number(fields[1]),
+    session: Number(fields[2]),
+    birth: fields[18],
+  }
+  if (
+    !Number.isSafeInteger(result.pid) ||
+    result.pid < 1 ||
+    ![result.group, result.session].every((value) => Number.isSafeInteger(value) && value >= 0) ||
+    !/^\d+$/.test(result.birth ?? "")
+  )
+    throw failure()
+  return result
+}
+
+/** Stable Google Chrome on Linux ignores --user-data-dir for Crashpad.
+ * Keep this path distinct from Electron's profile/Crashpad convention. */
+export function reviewBrowserCrashDatabase(root: string) {
+  return join(root, "config", "google-chrome", "Crash Reports")
+}
+
+export function reviewBrowserUid(status: string, expected: number) {
+  const matches = [...status.matchAll(/^Uid:\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s+([0-9]+)\s*$/gm)]
+  if (
+    !Number.isSafeInteger(expected) ||
+    expected < 1 ||
+    matches.length !== 1 ||
+    matches[0]!.slice(1).some((value) => Number(value) !== expected)
+  )
+    throw failure()
+}
+
+export function reviewBrowserSignalIdentity(
+  before: ReturnType<typeof reviewBrowserProcess>,
+  after: ReturnType<typeof reviewBrowserProcess>,
+  status: string,
+  uid: number,
+) {
+  if (
+    before.pid !== after.pid ||
+    before.birth !== after.birth ||
+    before.session !== after.session ||
+    before.group !== after.group
+  )
+    throw failure()
+  reviewBrowserUid(status, uid)
+}
+
+export function reviewBrowserCrashpad(input: { command: string; executable: string; database: string }) {
+  return (
+    input.executable === "/opt/google/chrome/chrome_crashpad_handler" &&
+    input.command.split("\0").includes(`--database=${input.database}`)
+  )
+}
+
+/** Read-only discovery can briefly be empty/refused while Chrome initializes.
+ * Bound both bytes and total time; callers retry only this probe, never a launch
+ * or openExternal mutation. No response contents/errors are logged. */
+export async function reviewBrowserTargets(
+  origin: string,
+  input: {
+    fetcher?: (url: string, init?: RequestInit) => Promise<Response>
+    timeoutMs?: number
+  } = {},
+): Promise<{ type: string; url: string }[] | undefined> {
+  const timeoutMs = input.timeoutMs ?? 2000
+  if (
+    !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(origin) ||
+    Number(origin.slice(origin.lastIndexOf(":") + 1)) > 65535 ||
+    !Number.isInteger(timeoutMs) ||
+    timeoutMs < 1 ||
+    timeoutMs > 2000
+  )
+    throw failure()
+  const abort = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await (input.fetcher ?? fetch)(`${origin}/json/list`, {
+          redirect: "error",
+          signal: abort.signal,
+        })
+        if (!response.ok || !response.body) return
+        reader = response.body.getReader()
+        if (Number(response.headers.get("content-length") ?? 0) > 256 * 1024) return
+        const chunks: Uint8Array[] = []
+        let bytes = 0
+        while (!abort.signal.aborted) {
+          const part = await reader.read()
+          if (part.done) break
+          bytes += part.value.byteLength
+          if (bytes > 256 * 1024) return
+          chunks.push(part.value)
+        }
+        if (abort.signal.aborted) return
+        const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)))
+        if (!Array.isArray(value) || value.length > 128) return
+        const targets = [] as { type: string; url: string }[]
+        for (const item of value) {
+          if (
+            !item ||
+            typeof item !== "object" ||
+            typeof item.type !== "string" ||
+            typeof item.url !== "string" ||
+            item.type.length > 64 ||
+            item.url.length > 8192
+          )
+            return
+          targets.push({ type: item.type, url: item.url })
+        }
+        return targets
+      })(),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => {
+          abort.abort()
+          resolve(undefined)
+        }, timeoutMs)
+      }),
+    ])
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timer)
+    abort.abort()
+    // Some failed transports do not settle cancellation; never let them extend
+    // the discovery deadline or block ownership cleanup.
+    void reader?.cancel().catch(() => {})
+  }
+}
+
+export function ownedReviewBrowserEnvironment(root: string, base: NodeJS.ProcessEnv) {
+  // Browser/launcher receive no Actions token, provider credential or generic
+  // loader hook. HOME and XDG paths belong only to this disposable phase.
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    ["DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"].flatMap((key) =>
+      base[key] ? [[key, base[key]!]] : [],
+    ),
+  )
+  return {
+    ...env,
+    HOME: root,
+    PATH: "/usr/bin:/bin",
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_DATA_HOME: join(root, "data"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    XDG_CURRENT_DESKTOP: "X-Generic",
+    BROWSER: join(root, "browser"),
+  }
+}
+
+/** Actual headed Chrome, its own Linux session and exclusive profile. The XDG
+ * handler reuses this exact profile when Electron invokes shell.openExternal.
+ * No registry/default-browser mutations or unowned Windows launch is attempted. */
+export async function startOwnedReviewBrowser(input: { env: NodeJS.ProcessEnv; root: string }) {
+  await requireDisposablePublicRunner(input.env, input.root)
+  if (process.platform !== "linux" || !input.env.DISPLAY) throw failure()
+  const root = await realpath(input.root)
+  if ((await readdir(root)).length) throw failure()
+  // GitHub's Linux image provides Google Chrome here. Fail closed if absent;
+  // never discover an executable through a user-controlled PATH.
+  const executable = "/opt/google/chrome/chrome"
+  if (!(await lstat(executable)).isFile() || (await realpath(executable)) !== executable) throw failure()
+  const uid = process.getuid?.()
+  if (!Number.isInteger(uid) || !uid) throw failure()
+  const database = reviewBrowserCrashDatabase(root)
+  const profile = join(root, "profile")
+  const env = ownedReviewBrowserEnvironment(root, input.env)
+  await Promise.all([
+    mkdir(profile, { mode: 0o700 }),
+    mkdir(join(root, "config"), { mode: 0o700 }),
+    mkdir(join(root, "data", "applications"), { recursive: true, mode: 0o700 }),
+    mkdir(join(root, "cache"), { mode: 0o700 }),
+  ])
+  const args = [
+    `--user-data-dir=${profile}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-background-mode",
+  ]
+  const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'"
+  await writeFile(join(root, "browser"), `#!/bin/sh\nexec ${[executable, ...args].map(quote).join(" ")} "$@"\n`, {
+    mode: 0o700,
+    flag: "wx",
+  })
+  // Desktop Entry Exec quoting has its own syntax; root cannot contain control
+  // characters and special characters are escaped, never evaluated by a shell.
+  if (/[\r\n\0]/.test(root)) throw failure()
+  const desktopQuote = (text: string) => '"' + text.replace(/[\\"`$]/g, "\\$&").replaceAll("%", "%%") + '"'
+  await writeFile(
+    join(root, "data", "applications", "physical-review.desktop"),
+    `[Desktop Entry]\nType=Application\nName=Owned provider review\nExec=${desktopQuote(join(root, "browser"))} %u\nTerminal=false\nMimeType=x-scheme-handler/http;x-scheme-handler/https;\n`,
+    { mode: 0o600, flag: "wx" },
+  )
+  await writeFile(
+    join(root, "config", "mimeapps.list"),
+    "[Default Applications]\nx-scheme-handler/http=physical-review.desktop\nx-scheme-handler/https=physical-review.desktop\n",
+    { mode: 0o600, flag: "wx" },
+  )
+  const child = spawn(
+    executable,
+    [...args, "--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "about:blank"],
+    {
+      cwd: root,
+      env,
+      detached: true,
+      shell: false,
+      stdio: "ignore",
+    },
+  )
+  let childError = false
+  child.on("error", () => {
+    childError = true
+  })
+  let origin: string | undefined
+  let birth: string | undefined
+  let stopped = false
+  const inspect = async () => {
+    if (!child.pid) throw failure()
+    const entries = await readdir("/proc")
+    if (entries.length > 65536) throw failure()
+    const members = [] as ReturnType<typeof reviewBrowserProcess>[]
+    for (const entry of entries) {
+      if (!/^[1-9]\d*$/.test(entry)) continue
+      try {
+        const value = reviewBrowserProcess(await readFile(`/proc/${entry}/stat`, "utf8"))
+        if (value.state === "Z") continue
+        const status = await readFile(`/proc/${entry}/status`, "utf8")
+        if (value.session !== child.pid && Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]) !== uid) continue
+        reviewBrowserUid(status, uid)
+        if (value.session !== child.pid) {
+          // Crashpad deliberately creates another session. Its executable and
+          // exact owned database flag bind it independently to this browser.
+          // An unreadable same-user process cannot silently count as absent.
+          const command = await readFile(`/proc/${entry}/cmdline`, "utf8")
+          if (!command.split("\0").includes(`--database=${database}`)) continue
+          if (!reviewBrowserCrashpad({ command, executable: await readlink(`/proc/${entry}/exe`), database }))
+            throw failure()
+        }
+        if (!birth || BigInt(value.birth!) < BigInt(birth)) throw failure()
+        members.push(value)
+      } catch (error) {
+        if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) continue
+        throw failure()
+      }
+    }
+    return members
+  }
+  const stop = async (options: { retainProfile?: boolean } = {}) => {
+    if (stopped) return
+    // Recheck birth immediately before signaling each member; never kill an
+    // ambient browser or a reused PID. The session was created by our spawn.
+    // An acquisition failure before identity verification cannot authorize a
+    // signal or deletion. The caller retains the entire isolated review root.
+    if (!birth) throw cleanupFailure()
+    try {
+      for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+        for (const member of await inspect()) {
+          const now = await readFile(`/proc/${member.pid}/stat`, "utf8").catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT" || error.code === "ESRCH") return undefined
+            throw failure()
+          })
+          if (!now) continue
+          const current = reviewBrowserProcess(now)
+          reviewBrowserSignalIdentity(member, current, await readFile(`/proc/${member.pid}/status`, "utf8"), uid)
+          if (
+            current.session !== child.pid &&
+            !reviewBrowserCrashpad({
+              command: await readFile(`/proc/${member.pid}/cmdline`, "utf8"),
+              executable: await readlink(`/proc/${member.pid}/exe`),
+              database,
+            })
+          )
+            throw failure()
+          try {
+            process.kill(member.pid, signal)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw failure()
+          }
+        }
+        const until = Date.now() + 5000
+        while ((await inspect()).length && Date.now() < until) await pause(50)
+        if (!(await inspect()).length) break
+      }
+      if ((await inspect()).length) throw failure()
+      if (!options.retainProfile) {
+        await rm(root, { recursive: true })
+        if (
+          await lstat(root).then(
+            () => true,
+            (error: NodeJS.ErrnoException) => error.code !== "ENOENT",
+          )
+        )
+          throw failure()
+      }
+      stopped = true
+    } catch {
+      throw cleanupFailure()
+    }
+  }
+  const targets = async () => {
+    if (!origin || stopped || childError || child.exitCode !== null) throw failure()
+    return await reviewBrowserTargets(origin)
+  }
+  try {
+    const until = Date.now() + 15000
+    let ready = false
+    while (Date.now() < until) {
+      if (!child.pid || childError || child.exitCode !== null) throw failure()
+      if (!birth) {
+        const stat = reviewBrowserProcess(await readFile(`/proc/${child.pid}/stat`, "utf8"))
+        if (
+          stat.group !== child.pid ||
+          stat.session !== child.pid ||
+          (await readlink(`/proc/${child.pid}/exe`)) !== executable
+        )
+          throw failure()
+        reviewBrowserUid(await readFile(`/proc/${child.pid}/status`, "utf8"), uid)
+        const command = (await readFile(`/proc/${child.pid}/cmdline`, "utf8")).split("\0")
+        if (!command.includes(`--user-data-dir=${profile}`)) throw failure()
+        birth = stat.birth
+      }
+      const portFile = join(profile, "DevToolsActivePort")
+      const port = await lstat(portFile).then(
+        async (stat) => {
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256) throw failure()
+          return (await readFile(portFile, "utf8")).split("\n")[0]
+        },
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw failure()
+        },
+      )
+      if (port && /^[1-9]\d{0,4}$/.test(port) && Number(port) <= 65535) {
+        origin = `http://127.0.0.1:${port}`
+        if ((await targets())?.some((target) => target.type === "page" && target.url === "about:blank")) {
+          ready = true
+          break
+        }
+      }
+      await pause(100)
+    }
+    if (!ready) throw failure()
+    return {
+      environment: env,
+      async confirmHandoff(url: string) {
+        if (url !== "https://auth.openai.com/codex/device") throw failure()
+        const until = Date.now() + 4000
+        while (Date.now() < until) {
+          if (
+            (await targets())?.some(
+              (target) => target.type === "page" && /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url),
+            )
+          )
+            return true
+          await pause(50)
+        }
+        return false
+      },
+      stop,
+    }
+  } catch {
+    await stop()
+    throw failure()
+  }
+}

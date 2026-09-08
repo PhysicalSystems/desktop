@@ -225,8 +225,34 @@ function remoteRelease(input: unknown, data: QualifiedDistribution, digest: stri
   return release
 }
 function releaseBody(data: QualifiedDistribution, digest: string) {
-  return `${owner}\n\nVersion: ${data.facts.version}\nDesktop source: ${data.facts.sourceRevision}\nQualified distribution SHA-256: ${digest}\n\nWindows x64 and Linux x64 desktop installers. Qualification uses simulation; live hardware behavior and optical/display flicker are not measured.\n`
+  const source = `https://github.com/PhysicalSystems/desktop/blob/${data.facts.sourceRevision}/release`
+  const debian = data.facts.assets.find((asset) => asset.name.endsWith(".deb"))!
+  return `${owner}
+
+Version: ${data.facts.version}
+Desktop source: ${data.facts.sourceRevision}
+Qualified distribution SHA-256: ${digest}
+
+## Install and remove
+
+- **Windows x64:** open the downloaded signed \`.exe\` installer, then launch **Physical Systems** from Start. To uninstall, use Windows Settings → Apps → Installed apps → Physical Systems → Uninstall.
+- **Linux x64 (.deb):** the normal Linux download. From the download directory, run \`sudo apt install ./${debian.name}\`, then launch **Physical Systems** from the application menu or run \`physical-systems-desktop\`. Remove the application with \`sudo apt remove physical-systems-desktop\`.
+- **AppImage — advanced:** launch the original artifact with \`--appimage-extract-and-run\` only after configuring its explicit, artifact-specific Ubuntu AppArmor prerequisite. Downloading the file alone does not configure that prerequisite. Follow the [AppImage setup and removal guide](${source}/appimage-runtime.md#advanced-user-setup).
+
+See the [installation guide for this exact source](${source}/install-desktop.md). Uninstalling the program is separate from deleting personal conversations and credentials.
+
+## Qualified scope
+
+Native checks cover GitHub-hosted Windows 2025 and Ubuntu 24.04 x64; Linux compositor checks run under X11/Xvfb. They exercise actual application input, compositor painting and zoom restoration. Wayland, AppImage double-click/FUSE startup, physical display behavior, GPU hardware and optical flicker are not measured.
+
+The workflow uses synthetic experiments with device access disabled. It does not establish live robot behavior or authorize hardware motion. Upgrade/recovery evidence uses a lower-version public lab from the same reviewed source/storage schema and Windows signing policy; it does not establish historical database migration or power-loss recovery.
+
+## SHA-256
+
+${data.facts.assets.map((asset) => `- \`${asset.name}\`: \`${asset.sha256}\``).join("\n")}
+`
 }
+
 async function verifyRemoteAsset(input: {
   request: Fetcher
   token: string

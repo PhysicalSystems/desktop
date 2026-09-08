@@ -22,6 +22,20 @@ on:
         description: Optional RSA public PEM (3072+ bits) for encrypted bounded startup logs; never provide a private key
         type: string
         required: false
+      provider_qa:
+        description: Optional real account review; selected device grant must be authorized by its reviewer
+        type: choice
+        options: [disabled, openai-device]
+        default: disabled
+        required: false
+      provider_qa_public_key:
+        description: Reviewer RSA public PEM only, for the encrypted expiring device-code challenge
+        type: string
+        required: false
+      provider_qa_key_sha256:
+        description: Independently verified SHA-256 of the reviewer public key in DER SPKI format
+        type: string
+        required: false
 
 # These jobs cannot publish releases, push tags, attest, sign or change a website.
 permissions:
@@ -179,16 +193,16 @@ jobs:
 
       - name: Qualify the actual packaged applications
         id: qualify
+        uses: ./.github/actions/provider-review-runtime
+        with:
+          mode: candidate
         env:
           PS_DIAGNOSTIC_PUBLIC_KEY_PEM: ${{ inputs.diagnostic_public_key }}
           PS_DIAGNOSTIC_DIRECTORY: ${{ runner.temp }}/desktop-release/sealed-diagnostics
-        run: |
-          args=(script/desktop-release.ts qualify --inputs "$RUNNER_TEMP/desktop-release/inputs/release-inputs.json" --artifacts "$RUNNER_TEMP/desktop-release/artifacts" --output "$RUNNER_TEMP/desktop-release/receipts")
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a bun "${args[@]}"
-          else
-            bun "${args[@]}"
-          fi
+          PS_PROVIDER_REVIEW: ${{ inputs.provider_qa }}
+          PS_PROVIDER_REVIEW_PUBLIC_KEY_PEM: ${{ inputs.provider_qa_public_key }}
+          PS_PROVIDER_REVIEW_KEY_SHA256: ${{ inputs.provider_qa_key_sha256 }}
+          PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
 
       - name: Verify bytes and sanitized qualification receipts
         id: verify

@@ -15,6 +15,8 @@ type State = {
   outerHeight: number
   screenX: number
   screenY: number
+  scrollX: number
+  scrollY: number
   rect: { x: number; y: number; width: number; height: number }
 }
 
@@ -37,7 +39,7 @@ export function displayPixelEvidence(
     before.pixels.length !== width * height * 4 ||
     after.pixels.length !== width * height * 4
   )
-    throw new Error("PLATFORM_DISPLAY_PAINT_UNCONFIRMED")
+    throw new Error("PLATFORM_DISPLAY_DIMENSIONS_UNCONFIRMED")
   let changedPixels = 0
   const colors = new Map<number, number>()
   for (let index = 0; index < after.pixels.length; index += 4) {
@@ -67,6 +69,51 @@ export function displayPixelEvidence(
   return { width, height, changedPixels, contrastingPixels }
 }
 
+/** Page.captureScreenshot accepts DIP, while DOM rectangles are CSS pixels.
+ * Convert with the native zoom that the caller has independently observed. */
+export function platformDisplayClip(value: State, zoom: number) {
+  if (
+    !Number.isFinite(zoom) ||
+    zoom < 0.5 ||
+    zoom > 3 ||
+    [value.scrollX, value.scrollY, ...Object.values(value.rect)].some((value) => !Number.isFinite(value))
+  )
+    throw new Error("PLATFORM_DISPLAY_GEOMETRY_UNCONFIRMED")
+  return {
+    x: Math.ceil((value.rect.x + value.scrollX + 4) * zoom),
+    y: Math.ceil((value.rect.y + value.scrollY + 4) * zoom),
+    width: Math.floor(Math.min(540, (value.rect.width - 8) * zoom)),
+    height: Math.floor(Math.min(64, (value.rect.height - 8) * zoom)),
+    scale: 1,
+  }
+}
+
+/** The same expression is executed by the owned renderer and by inert VM tests.
+ * Fixed result codes survive the CDP exception sanitizer; pixels stay in memory. */
+export function displayPixelsExpression(before: string, after: string) {
+  return `(async () => {
+    const decode = async (encoded) => {
+      const bytes = Uint8Array.from(atob(encoded), value => value.charCodeAt(0));
+      const image = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      try {
+        if (image.width > 1024 || image.height > 256) throw new Error('PLATFORM_DISPLAY_DIMENSIONS_UNCONFIRMED');
+        const canvas = new OffscreenCanvas(image.width, image.height);
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        if (!context) throw new Error('PLATFORM_DISPLAY_DECODE_UNCONFIRMED');
+        context.drawImage(image, 0, 0);
+        return { width: image.width, height: image.height, pixels: context.getImageData(0, 0, image.width, image.height).data };
+      } finally { image.close() }
+    };
+    try {
+      return { observation: (${displayPixelEvidence.toString()})(await decode(${JSON.stringify(before)}), await decode(${JSON.stringify(after)})) };
+    } catch (error) {
+      const code = error?.message;
+      return { error: ['PLATFORM_DISPLAY_PAINT_UNCONFIRMED', 'PLATFORM_DISPLAY_DIMENSIONS_UNCONFIRMED'].includes(code)
+        ? code : 'PLATFORM_DISPLAY_DECODE_UNCONFIRMED' };
+    }
+  })()`
+}
+
 /** Genuine app composer only. No overlay, fake widget, camera or model request. */
 export function platformDisplayState() {
   const elements = document.querySelectorAll<HTMLElement>("[data-component=prompt-input][contenteditable=true]")
@@ -90,6 +137,8 @@ export function platformDisplayState() {
     outerHeight,
     screenX,
     screenY,
+    scrollX,
+    scrollY,
     rect: { x: rect?.x ?? -1, y: rect?.y ?? -1, width: rect?.width ?? 0, height: rect?.height ?? 0 },
   }
 }
@@ -148,10 +197,24 @@ export async function qualifyPlatformDisplay(
       clearTimeout(timer)
     }
   }
-  const call = <T>(method: string, params: Record<string, unknown> = {}, expires = deadline) =>
-    run<T>(input.call(method, params), expires)
+  const authored = (error: unknown, fallback: string) =>
+    error instanceof Error && /^PLATFORM_DISPLAY_[A-Z_]+$/.test(error.message) ? error : new Error(fallback)
+  const call = async <T>(method: string, params: Record<string, unknown> = {}, expires = deadline) => {
+    try {
+      return await run<T>(input.call(method, params), expires)
+    } catch (error) {
+      const code = method === "Page.captureScreenshot" ? "CAPTURE" : method.startsWith("Input.") ? "INPUT" : "FOCUS"
+      throw authored(error, `PLATFORM_DISPLAY_${code}_UNCONFIRMED`)
+    }
+  }
   const evaluate = <T>(expression: string, expires = deadline) => run<T>(input.evaluate(expression), expires)
-  const state = () => evaluate<State>(`(${platformDisplayState.toString()})()`)
+  const state = async () => {
+    try {
+      return await evaluate<State>(`(${platformDisplayState.toString()})()`)
+    } catch (error) {
+      throw authored(error, "PLATFORM_DISPLAY_COMPOSER_UNAVAILABLE")
+    }
+  }
   const ready = (value: State) =>
     value.visible &&
     value.editable &&
@@ -170,14 +233,26 @@ export async function qualifyPlatformDisplay(
     }
     throw new Error(code)
   }
-  const screenshot = async (value: State) => {
-    const clip = {
-      x: Math.ceil(value.rect.x + 4),
-      y: Math.ceil(value.rect.y + 4),
-      width: Math.floor(Math.min(540, value.rect.width - 8)),
-      height: Math.floor(Math.min(64, value.rect.height - 8)),
-      scale: 1,
+  const screenshot = async (value: State, zoom: number, clip = platformDisplayClip(value, zoom)) => {
+    // DOM input admission precedes painting. Synchronize once; do not retry a
+    // captured blank frame until it passes. The existing deadline bounds rAF.
+    try {
+      if (
+        (await evaluate(
+          "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))",
+        )) !== true
+      )
+        throw new Error("PLATFORM_DISPLAY_FRAME_UNCONFIRMED")
+    } catch (error) {
+      throw authored(error, "PLATFORM_DISPLAY_FRAME_UNCONFIRMED")
     }
+    const current = await state()
+    if (
+      !ready(current) ||
+      current.text !== value.text ||
+      JSON.stringify(platformDisplayClip(current, zoom)) !== JSON.stringify(clip)
+    )
+      throw new Error("PLATFORM_DISPLAY_GEOMETRY_UNCONFIRMED")
     const image = await call<{ data: string }>("Page.captureScreenshot", {
       format: "png",
       fromSurface: true,
@@ -185,35 +260,42 @@ export async function qualifyPlatformDisplay(
       clip,
     })
     if (
-      typeof image.data !== "string" ||
+      typeof image?.data !== "string" ||
       image.data.length > 2 * 1024 * 1024 ||
       !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)
     )
-      throw new Error("PLATFORM_DISPLAY_PAINT_UNCONFIRMED")
+      throw new Error("PLATFORM_DISPLAY_CAPTURE_UNCONFIRMED")
     return image.data
   }
   const pixels = async (before: string, after: string) => {
-    const observation = await evaluate<{
-      width: number
-      height: number
-      changedPixels: number
-      contrastingPixels: number
-    }>(`(async () => {
-      const decode = async (encoded) => {
-        const bytes = Uint8Array.from(atob(encoded), value => value.charCodeAt(0));
-        const image = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
-        try {
-          if (image.width > 1024 || image.height > 256) throw new Error('PLATFORM_DISPLAY_PAINT_UNCONFIRMED');
-          const canvas = new OffscreenCanvas(image.width, image.height);
-          const context = canvas.getContext('2d', { willReadFrequently: true });
-          if (!context) throw new Error('PLATFORM_DISPLAY_PAINT_UNCONFIRMED');
-          context.drawImage(image, 0, 0);
-          return { width: image.width, height: image.height, pixels: context.getImageData(0, 0, image.width, image.height).data };
-        } finally { image.close() }
-      };
-      return (${displayPixelEvidence.toString()})(await decode(${JSON.stringify(before)}), await decode(${JSON.stringify(after)}));
-    })()`)
-    if (!observation || observation.changedPixels < 120 || observation.contrastingPixels < 120)
+    let result: { error?: string; observation?: ReturnType<typeof displayPixelEvidence> }
+    try {
+      result = await evaluate(displayPixelsExpression(before, after))
+    } catch (error) {
+      throw authored(error, "PLATFORM_DISPLAY_DECODE_UNCONFIRMED")
+    }
+    if (
+      result?.error &&
+      [
+        "PLATFORM_DISPLAY_PAINT_UNCONFIRMED",
+        "PLATFORM_DISPLAY_DIMENSIONS_UNCONFIRMED",
+        "PLATFORM_DISPLAY_DECODE_UNCONFIRMED",
+      ].includes(result.error)
+    )
+      throw new Error(result.error)
+    const observation = result?.observation
+    if (
+      !observation ||
+      !Object.values(observation).every(Number.isInteger) ||
+      observation.width < 120 ||
+      observation.width > 1024 ||
+      observation.height < 16 ||
+      observation.height > 256 ||
+      observation.changedPixels < 120 ||
+      observation.contrastingPixels < 120 ||
+      observation.changedPixels > observation.width * observation.height ||
+      observation.contrastingPixels > observation.width * observation.height
+    )
       throw new Error("PLATFORM_DISPLAY_PAINT_UNCONFIRMED")
     return observation
   }
@@ -269,7 +351,8 @@ export async function qualifyPlatformDisplay(
       "PLATFORM_DISPLAY_FOCUS_UNCONFIRMED",
     )
     if (!(await nativeState()).focused) throw new Error("PLATFORM_DISPLAY_FOCUS_UNCONFIRMED")
-    const empty = await screenshot(focused)
+    const clip = platformDisplayClip(focused, native.zoom)
+    const empty = await screenshot(focused, native.zoom, clip)
     entered = true
     await call("Input.insertText", { text: marker })
     const typed = await until(
@@ -277,14 +360,18 @@ export async function qualifyPlatformDisplay(
       (value) => ready(value) && value.text === marker,
       "PLATFORM_DISPLAY_INPUT_UNCONFIRMED",
     )
-    paint = await pixels(empty, await screenshot(typed))
+    paint = await pixels(empty, await screenshot(typed, native.zoom, clip))
     // Native keyboard editing must reach the genuine composer handler.
     await clear()
     await until(state, (value) => value.text === "", "PLATFORM_DISPLAY_INPUT_UNCONFIRMED")
     entered = false
     zoomed = true
     const nextZoom = native.zoom <= 2.5 ? native.zoom + 0.2 : native.zoom - 0.2
-    await evaluate(`window.api.setZoomFactor(${nextZoom})`)
+    try {
+      await evaluate(`window.api.setZoomFactor(${nextZoom})`)
+    } catch (error) {
+      throw authored(error, "PLATFORM_DISPLAY_WINDOW_UNCONFIRMED")
+    }
     await until(
       nativeState,
       (value) => Math.abs(value.zoom - nextZoom) < 0.000001 && value.fullscreen === native.fullscreen,
@@ -295,7 +382,8 @@ export async function qualifyPlatformDisplay(
       (value) => ready(value) && value.width !== initial.width && value.height !== initial.height && value.text === "",
       "PLATFORM_DISPLAY_WINDOW_UNCONFIRMED",
     )
-    const zoomedEmpty = await screenshot(reflowed)
+    const zoomedClip = platformDisplayClip(reflowed, nextZoom)
+    const zoomedEmpty = await screenshot(reflowed, nextZoom, zoomedClip)
     entered = true
     await call("Input.insertText", { text: marker })
     const repainted = await until(
@@ -303,7 +391,7 @@ export async function qualifyPlatformDisplay(
       (value) => ready(value) && value.text === marker,
       "PLATFORM_DISPLAY_INPUT_UNCONFIRMED",
     )
-    await pixels(zoomedEmpty, await screenshot(repainted))
+    await pixels(zoomedEmpty, await screenshot(repainted, nextZoom, zoomedClip))
   } catch (error) {
     failed =
       error instanceof Error && /^PLATFORM_DISPLAY_[A-Z_]+$/.test(error.message)

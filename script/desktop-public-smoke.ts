@@ -6,6 +6,7 @@ import { verifyInventory } from "../packages/physicalsystems/src/release/artifac
 import { verifyReleaseInputs } from "../packages/physicalsystems/src/release/inputs"
 import type { ReleaseHistory } from "../packages/physicalsystems/src/release/inputs"
 import { validatePublicBuildInputs } from "../packages/physicalsystems/src/release/public-build"
+import { loadPublicUpgradeInputs } from "../packages/physicalsystems/src/release/public-upgrade-inputs"
 import { publicSmokeCanContinue } from "../packages/physicalsystems/src/release/public-producer"
 import {
   publicNativeJobReceipt,
@@ -45,6 +46,9 @@ try {
     build.version !== inputs.version
   )
     throw new Error("Public smoke input binding failed")
+  const upgrade = await loadPublicUpgradeInputs({ root, env: process.env })
+  const baselineArtifacts = required("PUBLIC_BASELINE_BUILD_DIRECTORY")
+  const baselineInventory = await verifyInventory(baselineArtifacts, upgrade.baseline)
   const artifacts = required("PUBLIC_BUILD_DIRECTORY")
   const inventory = await verifyInventory(artifacts, inputs)
   const platform = process.platform === "win32" ? "windows-x64" : "linux-x64"
@@ -55,6 +59,8 @@ try {
   await mkdir(evidence, { mode: 0o700 })
   const receipts: PublicNativeJobReceipt["artifacts"] = []
   for (const artifact of inventory.files) {
+    const baseline = baselineInventory.files.find((file) => file.format === artifact.format)
+    if (!baseline) throw new Error("Missing exact-format public lab baseline")
     const reportFile = join(evidence, `${artifact.sha256}.smoke.json`)
     await run(
       process.execPath,
@@ -74,10 +80,24 @@ try {
         publicDigest,
         "--expected-inputs-sha256",
         inputs.sha256,
+        "--upgrade-plan",
+        required("PUBLIC_UPGRADE_PLAN"),
+        "--expected-upgrade-plan-sha256",
+        required("EXPECTED_UPGRADE_PLAN_SHA256"),
+        "--baseline-artifact",
+        join(baselineArtifacts, baseline.name),
+        "--expected-baseline-artifact-sha256",
+        baseline.sha256,
+        "--baseline-public-inputs",
+        required("PUBLIC_BASELINE_BUILD_INPUTS"),
+        "--expected-baseline-public-build-sha256",
+        required("EXPECTED_BASELINE_PUBLIC_BUILD_SHA256"),
+        "--expected-baseline-inputs-sha256",
+        upgrade.baseline.sha256,
       ],
       root,
       process.env,
-      600_000,
+      process.env.PS_PROVIDER_REVIEW === "openai-device" ? 1_200_000 : 600_000,
     ).catch(() => {
       // A public smoke returns nonzero even when its implemented checks pass.
       // Only its exact receipt may authorize continuing to another format.

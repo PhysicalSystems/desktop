@@ -4,13 +4,13 @@ import { dirname, isAbsolute, join, resolve } from "node:path"
 import { emptyOutput } from "../packages/physicalsystems/src/release/commands"
 import { verifyReleaseInputs } from "../packages/physicalsystems/src/release/inputs"
 import type { ReleaseHistory } from "../packages/physicalsystems/src/release/inputs"
-import { validatePublicBuildInputs } from "../packages/physicalsystems/src/release/public-build"
 import {
   buildPublicDesktop,
   PublicBuildProvisioningError,
 } from "../packages/physicalsystems/src/release/public-build-command"
 import { publicReviewDigest } from "../packages/physicalsystems/src/release/public-downloads"
 import { collectPublicProducer } from "../packages/physicalsystems/src/release/public-collection-command"
+import { loadPublicUpgradeInputs } from "../packages/physicalsystems/src/release/public-upgrade-inputs"
 import { PublicCollectorError } from "../packages/physicalsystems/src/release/public-collector"
 import {
   freezePublicProducerPolicy,
@@ -38,8 +38,13 @@ const output = async (key: string, value: string) => {
 
 try {
   const command = process.argv[2]
-  if (process.argv.length !== 3 || !["preflight", "prepare", "build-windows", "collect"].includes(command ?? ""))
-    throw new PublicProducerError("Use desktop-public-producer.ts preflight|prepare|build-windows|collect")
+  if (
+    process.argv.length !== 3 ||
+    !["preflight", "prepare", "verify-upgrade", "build-windows", "collect"].includes(command ?? "")
+  )
+    throw new PublicProducerError(
+      "Use desktop-public-producer.ts preflight|prepare|verify-upgrade|build-windows|collect",
+    )
   if (command === "preflight") {
     const policy = freezePublicProducerPolicy(process.env)
     const directory = await emptyOutput(required("PUBLIC_POLICY_DIRECTORY"), root)
@@ -72,31 +77,48 @@ try {
         process.env.GITHUB_STEP_SUMMARY,
         `Public build inputs frozen for ${release.version} at ${release.source.revision}.\n\nRelease input SHA-256: \`${release.sha256}\`.\n\nPublic build SHA-256: \`${prepared.sha256}\`.\n\nInstallers and smoke results remain unqualified; this workflow cannot publish.\n`,
       )
+  } else if (command === "verify-upgrade") {
+    await loadPublicUpgradeInputs({ root, env: process.env })
+    console.log("Independent target and lab baseline bindings verified before package builds")
   } else if (command === "build-windows") {
     if (process.platform !== "win32")
       throw new PublicProducerError("The signing build step requires its native Windows runner")
-    const file = required("PUBLIC_BUILD_INPUTS")
-    const expected = required("EXPECTED_PUBLIC_BUILD_SHA256")
-    const inputs = validatePublicBuildInputs(await read(file), expected)
-    await withPublicWindowsSigning(inputs.windowsSigning, process.env, (env) =>
-      buildPublicDesktop(
+    const upgrade = await loadPublicUpgradeInputs({ root, env: process.env })
+    await withPublicWindowsSigning(upgrade.targetPublic.windowsSigning, process.env, async (env) => {
+      for (const [releaseFile, publicFile, releaseSha, publicSha, output] of [
         [
-          "--inputs",
           required("PUBLIC_RELEASE_INPUTS"),
-          "--public-inputs",
-          file,
-          "--expected-inputs-sha256",
-          required("EXPECTED_RELEASE_INPUTS_SHA256"),
-          "--expected-public-build-sha256",
-          expected,
-          "--platform",
-          "windows-x64",
-          "--output",
+          required("PUBLIC_BUILD_INPUTS"),
+          upgrade.target.sha256,
+          upgrade.plan.target.publicBuildInputsSha256,
           required("PUBLIC_BUILD_DIRECTORY"),
         ],
-        { env },
-      ),
-    )
+        [
+          required("PUBLIC_BASELINE_RELEASE_INPUTS"),
+          required("PUBLIC_BASELINE_BUILD_INPUTS"),
+          upgrade.baseline.sha256,
+          upgrade.plan.baseline.publicBuildInputsSha256,
+          required("PUBLIC_BASELINE_BUILD_DIRECTORY"),
+        ],
+      ])
+        await buildPublicDesktop(
+          [
+            "--inputs",
+            releaseFile,
+            "--public-inputs",
+            publicFile,
+            "--expected-inputs-sha256",
+            releaseSha,
+            "--expected-public-build-sha256",
+            publicSha,
+            "--platform",
+            "windows-x64",
+            "--output",
+            output,
+          ],
+          { env },
+        )
+    })
   } else {
     const download = required("PUBLIC_DOWNLOADED_DIRECTORY")
     const result = await collectPublicProducer({

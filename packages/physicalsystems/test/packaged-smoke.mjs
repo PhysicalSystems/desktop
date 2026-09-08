@@ -1,12 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Tests the executable extracted from the named installer, never a separate build.
 // Profiles, raw logs and private attachment files stay outside repository/artifacts.
-import { mkdtemp, mkdir, readFile, readdir, writeFile, lstat, realpath, unlink, readlink } from "node:fs/promises"
-import { createWriteStream } from "node:fs"
+import {
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  writeFile,
+  lstat,
+  realpath,
+  unlink,
+  readlink,
+} from "node:fs/promises"
+import { constants, createWriteStream } from "node:fs"
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
+import { Transform } from "node:stream"
 import { qualificationPrompt, startFixtureProvider } from "./fixture-provider.mjs"
 import { composerReadiness, composerSelection } from "../src/release/composer-readiness.ts"
 import { probePackagedRenderer } from "../src/release/cdp-discovery.ts"
@@ -30,9 +42,16 @@ import {
 import { startLinuxSecretService } from "../src/release/linux-secret-service.ts"
 import { qualifyPlatformDisplay } from "../src/release/platform-display.ts"
 import { prepareAppImageRuntime, bindAppImageElectron } from "../src/release/appimage-runtime.ts"
-import { qualifyAppImageReinstall } from "../src/release/appimage-reinstall.ts"
+import { qualifyInstalledUpgrade, requireDebianUpgradeStatus } from "../src/release/installed-upgrade.ts"
+import { runNativeUpgradeInstaller } from "../src/release/native-upgrade-process.ts"
 import {
-  packagedQualificationArguments,
+  upgradeQualificationArguments,
+  loadPublicUpgradeQualification,
+} from "../src/release/public-upgrade-qualification.ts"
+import { prepareAppImageReplacement } from "../src/release/appimage-replacement.ts"
+import { qualifyAppImageReinstall } from "../src/release/appimage-reinstall.ts"
+import { runOwnedProviderBrowserReview } from "../src/release/owned-provider-review.ts"
+import {
   loadPublicQualification,
   requireDisposablePublicRunner,
   verifyPublicAuthenticode,
@@ -61,8 +80,9 @@ import {
   verifyLinuxRendererSandbox,
 } from "../src/release/linux-qualification.ts"
 
-const options = packagedQualificationArguments(process.argv.slice(2))
+const { options, upgrade: upgradeOptions } = upgradeQualificationArguments(process.argv.slice(2))
 const publicMode = await loadPublicQualification(options)
+const publicUpgrade = await loadPublicUpgradeQualification(upgradeOptions, publicMode)
 const identity = desktopIdentity(publicMode ? "public" : "candidate")
 for (const key of ["artifact", "evidence", "report"])
   if (!isAbsolute(options[key])) throw new Error("QUALIFICATION_ABSOLUTE_PATH_REQUIRED")
@@ -80,6 +100,7 @@ const check = (id, status, detail, failureCode) => {
   if (index >= 0) checks[index] = value
   else checks.push(value)
 }
+const mainCheck = check
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex")
 const artifactSha256 = await sha256File(options.artifact)
@@ -96,7 +117,8 @@ let nsisUninstallerSha256
 let nsisUninstallCopies = 0
 let reinstallBefore
 let reinstallAfter
-let preservedPinchZoom
+let mainPreservedPinchZoom
+const upgradeInstallationState = { unconfirmed: false }
 const reinstallInstallationState = { unconfirmed: false }
 let linuxInstallation
 let linuxSandboxProfile
@@ -104,6 +126,7 @@ let linuxTemporary
 let appImageRuntime
 let appImageRuntimeCleanup = false
 const appImageReplacementState = { unconfirmed: false }
+let providerReviewCleanupUnconfirmed = false
 let secretService
 const credentialProbe = createNativeV2CredentialProbe({ providerID: "openai" })
 const credentialState = {
@@ -522,6 +545,8 @@ try {
         })
         check("native-reinstall-probe", "PASS", JSON.stringify(result))
       }
+      if (publicUpgrade) await qualifyPublicUpgrade(entrypoint, extension)
+      await qualifyProviderBrowser(entrypoint)
     }
   }
 } catch (error) {
@@ -538,7 +563,9 @@ try {
   const safeToRemove =
     !systemMutationUnconfirmed &&
     !reinstallInstallationState.unconfirmed &&
+    !upgradeInstallationState.unconfirmed &&
     !appImageReplacementState.unconfirmed &&
+    !providerReviewCleanupUnconfirmed &&
     (!applicationStarted ||
       (checks.find((item) => item.id === "cleanup")?.status === "PASS" && (!appImageRuntime || appImageRuntimeCleanup)))
   if (secretService) {
@@ -718,9 +745,85 @@ try {
   if (failed || publicMode) process.exitCode = 1
 }
 
-async function launch(executable, credentialPhase) {
+async function qualifyProviderBrowser(entrypoint) {
+  if (!process.env.PS_PROVIDER_REVIEW || process.env.PS_PROVIDER_REVIEW === "disabled") return
+  stage = "native-provider-browser-probe"
+  const reviewRoot = join(root, "provider-review")
+  await mkdir(reviewRoot, { mode: 0o700 })
+  const lab = {
+    profile: join(reviewRoot, "application"),
+    probe: createNativeV2CredentialProbe({ providerID: "openai" }),
+    state: { pids: [] },
+    checks: [],
+    payload,
+  }
+  try {
+    const result = await runOwnedProviderBrowserReview({
+      env: process.env,
+      root: reviewRoot,
+      artifact: options.artifact,
+      context: {
+        runId: process.env.GITHUB_RUN_ID,
+        runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+        sourceRevision: embeddedInputs?.source?.revision,
+        artifactSha256,
+        releaseInputsSha256: embeddedInputs?.sha256,
+        platform: process.platform === "win32" ? "windows-x64" : "linux-x64",
+      },
+      runtimeEnvironment: {
+        ...qualificationEnvironment(process.env, lab.profile),
+        ...linuxTemporary?.environment,
+        ...secretService?.environment,
+      },
+      async withSession(environment, review) {
+        await mkdir(lab.profile, { mode: 0o700 })
+        let observed
+        try {
+          await launch(entrypoint, "provider-review", lab, {
+            environment,
+            async review(session) {
+              observed = await review(session)
+            },
+          })
+        } finally {
+          const cleanup = lab.checks.find((item) => item.id === "cleanup")
+          if (cleanup) check("cleanup", cleanup.status, cleanup.detail, cleanup.failureCode)
+          if (failed || cleanup?.status !== "PASS" || (appImageRuntime && !appImageRuntimeCleanup)) {
+            providerReviewCleanupUnconfirmed = true
+            throw new Error("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+          }
+        }
+        return observed
+      },
+    })
+    stage = "native-provider-browser-probe"
+    if (result.status === "OBSERVED") check(stage, "PASS", JSON.stringify(result))
+    else check(stage, result.status, result.reason)
+  } catch (error) {
+    stage = "native-provider-browser-probe"
+    if (error?.message === "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED") providerReviewCleanupUnconfirmed = true
+    throw error
+  }
+}
+
+async function launch(executable, credentialPhase, lab, providerReview) {
   stage = "launch"
-  const profile = join(root, "profile")
+  const fresh = credentialPhase === "save" || credentialPhase === "provider-review"
+  if ((credentialPhase === "provider-review") !== Boolean(providerReview))
+    throw new Error("PROVIDER_REVIEW_UNCONFIRMED")
+  const profile = lab?.profile || join(root, "profile")
+  const probe = lab?.probe || credentialProbe
+  const state = lab?.state || credentialState
+  const activePayload = lab?.payload || payload
+  let preservedPinchZoom = lab ? lab.pinchZoom : mainPreservedPinchZoom
+  const check = lab
+    ? (id, status, detail, failureCode) => {
+        const index = lab.checks.findIndex((item) => item.id === id)
+        const value = { id, status, detail, ...(failureCode ? { failureCode } : {}) }
+        if (index < 0) lab.checks.push(value)
+        else lab.checks[index] = value
+      }
+    : mainCheck
   if (appImageRuntime) {
     if (executable !== appImageRuntime.artifact) throw new Error("APPIMAGE_RUNTIME_PATH_INVALID")
     appImageRuntimeCleanup = false
@@ -728,7 +831,7 @@ async function launch(executable, credentialPhase) {
   }
   for (const folder of ["config/opencode", "tmp", "empty-path", "appdata", "localappdata"])
     await mkdir(join(profile, folder), { recursive: true, mode: 0o700 })
-  if (credentialPhase !== "save") {
+  if (!fresh) {
     // Prior shutdown is already confirmed. An old port file must not bind this
     // new process's CDP discovery to the previous instance's closed endpoint.
     for (const folder of ["session", "desktop"]) {
@@ -741,21 +844,23 @@ async function launch(executable, credentialPhase) {
       await unlink(file)
     }
   }
-  const provider = await startFixtureProvider({ credentialProbe })
+  const provider = await startFixtureProvider({ credentialProbe: probe })
   await writeFile(
     join(profile, "config", "opencode", "opencode.json"),
     JSON.stringify({
       model: "fixture/fixture",
       small_model: "fixture/fixture",
-      enabled_providers: ["fixture", credentialProbe.providerID],
+      enabled_providers: ["fixture", probe.providerID],
       provider: {
-        [credentialProbe.providerID]: {
-          name: "Inert native credential probe",
-          npm: "@ai-sdk/openai-compatible",
-          api: provider.credentialURL,
-          options: { baseURL: provider.credentialURL },
-          models: { fixture: { name: "Credential transport fixture", limit: { context: 32000, output: 4096 } } },
-        },
+        ...(!providerReview && {
+          [probe.providerID]: {
+            name: "Inert native credential probe",
+            npm: "@ai-sdk/openai-compatible",
+            api: provider.credentialURL,
+            options: { baseURL: provider.credentialURL },
+            models: { fixture: { name: "Credential transport fixture", limit: { context: 32000, output: 4096 } } },
+          },
+        }),
         fixture: {
           name: "Local inert qualification fixture",
           npm: "@ai-sdk/openai-compatible",
@@ -781,6 +886,7 @@ async function launch(executable, credentialPhase) {
       ...qualificationEnvironment(process.env, profile),
       ...linuxTemporary?.environment,
       ...secretService?.environment,
+      ...providerReview?.environment,
     },
     stdio: ["ignore", "pipe", "pipe"],
   })
@@ -788,8 +894,16 @@ async function launch(executable, credentialPhase) {
   let electronPid = appImageRuntime ? undefined : child.pid
   const log = createWriteStream(join(root, "application.log"), { mode: 0o600, flags: "a" })
   const privateLog = observePrivateLog(log)
-  const stdoutFilter = credentialProbe.logFilter()
-  const stderrFilter = credentialProbe.logFilter()
+  // Real OAuth output never enters diagnostic files. Fixed startup/account
+  // observers read directly from the owned child and retain authored fields only.
+  const privateOutput = () =>
+    new Transform({
+      transform(_chunk, _encoding, callback) {
+        callback()
+      },
+    })
+  const stdoutFilter = providerReview ? privateOutput() : probe.logFilter()
+  const stderrFilter = providerReview ? privateOutput() : probe.logFilter()
   child.stdout.pipe(stdoutFilter).pipe(log, { end: false })
   child.stderr.pipe(stderrFilter).pipe(log, { end: false })
   const backend = observeCredentialBackend(child)
@@ -986,13 +1100,12 @@ async function launch(executable, credentialPhase) {
         runtimePid: child.pid,
         uid: process.getuid(),
         plan: appImageRuntime,
-        payloadSha256: payload.sha256,
+        payloadSha256: activePayload.sha256,
         processes,
       })
     }
-    if (!electronPid || credentialState.pids.includes(electronPid))
-      throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
-    credentialState.pids.push(electronPid)
+    if (!electronPid || state.pids.includes(electronPid)) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+    state.pids.push(electronPid)
     if (process.platform === "linux") {
       verifyLinuxRendererSandbox(
         await Promise.all(
@@ -1011,75 +1124,77 @@ async function launch(executable, credentialPhase) {
     check(
       stage,
       "PASS",
-      "Installed/extracted Electron payload loaded the actual renderer with no Node or Bun on its PATH.",
+      providerReview
+        ? "The separate provider review loaded the actual renderer with its owned OS browser handler. Empty-PATH operation was qualified earlier."
+        : "Installed/extracted Electron payload loaded the actual renderer with no Node or Bun on its PATH.",
     )
     stage = "device-isolation"
     const safety = await evaluate(
       "window.api.physicalSystems.snapshot().then(s => ({ enabled: s.deviceConnectionsEnabled, projects: s.projects.length, captures: s.activeCaptures.length, runs: s.activeRuns.length }))",
     )
-    if (
-      safety.enabled !== false ||
-      safety.projects !== (credentialPhase === "save" ? 0 : 1) ||
-      safety.captures !== 0 ||
-      safety.runs !== 0
-    )
+    if (safety.enabled !== false || safety.projects !== (fresh ? 0 : 1) || safety.captures !== 0 || safety.runs !== 0)
       throw new Error("PACKAGED_PROFILE_NOT_ISOLATED")
     check(
       stage,
       "PASS",
       "Owned private profile reports device connections disabled and no owned hardware operations; only the expected synthetic project may persist.",
     )
-    if (credentialPhase !== "save") {
+    if (!fresh) {
       stage = "native-v2-credential-probe"
       await until(
         () => evaluate("window.api.physicalSystems.snapshot().then(s => Boolean(s.conversation?.sessionId))"),
         "CREDENTIAL_PROBE_RESTART_UNCONFIRMED",
       )
       await attach()
-      if (attached.sessionId !== credentialState.sessionId) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      if (attached.sessionId !== state.sessionId) throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
+      if (credentialPhase === "upgrade-read") {
+        if (!lab) throw new Error("PUBLIC_UPGRADE_BASELINE_UNCONFIRMED")
+        stage = "native-upgrade-probe"
+        lab.after = {
+          state: await preservedState(),
+          vaultSha256: (await probe.inspectFiles(profile, { databaseName: agentDatabaseName })).vaultSha256,
+        }
+        return
+      }
       if (credentialPhase === "reinstall") {
         stage = "native-reinstall-probe"
         reinstallAfter = await preservedState()
         return
       }
-      const stored = await credentialProbe.inspectFiles(profile, { databaseName: agentDatabaseName })
-      const expected = credentialPhase === "retrieve-remove" ? credentialState.saved : credentialState.removed
+      const stored = await probe.inspectFiles(profile, { databaseName: agentDatabaseName })
+      const expected = credentialPhase === "retrieve-remove" ? state.saved : state.removed
       if (stored.vaultSha256 !== expected.vaultSha256) throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
       await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
       if (credentialPhase === "retrieve-remove") {
-        const prompt = credentialProbe.beginObservation("present")
+        const prompt = probe.beginObservation("present")
         await v2Request(`/api/session/${attached.sessionId}/model`, {
           method: "POST",
-          body: { model: { providerID: credentialProbe.providerID, id: "fixture" } },
+          body: { model: { providerID: probe.providerID, id: "fixture" } },
         })
         await v2Request(`/api/session/${attached.sessionId}/prompt`, {
           method: "POST",
           body: { prompt: { text: prompt } },
         })
-        await until(() => credentialProbe.observationReady(), "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED", 30000)
+        await until(() => probe.observationReady(), "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED", 30000)
         await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED", 30000)
-        credentialProbe.finishObservation()
+        probe.finishObservation()
       } else {
         const requestsBefore = provider.calls.length
-        credentialState.absence = await credentialProbe.assertRemoved(v2Request)
+        state.absence = await probe.assertRemoved(v2Request)
         if (!(await v2Idle()) || provider.calls.length !== requestsBefore)
           throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
       }
       const experiment = await evaluate("window.api.physicalSystems.snapshot().then(s => s.experiments?.current)")
-      if (
-        experiment?.id !== credentialState.experimentId ||
-        experiment?.trials.length !== 3 ||
-        experiment.phase !== "COMPLETED"
-      )
+      if (experiment?.id !== state.experimentId || experiment?.trials.length !== 3 || experiment.phase !== "COMPLETED")
         throw new Error("CREDENTIAL_PROBE_RESTART_UNCONFIRMED")
       if (credentialPhase === "retrieve-remove") {
-        await credentialProbe.remove(v2Request)
+        await probe.remove(v2Request)
         await v2Request(`/api/session/${attached.sessionId}/model`, {
           method: "POST",
           body: { model: { providerID: "fixture", id: "fixture" } },
         })
-        credentialState.removed = await credentialProbe.inspectFiles(profile, { databaseName: agentDatabaseName })
-        if (credentialState.removed.vaultSha256 === credentialState.saved.vaultSha256)
+        state.removed = await probe.inspectFiles(profile, { databaseName: agentDatabaseName })
+        if (state.removed.vaultSha256 === state.saved.vaultSha256)
           throw new Error("CREDENTIAL_PROBE_STORAGE_UNCONFIRMED")
         const selected = await until(
           () => {
@@ -1092,7 +1207,7 @@ async function launch(executable, credentialPhase) {
           "CREDENTIAL_PROBE_BACKEND_UNCONFIRMED",
           2500,
         )
-        if (selected !== credentialState.backend) throw new Error("CREDENTIAL_PROBE_BACKEND_UNCONFIRMED")
+        if (selected !== state.backend) throw new Error("CREDENTIAL_PROBE_BACKEND_UNCONFIRMED")
       }
       if (credentialPhase === "absent" && (installed || linuxInstallation || appImageRuntime))
         reinstallBefore = await preservedState()
@@ -1104,7 +1219,10 @@ async function launch(executable, credentialPhase) {
       () => evaluate('Boolean(document.querySelector("dialog[open] input"))'),
       "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
     )
-    await type("dialog[open] input", "Packaged synthetic qualification")
+    await type(
+      "dialog[open] input",
+      providerReview ? "Provider sign-in qualification" : "Packaged synthetic qualification",
+    )
     await click('dialog[open] button[type="submit"]')
     await until(
       () => evaluate('Boolean(document.querySelector("[data-ps-project-row]"))'),
@@ -1136,6 +1254,16 @@ async function launch(executable, credentialPhase) {
       })
     }
     await waitForComposer()
+    if (providerReview) {
+      stage = "native-provider-browser-probe"
+      await attach()
+      await providerReview.review({
+        child,
+        attachment: attached,
+        openBrowser: (url) => evaluate(`window.api.openExternal(${JSON.stringify(url)})`),
+      })
+      return
+    }
     stage = "native-platform-display-probe"
     const display = await qualifyPlatformDisplay({
       env: process.env,
@@ -1220,12 +1348,15 @@ async function launch(executable, credentialPhase) {
       if (typeof preference?.before !== "boolean" || preference.saved !== !preference.before)
         throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
       preservedPinchZoom = preference.saved
+      if (lab) lab.pinchZoom = preference.saved
+      else mainPreservedPinchZoom = preference.saved
     }
-    credentialState.sessionId = attached.sessionId
-    credentialState.experimentId = completed.id
-    await credentialProbe.save(v2Request)
-    credentialState.saved = await credentialProbe.inspectFiles(profile, { databaseName: agentDatabaseName })
-    credentialState.backend = await until(
+    state.sessionId = attached.sessionId
+    state.experimentId = completed.id
+    await probe.save(v2Request)
+    state.saved = await probe.inspectFiles(profile, { databaseName: agentDatabaseName })
+    if (lab) lab.after = { state: await preservedState(), vaultSha256: state.saved.vaultSha256 }
+    state.backend = await until(
       () => {
         try {
           return backend.result()
@@ -1367,6 +1498,318 @@ async function launch(executable, credentialPhase) {
     await provider.close()
     diagnosticLogStatus = await privateLog.finish()
     stage = previous
+  }
+}
+
+// This lab is deliberately separate from the target's already-tested profile.
+// Same-source lower-version packages exercise installation/storage preservation,
+// without claiming historical schema migration or a physical power interruption.
+async function qualifyPublicUpgrade(entrypoint, extension) {
+  const format = extension === ".exe" ? "nsis" : extension === ".deb" ? "deb" : "appimage"
+  const baselineArtifact = publicUpgrade.baselineArtifact
+  if (extname(baselineArtifact).toLowerCase() !== extension) throw new Error("PUBLIC_UPGRADE_FORMAT_INVALID")
+  const targetPayload = payload
+  const targetState = structuredClone(reinstallBefore)
+  const targetVault = (await credentialProbe.inspectFiles(join(root, "profile"), { databaseName: agentDatabaseName }))
+    .vaultSha256
+  const targetAsar = join(root, "upgrade-target-reference.asar")
+  if (format === "nsis")
+    await copyFile(join(dirname(entrypoint), "resources/app.asar"), targetAsar, constants.COPYFILE_EXCL)
+  const targetReference =
+    format === "nsis"
+      ? { file: targetAsar, bytes: (await lstat(targetAsar)).size, sha256: await sha256File(targetAsar) }
+      : undefined
+  const targetMode = publicMode
+  const lab = {
+    profile: join(root, "upgrade-lab-profile"),
+    probe: createNativeV2CredentialProbe({ providerID: "openai" }),
+    state: { pids: [] },
+    checks: [],
+    payload: undefined,
+    pinchZoom: undefined,
+    after: undefined,
+  }
+  await mkdir(lab.profile, { mode: 0o700 })
+  const closed = () => !failed && checks.find((item) => item.id === "cleanup")?.status === "PASS"
+  const shutdown = () => ({
+    applicationExited: closed(),
+    descendantsExited: closed(),
+    runtimeCacheRemoved: format !== "appimage" || appImageRuntimeCleanup,
+  })
+  const requireClosed = () => {
+    if (!closed() || (format === "appimage" && !appImageRuntimeCleanup))
+      throw new Error("PUBLIC_UPGRADE_SHUTDOWN_UNCONFIRMED")
+  }
+  const readVersion = async (executable, mode) => {
+    const archive = openPackagedArchive(
+      join(repo, "packages/desktop/package.json"),
+      join(dirname(executable), "resources/app.asar"),
+    )
+    verifyPublicPackagedIdentity(mode, {
+      metadata: archive.json("package.json"),
+      releaseInputs: archive.json("out/legal/desktop-release-inputs.json"),
+      publicInputs: archive.json("out/legal/public-build-inputs.json"),
+      compiledIdentity: archive.json("out/legal/physical-build-identity.json"),
+      mainBytes: archive.read("out/main/index.js"),
+    })
+    return { version: mode.build.version, executableAndResourcesSha256: (await payloadFingerprint(executable)).sha256 }
+  }
+  let baselinePayload
+  let baselineSignature
+  let baselineExecutable
+  const installerObservation = format === "nsis" ? await signatureObservation(baselineArtifact) : undefined
+  if (installerObservation) verifyPublicAuthenticode(installerObservation, publicUpgrade.baseline.build.windowsSigning)
+  const removeInstalled = async () => {
+    requireClosed()
+    if (installed) {
+      await uninstallNsis(installed)
+      await verifyNsisRemoved(installed)
+      installed = undefined
+    } else if (linuxInstallation) {
+      const plan = linuxInstallation
+      await uninstallDebian(plan)
+      await verifyDebianRemoved(plan)
+      linuxInstallation = undefined
+    }
+  }
+  const rebindPortable = async (expectedSha256) => {
+    requireClosed()
+    upgradeInstallationState.unconfirmed = true
+    if (!linuxSandboxProfile || (await readFile(linuxSandboxProfile.file, "utf8")) !== linuxSandboxProfile.text)
+      throw new Error("PUBLIC_UPGRADE_BASELINE_UNCONFIRMED")
+    await command("/usr/bin/sudo", [
+      "-n",
+      "/usr/sbin/apparmor_parser",
+      "--remove",
+      "--skip-cache",
+      linuxSandboxProfile.file,
+    ]).catch(retainUnconfirmedMutation)
+    if (profileIsLoaded(await loadedProfiles(), linuxSandboxProfile.name))
+      throw new Error("LINUX_QUALIFICATION_PROFILE_RETAINED")
+    await unlink(linuxSandboxProfile.file)
+    linuxSandboxProfile = undefined
+    const next = await prepareAppImageRuntime({
+      env: process.env,
+      root,
+      temporary: linuxTemporary.path,
+      artifact: join(root, "extractable.AppImage"),
+      artifactSha256: expectedSha256,
+      kind: "public",
+    })
+    await writeFile(next.profile.file, next.profile.text, { flag: "wx", mode: 0o600 })
+    linuxSandboxProfile = next.profile
+    await command("/usr/bin/sudo", [
+      "-n",
+      "/usr/sbin/apparmor_parser",
+      "--add",
+      "--skip-cache",
+      next.profile.file,
+    ]).catch(retainUnconfirmedMutation)
+    if (!profileIsLoaded(await loadedProfiles(), next.profile.name))
+      throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
+    appImageRuntime = next
+  }
+  const nativeInstall = async (artifact, hash, version, action = "install") => {
+    const result = await runNativeUpgradeInstaller({
+      env: process.env,
+      root,
+      format,
+      action,
+      artifact,
+      artifactSha256: hash,
+      version,
+      installation: format === "nsis" ? join(root, "payload") : `/opt/${identity.productName}`,
+      baselinePayloadSha256: baselinePayload?.sha256 || targetPayload.sha256,
+      targetPayloadSha256: targetPayload.sha256,
+      targetAsarReference: targetReference,
+      descendants,
+    })
+    if (action === "install") {
+      if (format === "nsis") {
+        installed = join(root, "payload")
+        nsisUninstallerSha256 = await sha256File(await ownedNsisUninstaller(installed))
+      } else {
+        requireDebianUpgradeStatus(await readFile("/var/lib/dpkg/status", "utf8"), version, "installed")
+        const metadata = await command("dpkg-deb", [
+          "--show",
+          "--showformat=${Package}\n${Version}\n${Architecture}\n",
+          artifact,
+        ])
+        linuxInstallation = debianCandidatePlan(version, metadata, "public")
+        if (!debianProfileIsLoaded(await loadedProfiles(), "public"))
+          throw new Error("LINUX_QUALIFICATION_PROFILE_NOT_LOADED")
+      }
+    }
+    return result
+  }
+  const restoreBaseline = async () => {
+    requireClosed()
+    upgradeInstallationState.unconfirmed = true
+    if (format === "appimage") {
+      const replace = await prepareAppImageReplacement({
+        env: process.env,
+        root,
+        runnable: appImageRuntime.artifact,
+        baselineSha256: artifactSha256,
+        targetArtifact: baselineArtifact,
+        targetSha256: publicUpgrade.baselineArtifactSha256,
+      })
+      await replace.complete(shutdown())
+      await rebindPortable(publicUpgrade.baselineArtifactSha256)
+      if (!baselineExecutable) {
+        const extraction = join(root, "upgrade-baseline-extracted")
+        await mkdir(extraction, { mode: 0o700 })
+        await command(appImageRuntime.artifact, ["--appimage-extract"], { cwd: extraction })
+        const matches = await findExecutable(extraction, identity.executableName)
+        if (matches.length !== 1) throw new Error("PACKAGED_EXECUTABLE_NOT_UNIQUE")
+        baselineExecutable = matches[0]
+        await verifyAppImageLauncher(
+          dirname(baselineExecutable),
+          join(repo, "packages/desktop/resources", identity.launcherSource),
+          "public",
+        )
+      }
+    } else {
+      await removeInstalled()
+      await nativeInstall(baselineArtifact, publicUpgrade.baselineArtifactSha256, publicUpgrade.plan.baseline.version)
+      baselineExecutable = entrypoint
+    }
+    await readVersion(baselineExecutable, publicUpgrade.baseline)
+    const observed = await payloadFingerprint(baselineExecutable)
+    if (baselinePayload && baselinePayload.sha256 !== observed.sha256)
+      throw new Error("PUBLIC_UPGRADE_BASELINE_UNCONFIRMED")
+    baselinePayload = observed
+    if (format === "nsis")
+      baselineSignature = verifyPublicSignaturePair({
+        installer: installerObservation,
+        executable: await signatureObservation(baselineExecutable),
+        mode: publicUpgrade.baseline,
+        installerSha256: publicUpgrade.baselineArtifactSha256,
+        executableSha256: baselinePayload.executableSha256,
+      })
+    lab.payload = baselinePayload
+    upgradeInstallationState.unconfirmed = false
+  }
+  const runLab = async (phase, mode) => {
+    lab.checks = []
+    lab.payload = mode === publicUpgrade.baseline ? baselinePayload : targetPayload
+    try {
+      await launch(entrypoint, phase, lab)
+    } finally {
+      const cleanup = lab.checks.find((item) => item.id === "cleanup")
+      if (cleanup) check("cleanup", cleanup.status, cleanup.detail, cleanup.failureCode)
+      else
+        check(
+          "cleanup",
+          "FAIL",
+          "The lab application did not establish shutdown.",
+          "PUBLIC_UPGRADE_SHUTDOWN_UNCONFIRMED",
+        )
+    }
+    requireClosed()
+    const observation =
+      format === "appimage"
+        ? { version: mode.build.version, executableAndResourcesSha256: lab.payload.sha256 }
+        : await readVersion(entrypoint, mode)
+    return { ...observation, ...lab.after, applicationExited: true, descendantsExited: true }
+  }
+  let seeded
+  for (const mode of ["upgrade", "recovery"]) {
+    const id = mode === "upgrade" ? "native-upgrade-probe" : "native-failed-upgrade-recovery-probe"
+    stage = id
+    await restoreBaseline()
+    const before = await runLab(seeded ? "upgrade-read" : "save", publicUpgrade.baseline)
+    if (
+      seeded &&
+      (JSON.stringify(before.state) !== JSON.stringify(seeded.state) || before.vaultSha256 !== seeded.vaultSha256)
+    )
+      throw new Error("PUBLIC_UPGRADE_STATE_CHANGED")
+    seeded ||= structuredClone(before)
+    const replacement =
+      format === "appimage"
+        ? await prepareAppImageReplacement({
+            env: process.env,
+            root,
+            runnable: appImageRuntime.artifact,
+            baselineSha256: publicUpgrade.baselineArtifactSha256,
+            targetArtifact: options.artifact,
+            targetSha256: artifactSha256,
+          })
+        : undefined
+    stage = id
+    const result = await qualifyInstalledUpgrade({
+      env: process.env,
+      root,
+      format,
+      mode,
+      plan: publicUpgrade.plan,
+      expectedPlanSha256: publicUpgrade.planSha256,
+      builds: publicUpgrade.builds,
+      signatures: format === "nsis" ? { baseline: baselineSignature, target: publicSigning } : undefined,
+      baselineArtifact,
+      baselineArtifactSha256: publicUpgrade.baselineArtifactSha256,
+      targetArtifact: options.artifact,
+      targetArtifactSha256: artifactSha256,
+      targetPayloadSha256: targetPayload.sha256,
+      before,
+      shutdown: shutdown(),
+      installationState: upgradeInstallationState,
+      observeInstalled: async () => {
+        if (format === "appimage") {
+          const current = await sha256File(appImageRuntime.artifact)
+          if (current === publicUpgrade.baselineArtifactSha256)
+            return {
+              version: publicUpgrade.plan.baseline.version,
+              executableAndResourcesSha256: baselinePayload.sha256,
+            }
+          if (current === artifactSha256)
+            return { version: options.version, executableAndResourcesSha256: targetPayload.sha256 }
+          throw new Error("PUBLIC_UPGRADE_TARGET_UNCONFIRMED")
+        }
+        const archive = openPackagedArchive(
+          join(repo, "packages/desktop/package.json"),
+          join(dirname(entrypoint), "resources/app.asar"),
+        )
+        const current = archive.json("package.json").version
+        return readVersion(
+          entrypoint,
+          current === publicUpgrade.plan.baseline.version ? publicUpgrade.baseline : targetMode,
+        )
+      },
+      installTarget: async () => {
+        if (replacement) {
+          await replacement.complete(shutdown())
+          await rebindPortable(artifactSha256)
+        } else await nativeInstall(options.artifact, artifactSha256, options.version)
+      },
+      interruptTarget: () =>
+        replacement
+          ? replacement.interrupt(shutdown())
+          : nativeInstall(options.artifact, artifactSha256, options.version, "interrupt"),
+      relaunchBaseline: () => runLab("upgrade-read", publicUpgrade.baseline),
+      relaunchTarget: () => runLab("upgrade-read", targetMode),
+    })
+    // Reopen the original target profile read-only after each independent lab
+    // sequence; no model dispatch, trial or preference mutation is repeated.
+    await launch(entrypoint, "reinstall")
+    requireClosed()
+    if (
+      JSON.stringify(reinstallAfter) !== JSON.stringify(targetState) ||
+      (await credentialProbe.inspectFiles(join(root, "profile"), { databaseName: agentDatabaseName })).vaultSha256 !==
+        targetVault
+    )
+      throw new Error("PUBLIC_UPGRADE_STATE_CHANGED")
+    stage = id
+    check(
+      id,
+      "PASS",
+      JSON.stringify({
+        ...result,
+        baselineProfileInitiallyEmpty: true,
+        baselineProfileSeededOnce: true,
+        originalTargetProfilePreserved: true,
+      }),
+    )
   }
 }
 

@@ -199,6 +199,25 @@ describe("protected exact-byte public desktop publisher", () => {
     const data = await fixture()
     const prepared = await preparePublicPublication(data.common)
     expect(data.state.releases[0]!.draft).toBe(true)
+    const body = data.state.releases[0]!.body
+    expect(body).toContain("sudo apt install ./physical-systems-desktop-0.1.0-beta.1-linux-x64.deb")
+    expect(body).toContain("sudo apt remove physical-systems-desktop")
+    expect(body).toContain("Settings → Apps → Installed apps")
+    expect(body).toContain(
+      `https://github.com/PhysicalSystems/desktop/blob/${data.data.facts.sourceRevision}/release/appimage-runtime.md#advanced-user-setup`,
+    )
+    expect(body).toContain(
+      `https://github.com/PhysicalSystems/desktop/blob/${data.data.facts.sourceRevision}/release/install-desktop.md`,
+    )
+    expect(body).not.toContain("/blob/main/")
+    expect(body).toContain("--appimage-extract-and-run")
+    expect(body).toContain("artifact-specific Ubuntu AppArmor prerequisite")
+    expect(body).toContain("Windows 2025 and Ubuntu 24.04")
+    expect(body).toContain("X11/Xvfb")
+    expect(body).toContain("AppImage double-click/FUSE startup")
+    expect(body).toContain("optical flicker are not measured")
+    expect(body).toContain("does not establish live robot behavior")
+    for (const asset of data.data.facts.assets) expect(body).toContain(`\`${asset.name}\`: \`${asset.sha256}\``)
     expect(prepared.prepared.assets).toHaveLength(3)
     expect(JSON.stringify(prepared)).not.toContain('"approved"')
     const result = await data.publish(prepared)

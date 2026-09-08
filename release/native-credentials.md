@@ -42,14 +42,15 @@ qualification independently owns processes, native backend and installer hashes.
    integration, overriding its API to the dedicated loopback fixture and compatible
    adapter. Configure no API key, authorization header or environment key. Keep
    the ordinary synthetic experiment provider separate. The qualifier fixes the
-   database basename to `opencode.db` in its disposable profile only.
+   database basename from the reviewed bundled agent channel (`opencode-dev.db`
+   currently). Ambient database-name overrides are stripped by the desktop host.
 2. Adapt each request to the fresh owned sidecar attachment and exact Location.
    Require decoded successful GET envelopes with the exact directory, or HTTP 204
    for mutations. Do not log request bodies, credentials or attachment secrets.
 3. `save(request)` confirms no existing connection, saves an inert canary through
    the actual V2 key route, and retains its sanitized credential ID. Native writes
    must acknowledge success within the bounded transport deadline.
-4. `inspectFiles(profile, {databaseName: "opencode.db"})` checks the encrypted vault,
+4. `inspectFiles(profile, {databaseName: "opencode-dev.db"})` checks the encrypted vault,
    absence of legacy `auth.json`, and complete bounded SQLite, WAL and rollback
    journal bytes for the canary in UTF-8 and UTF-16. It rejects symlinks, unexpected
    file ownership and unstable reads. No file contents or paths enter the receipt.

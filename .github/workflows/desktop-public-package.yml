@@ -15,9 +15,31 @@ on:
       version:
         type: string
         required: true
+      baseline_inputs_sha256:
+        type: string
+        required: true
+      baseline_public_build_sha256:
+        type: string
+        required: true
+      baseline_version:
+        type: string
+        required: true
+      upgrade_plan_sha256:
+        type: string
+        required: true
       platform:
         type: string
         required: true
+      provider_qa:
+        type: string
+        required: false
+        default: disabled
+      provider_qa_public_key:
+        type: string
+        required: false
+      provider_qa_key_sha256:
+        type: string
+        required: false
     secrets:
       DESKTOP_WINDOWS_PFX_BASE64:
         required: false
@@ -55,7 +77,7 @@ jobs:
       job_receipt_sha256: ${{ steps.smoke.outputs.job_receipt_sha256 }}
       build_artifact_id: ${{ steps.installers.outputs.artifact-id }}
       receipt_artifact_id: ${{ steps.receipts.outputs.artifact-id }}
-    timeout-minutes: 70
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -65,6 +87,9 @@ jobs:
       OPENCODE_DISABLE_MODELS_FETCH: "1"
       EXPECTED_RELEASE_INPUTS_SHA256: ${{ inputs.inputs_sha256 }}
       EXPECTED_PUBLIC_BUILD_SHA256: ${{ inputs.public_build_sha256 }}
+      EXPECTED_BASELINE_RELEASE_INPUTS_SHA256: ${{ inputs.baseline_inputs_sha256 }}
+      EXPECTED_BASELINE_PUBLIC_BUILD_SHA256: ${{ inputs.baseline_public_build_sha256 }}
+      EXPECTED_UPGRADE_PLAN_SHA256: ${{ inputs.upgrade_plan_sha256 }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -82,6 +107,10 @@ jobs:
             PUBLIC_BUILD_INPUTS: 'desktop-public/inputs/public-build-inputs.json',
             PUBLIC_BUILD_DIRECTORY: 'desktop-public/artifacts',
             PUBLIC_SMOKE_DIRECTORY: 'desktop-public/smoke',
+            PUBLIC_BASELINE_RELEASE_INPUTS: 'desktop-public/inputs/baseline/release-inputs.json',
+            PUBLIC_BASELINE_BUILD_INPUTS: 'desktop-public/inputs/baseline/public-build-inputs.json',
+            PUBLIC_BASELINE_BUILD_DIRECTORY: 'desktop-public/baseline-artifacts',
+            PUBLIC_UPGRADE_PLAN: 'desktop-public/inputs/upgrade-plan.json',
           };
           appendFileSync(process.env.GITHUB_ENV, Object.entries(paths).map(([key, value]) => `${key}=${path.join(process.env.RUNNER_TEMP, value)}\n`).join(''));
           NODE
@@ -91,7 +120,9 @@ jobs:
           path: ${{ runner.temp }}/desktop-public/inputs
       - name: Verify native source/archive and public producer regressions
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/public-build.test.ts ./src/release/public-build-command.test.ts ./src/release/public-producer.test.ts ./src/release/public-native-receipts.test.ts ./src/release/public-collection-command.test.ts
+        run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/public-build.test.ts ./src/release/public-build-command.test.ts ./src/release/public-producer.test.ts ./src/release/public-native-receipts.test.ts ./src/release/public-collection-command.test.ts ./src/release/public-upgrade.test.ts ./src/release/public-upgrade-inputs.test.ts ./src/release/public-upgrade-qualification.test.ts ./src/release/installed-upgrade.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/appimage-replacement.test.ts
+      - name: Verify both frozen versions and their owned lab plan before builds
+        run: bun script/desktop-public-producer.ts verify-upgrade
       - name: Build Windows installers using the frozen signing policy
         if: runner.os == 'Windows'
         env:
@@ -106,6 +137,9 @@ jobs:
       - name: Build Linux installers under the same frozen public identity
         if: runner.os == 'Linux'
         run: bun script/desktop-build-public.ts --inputs "$PUBLIC_RELEASE_INPUTS" --public-inputs "$PUBLIC_BUILD_INPUTS" --expected-inputs-sha256 "$EXPECTED_RELEASE_INPUTS_SHA256" --expected-public-build-sha256 "$EXPECTED_PUBLIC_BUILD_SHA256" --platform linux-x64 --output "$PUBLIC_BUILD_DIRECTORY"
+      - name: Build the separate unreleased Linux lab baseline
+        if: runner.os == 'Linux'
+        run: bun script/desktop-build-public.ts --inputs "$PUBLIC_BASELINE_RELEASE_INPUTS" --public-inputs "$PUBLIC_BASELINE_BUILD_INPUTS" --expected-inputs-sha256 "$EXPECTED_BASELINE_RELEASE_INPUTS_SHA256" --expected-public-build-sha256 "$EXPECTED_BASELINE_PUBLIC_BUILD_SHA256" --platform linux-x64 --output "$PUBLIC_BASELINE_BUILD_DIRECTORY"
       - name: Install display dependencies on the disposable Linux runner
         if: runner.os == 'Linux'
         run: |
@@ -113,12 +147,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0 dbus gnome-keyring libglib2.0-bin
       - name: Exercise exact public packages and author native observations
         id: smoke
-        run: |
-          if [ "$RUNNER_OS" = 'Linux' ]; then
-            xvfb-run -a bun script/desktop-public-smoke.ts
-          else
-            bun script/desktop-public-smoke.ts
-          fi
+        uses: ./.github/actions/provider-review-runtime
+        with:
+          mode: public
+        env:
+          PS_PROVIDER_REVIEW: ${{ inputs.provider_qa }}
+          PS_PROVIDER_REVIEW_PUBLIC_KEY_PEM: ${{ inputs.provider_qa_public_key }}
+          PS_PROVIDER_REVIEW_KEY_SHA256: ${{ inputs.provider_qa_key_sha256 }}
+          PHYSICALSYSTEMS_PROVIDER_REVIEW_SOURCE_SHA: ${{ inputs.source_sha }}
+          PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256: ${{ inputs.inputs_sha256 }}
       # This allowlist deliberately excludes profiles, logs, signing files and
       # dependency caches. No artifact uses the publisher's qualified name.
       - name: Retain exact installers and explicitly unqualified build records
@@ -136,6 +173,22 @@ jobs:
             ${{ runner.temp }}/desktop-public/artifacts/desktop-release-inputs.json
             ${{ runner.temp }}/desktop-public/artifacts/public-build-inputs.json
             ${{ runner.temp }}/desktop-public/artifacts/public-build-record.json
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Retain the separately named lab baseline without publication authority
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-upgrade-lab-${{ inputs.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/physical-systems-desktop-${{ inputs.baseline_version }}-windows-x64.exe
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/physical-systems-desktop-${{ inputs.baseline_version }}-linux-x64.deb
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/physical-systems-desktop-${{ inputs.baseline_version }}-linux-x64.AppImage
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/artifacts.json
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/SHA256SUMS
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/desktop-release-inputs.json
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/public-build-inputs.json
+            ${{ runner.temp }}/desktop-public/baseline-artifacts/public-build-record.json
           if-no-files-found: warn
           retention-days: 30
       - name: Retain sanitized public smoke and native receipts

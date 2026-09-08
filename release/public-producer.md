@@ -52,15 +52,16 @@ that trusted source necessarily handles signing credentials during packaging.
 
 1. Validate the owned main dispatch and enable variable, then freeze the explicit
    signing policy before dependency builds or access to signing credentials.
-2. Read complete version history and prepare source-verified `ReleaseInputs`.
-   Bind `PublicBuildInputs` to that source and release digest. Export both digests
-   from the trusted prepare job; downstream jobs never calculate their expected
-   anchors from a downloaded artifact.
+2. Read complete version history and freeze separate source-verified input pairs
+   for a strictly lower unreleased lab baseline and the target. Export all four
+   release/public digests and the exact upgrade-plan digest from the trusted
+   prepare job; downstream jobs never self-anchor downloaded input files.
 3. Reuse `desktop-ci.yml` against that same immutable source.
 4. Build Windows x64 NSIS and Linux x64 Debian/AppImage in parallel using
    `desktop-build-public.ts`. Packaging requires the compiled public identity
    marker and main-process hash, signs Windows under the frozen policy, and uses
-   `--publish never`.
+   `--publish never`. Each native job builds the separately versioned lab with
+   the same policy; its installers never enter the target inventory.
 5. Exercise the exact packages in disposable hosted runners with device access
    disabled and the inert model fixture. Public smoke checks the embedded public
    identity and inputs, and observes actual Windows installer/payload signatures.
@@ -111,8 +112,9 @@ collector still fails until they are complete.
 
 These mappings also require confirmed application/private-service cleanup, and
 Windows requires verified signing. Missing probes stay `NOT_TESTED`; failed or
-blocked dependencies retain that result. Current AppImage smoke does not perform
-the portable reinstall or ordinary fresh-launch probes. Configuration preservation
+blocked dependencies retain that result. AppImage smoke exercises the original
+extract-and-run runtime and portable replacement within its documented Ubuntu
+AppArmor prerequisite. Configuration preservation
 does not claim every possible user file or a default-profile migration. Display
 evidence must not claim Wayland or optical flicker from an X11/hosted test.
 
@@ -130,10 +132,12 @@ the exact bytes, signer and independently anchored native receipts. Native recei
 production and workflow handoff are implemented; no helper test establishes that
 the missing operating-system or account-backed probes have actually passed.
 
-Upgrade checks also require an approved previous **public-identity** baseline.
-The first-public-release policy for that baseline is unresolved; the current
-public validator has no `NOT_APPLICABLE` exception. Do not claim a candidate
-installation is an equivalent public upgrade baseline or weaken the gate here.
+Upgrade and recovery use a separately frozen lower-version **public-identity lab
+baseline**, described in [public-upgrade.md](public-upgrade.md). Its actual native
+controllers are implemented for NSIS, Debian and portable AppImage. The fixture
+shares reviewed source/storage schema and is never published; it bootstraps the
+first release without pretending to test historical migrations. All native gates
+remain mandatory and require actual successful public runs.
 
 After the actual checks pass, the wired collector produces the qualification
 bundle for the signed installers required by [the public publisher](public-publisher.md).

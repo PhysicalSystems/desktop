@@ -2,7 +2,7 @@
 
 `desktop-public-release.yml` adds the publication half of the release process. It consumes signed, publicly identified, natively qualified installers from the owned producer. It does **not** make today's unsigned internal candidates publicly eligible, implement signing, or claim that native checks have passed.
 
-The producer prerequisite is `.github/workflows/desktop-public-build.yml`, successful on the exact reviewed `main` commit used by the publisher. Its [implemented build and smoke stages](public-producer.md) currently fail deliberately at incomplete native qualification and emit only unqualified artifacts. The existing `.github/workflows/desktop-release.yml` is deliberately rejected. Until complete native evidence and credentials exist, preflight fails closed. Do not change candidate or unqualified booleans to `PASS`.
+The producer prerequisite is `.github/workflows/desktop-public-build.yml`, successful on the exact reviewed `main` commit used by the publisher. Its [implemented build and smoke stages](public-producer.md) run a strict final collector that emits a publisher bundle only after every required native observation passes. The existing `.github/workflows/desktop-release.yml` is deliberately rejected. Until complete native evidence and credentials exist, preflight fails closed. Do not change candidate or unqualified booleans to `PASS`.
 
 One dispatch to **Publish qualified desktop installers** supplies the producer run ID, its exact current attempt and the canonical qualified-distribution digest from the trusted producer summary. This is a continuation of a previously qualified build; it is not yet a one-dispatch build-and-publish pipeline. A future top-level coordinator can combine those phases without rebuilding qualified bytes.
 

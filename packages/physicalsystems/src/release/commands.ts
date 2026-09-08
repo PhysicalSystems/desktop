@@ -256,7 +256,7 @@ export async function desktopRelease(args: string[]) {
         ],
         sourceRoot,
         process.env,
-        600_000,
+        process.env.PS_PROVIDER_REVIEW === "openai-device" ? 1_200_000 : 600_000,
       ).catch(() => {
         failed = true
       })
