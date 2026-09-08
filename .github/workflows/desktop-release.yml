@@ -120,7 +120,7 @@ jobs:
         run: timeout --signal=TERM --kill-after=10s 90s xvfb-run -a bun script/desktop-browser-diagnostic.ts
       - name: Start and stop the actual owned Windows browser factory
         if: runner.os == 'Windows'
-        timeout-minutes: 2
+        timeout-minutes: 4
         run: bun script/desktop-browser-diagnostic.ts
       - name: Retain only the sanitized browser diagnostic
         if: always()

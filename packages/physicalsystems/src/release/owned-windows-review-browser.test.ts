@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
+import { Writable } from "node:stream"
 import type { ChildProcess } from "node:child_process"
 import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -14,6 +15,7 @@ import {
 import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
 import {
   windowsReviewNative,
+  dispatchWindowsReviewNative,
   windowsReviewNativeFailure,
   windowsReviewNativeResult,
   windowsReviewNativeArguments,
@@ -497,6 +499,98 @@ test("native result decoder keeps success JSON unchanged and classifies only fix
     expect(observation?.windowsNativeOutcome).toBe(outcome)
     expect(observation?.windowsNativePhase).toBe("input-parse")
     expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+  }
+})
+
+test("native transport gives slow signature preflight headroom while preserving single-call mutation deadlines", async () => {
+  const policy = { keys: [false, false, false], value: null }
+  const requests: Parameters<WindowsReviewNative>[0][] = [
+    { operation: "preflight", scheme: "http" },
+    { operation: "set", profile: "C:\\owned\\profile", before: policy },
+    { operation: "observe", profile: "C:\\owned\\profile", scheme: "http", observedPids: [] },
+    { operation: "stop", processes: [] },
+    { operation: "restore", profile: "C:\\owned\\profile", before: policy, observedPids: [] },
+  ]
+  for (const request of requests) {
+    let calls = 0
+    let written = ""
+    let observedDeadline = 0
+    // A fake execFile callback models 20s of OS work without sleeping or
+    // starting any native process. This previously exceeded every deadline.
+    const result = dispatchWindowsReviewNative(request, (options, complete) => {
+      calls++
+      observedDeadline = options.timeout
+      expect(Object.isFrozen(options)).toBe(true)
+      return {
+        stdin: new Writable({
+          write(chunk, _encoding, done) {
+            written += chunk.toString()
+            done()
+          },
+          final(done) {
+            queueMicrotask(() => {
+              complete(
+                options.timeout < 20000 ? { killed: true, signal: "SIGTERM", code: null, message: "PRIVATE" } : null,
+                JSON.stringify({ fixtureOnly: true }),
+                "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\nPRIVATE",
+              )
+            })
+            done()
+          },
+        }),
+      }
+    })
+    if (request.operation === "preflight") {
+      expect(await result).toEqual({ fixtureOnly: true })
+      expect(observedDeadline).toBe(30000)
+    } else {
+      let failure: unknown
+      try {
+        await result
+      } catch (error) {
+        failure = error
+      }
+      expect(failure).toBeInstanceOf(Error)
+      expect(readBrowserObservation(failure)?.windowsNativeOutcome).toBe("timeout")
+      expect(observedDeadline).toBe(12000)
+      expect(JSON.stringify(readBrowserObservation(failure))).not.toContain("PRIVATE")
+    }
+    expect(JSON.parse(written)).toEqual(request)
+    expect(calls).toBe(1)
+  }
+})
+
+test("extended preflight never retries or accepts native trust failure or expiry", async () => {
+  for (const error of [{ code: 1 }, { killed: true, signal: "SIGTERM", code: null }]) {
+    let calls = 0
+    const result = dispatchWindowsReviewNative({ operation: "preflight", scheme: "https" }, (options, complete) => {
+      calls++
+      expect(options.timeout).toBe(30000)
+      return {
+        stdin: new Writable({
+          write(_chunk, _encoding, done) {
+            done()
+          },
+          final(done) {
+            queueMicrotask(() => complete(error, "PRIVATE", "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\n"))
+            done()
+          },
+        }),
+      }
+    })
+    let failure: unknown
+    try {
+      await result
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(Error)
+    expect(readBrowserObservation(failure)).toMatchObject({
+      windowsNativePhase: "signature",
+      windowsNativeOutcome: "killed" in error ? "timeout" : "exit",
+    })
+    expect(JSON.stringify(readBrowserObservation(failure))).not.toContain("PRIVATE")
+    expect(calls).toBe(1)
   }
 })
 

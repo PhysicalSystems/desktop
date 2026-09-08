@@ -24,8 +24,13 @@ previous policy only after confirmed process cleanup. This does not test HTTPS
 provider routing, a real browser handoff, or sign-in. It never changes the default
 browser association.
 
-The five-minute job includes a 90-second Linux command deadline or a two-minute
-Windows step deadline. It uploads
+The five-minute job includes a 90-second Linux command deadline or a four-minute
+Windows step deadline. Windows allows 30 seconds for the read-only preflight,
+which includes native signature verification; policy writes, observations,
+process stopping and policy restoration retain their 12-second operation limits.
+The longer outer deadline leaves room for ownership checks and cleanup. Signature
+requirements and native trust/network behavior are unchanged; the native
+transport does not retry operations when their deadlines expire. It uploads
 only `browser-diagnostic.json` under an artifact named
 `desktop-browser-diagnostic-<linux|windows>-<run>-<attempt>`, retained for seven days.
 The report binds the exact source/run/attempt/platform and HTTP association scope, and records acquisition, cleanup,

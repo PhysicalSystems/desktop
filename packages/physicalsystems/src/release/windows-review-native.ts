@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { execFile } from "node:child_process"
+import { execFile, type ChildProcess } from "node:child_process"
 import { win32 } from "node:path"
 import { browserObservationError, readBrowserObservation, type BrowserObservation } from "./browser-observation"
 
@@ -38,7 +38,7 @@ export function windowsReviewNativeResult(input: { stdout: string; stderr: strin
   if (input.error) {
     const error = input.error as { code?: unknown; killed?: unknown; signal?: unknown }
     // This adapter never exposes or manually kills its execFile child. After
-    // excluding the output limit, killed can only be its own 12s timeout.
+    // excluding the output limit, killed can only be its own operation deadline.
     const outcome: NonNullable<BrowserObservation["windowsNativeOutcome"]> =
       error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
         ? "output-limit"
@@ -137,16 +137,43 @@ export function windowsReviewNativeEnvironment(env: NodeJS.ProcessEnv, root: str
   }
 }
 
+/** Transport only: the mandatory executor has no native default or executable,
+ * environment or platform override. The guarded factory below owns those.
+ * Preflight includes OS signature-chain verification, whose network retrieval
+ * can exceed 12s. Mutations and observations keep their existing deadline. */
+export function dispatchWindowsReviewNative(
+  request: Parameters<WindowsReviewNative>[0],
+  execute: (
+    options: Readonly<{ timeout: 12000 | 30000 }>,
+    complete: (error: unknown, stdout: string, stderr: string) => void,
+  ) => Pick<ChildProcess, "stdin">,
+): Promise<unknown> {
+  const payload = JSON.stringify(request)
+  if (payload.length > 128 * 1024) throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+  return new Promise((resolve, reject) => {
+    const child = execute(
+      Object.freeze({ timeout: request.operation === "preflight" ? 30000 : 12000 }),
+      (error, stdout, stderr) => {
+        try {
+          resolve(windowsReviewNativeResult({ error, stdout, stderr }))
+        } catch (error) {
+          reject(error)
+        }
+      },
+    )
+    child.stdin?.on("error", () => {})
+    child.stdin?.end(payload)
+  })
+}
+
 export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): WindowsReviewNative {
   if (process.platform !== "win32") throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   const environment = windowsReviewNativeEnvironment(env, root)
   const executable = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
   const args = windowsReviewNativeArguments(executable)
-  return async (request) => {
-    const payload = JSON.stringify(request)
-    if (payload.length > 128 * 1024) throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
-    return await new Promise((resolve, reject) => {
-      const child = execFile(
+  return async (request) =>
+    dispatchWindowsReviewNative(request, (deadline, complete) =>
+      execFile(
         executable,
         args,
         {
@@ -156,20 +183,11 @@ export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): Windo
           windowsHide: true,
           encoding: "utf8",
           maxBuffer: 1024 * 1024,
-          timeout: 12000,
+          timeout: deadline.timeout,
         },
-        (error, stdout, stderr) => {
-          try {
-            resolve(windowsReviewNativeResult({ error, stdout, stderr }))
-          } catch (error) {
-            reject(error)
-          }
-        },
-      )
-      child.stdin?.on("error", () => {})
-      child.stdin?.end(payload)
-    })
-  }
+        complete,
+      ),
+    )
 }
 
 // ASSOCF_IS_PROTOCOL=0x1000 maps the current user default; never FIXED_PROGID.
