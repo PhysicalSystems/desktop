@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { spawn } from "node:child_process"
 import type { ChildProcess, SpawnOptions } from "node:child_process"
-import { lstat, mkdir, readdir, realpath, rm } from "node:fs/promises"
+import { lstat, mkdir, readdir, realpath } from "node:fs/promises"
 import { createServer, type Server } from "node:net"
 import { join, win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { reviewBrowserTargets, validateBrowserProbeURL } from "./owned-review-browser"
+import { captureOwnedBrowserDirectory, removeOwnedBrowserDirectory } from "./owned-browser-directory"
 import {
   browserObservationError,
   browserSyscallFailure,
@@ -282,6 +283,7 @@ async function acquireWindowsReviewBrowser(
     throw failure()
   const root = await realpath(input.root)
   if ((await readdir(root)).length) throw failure()
+  const directory = await captureOwnedBrowserDirectory(root)
   const native = io.native ?? windowsReviewNative(input.env, root)
   observation.browserPhase = "windows-preflight"
   const raw = record(await native({ operation: "preflight", scheme }))
@@ -345,6 +347,9 @@ async function acquireWindowsReviewBrowser(
   let closed = false
   let spawnFailed = false
   let stopped = false
+  let cleanupStarted = false
+  let handoffPending = false
+  let handoffCancellation: AbortController | undefined
   const observe = async () => {
     observation.windowsObservePhase = "native"
     const response = await native({
@@ -410,6 +415,14 @@ async function acquireWindowsReviewBrowser(
   const stop = async (options: { retainProfile?: boolean } = {}) => {
     if (stopped) return
     try {
+      cleanupStarted = true
+      handoffCancellation?.abort()
+      observation.browserPhase = "cleanup-quiescence"
+      if (handoffPending) {
+        observation.handoffQuiescence = "unconfirmed"
+        throw cleanupFailure()
+      }
+
       observation.browserPhase = "windows-port-release"
       await releasePort()
       observation.readinessPortReleased = true
@@ -450,17 +463,7 @@ async function acquireWindowsReviewBrowser(
         throw cleanupFailure()
       if (!options.retainProfile) {
         observation.browserPhase = "cleanup-profile"
-        await rm(root, { recursive: true })
-        if (
-          await lstat(root).then(
-            () => true,
-            (error: NodeJS.ErrnoException) => {
-              if (error.code === "ENOENT") return false
-              throw error
-            },
-          )
-        )
-          throw cleanupFailure()
+        await removeOwnedBrowserDirectory(directory)
       }
       stopped = true
       observation.browserPhase = "stopped"
@@ -593,28 +596,73 @@ async function acquireWindowsReviewBrowser(
     observation.browserPhase = "ready"
     return {
       environment,
-      async confirmHandoff(url: string) {
+      async confirmHandoff(url: string, options: { signal?: AbortSignal } = {}) {
+        if (handoffPending || cleanupStarted) throw failure()
+        handoffPending = true
+        handoffCancellation = new AbortController()
         observation.browserPhase = "handoff-targets"
-        if (url !== expectedURL || !port || !main || stopped || closed) throw failure()
-        const until = Date.now() + Math.min(timeoutMs, 4000)
-        while (Date.now() < until) {
-          const current = await observe()
-          if (!current.policyOwned || current.listening.length !== 1 || current.listening[0] !== main.pid)
-            throw failure()
-          if (
-            !current.unknown.length &&
-            (await (io.targets ?? reviewBrowserTargets)(`http://127.0.0.1:${port}`))?.some(
-              (target) =>
-                target.type === "page" &&
-                (input.probeURL === undefined
-                  ? /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url)
-                  : target.url === expectedURL),
-            )
-          )
-            return true
-          await pause(pollMs)
+        observation.handoffPhase = "context"
+        observation.handoffOutcome = "pending"
+        const canceled = () => {
+          if (!options.signal?.aborted && !handoffCancellation?.signal.aborted) return false
+          observation.handoffOutcome = "canceled"
+          return true
         }
-        return false
+        try {
+          if (url !== expectedURL || !port || !main || stopped || closed) throw failure()
+          const until = Date.now() + Math.min(timeoutMs, 4000)
+          while (Date.now() < until && !canceled()) {
+            observation.handoffPhase = "native"
+            observation.handoffPolls = Math.min((observation.handoffPolls ?? 0) + 1, 65536)
+            const current = await observe()
+            observation.handoffPhase = "ownership"
+            observation.handoffPolicyOwned = current.policyOwned
+            observation.handoffListeners = Math.min(current.listening.length, 65536)
+            observation.handoffListenerOwned = current.listening.length === 1 && current.listening[0] === main.pid
+            observation.handoffUnknownProcesses = Math.min(current.unknown.length, 65536)
+            // A canceled native read may complete, but must not schedule CDP or
+            // another native read while the caller is waiting for quiescence.
+            if (canceled()) return false
+            if (!observation.handoffPolicyOwned || !observation.handoffListenerOwned) throw failure()
+            if (!current.unknown.length) {
+              observation.handoffPhase = "targets"
+              const targets = await (io.targets ?? reviewBrowserTargets)(`http://127.0.0.1:${port}`)
+              observation.handoffTargetsAvailable = targets !== undefined
+              observation.handoffTargetCount = Math.min(targets?.length ?? 0, 65536)
+              observation.handoffTargetMatched = Boolean(
+                targets?.some(
+                  (target) =>
+                    target.type === "page" &&
+                    (input.probeURL === undefined
+                      ? /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url)
+                      : target.url === expectedURL),
+                ),
+              )
+              if (canceled()) return false
+              if (observation.handoffTargetMatched) {
+                observation.handoffPhase = "complete"
+                observation.handoffOutcome = "matched"
+                return true
+              }
+            }
+            await pause(pollMs)
+          }
+          if (!canceled()) observation.handoffOutcome = "not-matched"
+          return false
+        } catch (error) {
+          observation.handoffOutcome = "failed"
+          const native = readBrowserObservation(error)
+          if (native?.windowsNativePhase) observation.handoffWindowsNativePhase = native.windowsNativePhase
+          if (native?.windowsNativeOutcome) observation.handoffWindowsNativeOutcome = native.windowsNativeOutcome
+          throw browserObservationError("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED", error, observation)
+        } finally {
+          handoffPending = false
+        }
+      },
+      observation: () => ({ ...observation }),
+      releaseController() {
+        child?.stderr?.destroy()
+        child?.unref()
       },
       stop,
     }

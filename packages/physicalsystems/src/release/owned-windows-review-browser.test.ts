@@ -1017,3 +1017,159 @@ test("malformed native process shape retains its first boundary through cleanup 
     await f.cleanup()
   }
 })
+
+test("cancellation during the actual Windows native handoff read settles without starting CDP or a second read", async () => {
+  const f = await fixture()
+  let releaseRead = () => {}
+  let readStarted = () => {}
+  const pending = new Promise<void>((resolve) => {
+    releaseRead = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve
+  })
+  let hold = false
+  const native = f.io.native
+  f.io.native = async (request) => {
+    if (hold && request.operation === "observe") {
+      readStarted()
+      await pending
+    }
+    return native(request)
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const beforeQueries = f.state.targetQueries
+    const beforeReads = f.state.calls.filter((call) => call === "observe").length
+    hold = true
+    const cancellation = new AbortController()
+    const confirming = browser.confirmHandoff("https://auth.openai.com/codex/device", { signal: cancellation.signal })
+    await started
+    cancellation.abort()
+    releaseRead()
+    expect(await confirming).toBe(false)
+    expect(f.state.targetQueries).toBe(beforeQueries)
+    expect(f.state.calls.filter((call) => call === "observe")).toHaveLength(beforeReads + 1)
+    expect(browser.observation()).toMatchObject({
+      handoffPhase: "ownership",
+      handoffOutcome: "canceled",
+      handoffPolicyOwned: true,
+      handoffListeners: 1,
+      handoffListenerOwned: true,
+      handoffUnknownProcesses: 0,
+    })
+    hold = false
+    await browser.stop()
+    expect(browser.observation()).toMatchObject({
+      browserPhase: "stopped",
+      handoffPhase: "ownership",
+      handoffOutcome: "canceled",
+      handoffListenerOwned: true,
+    })
+  } finally {
+    releaseRead()
+    await f.cleanup()
+  }
+})
+
+test("pre-canceled confirmation performs no native or CDP reads; releasing controller does not stop or delete", async () => {
+  const f = await fixture()
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const calls = [...f.state.calls]
+    const queries = f.state.targetQueries
+    const cancellation = new AbortController()
+    cancellation.abort()
+    expect(await browser.confirmHandoff("https://auth.openai.com/codex/device", { signal: cancellation.signal })).toBe(
+      false,
+    )
+    browser.releaseController()
+    expect(f.state.calls).toEqual(calls)
+    expect(f.state.targetQueries).toBe(queries)
+    expect(f.state.unrefs).toBe(1)
+    expect(f.state.running).toBe(true)
+    expect(f.state.restored).toBe(false)
+    await access(f.input.root)
+    await browser.stop()
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("handoff still rejects a foreign listener before querying CDP and freezes ownership failure", async () => {
+  const f = await fixture()
+  let foreign = false
+  const native = f.io.native
+  f.io.native = async (request) => {
+    const result = await native(request)
+    return foreign && request.operation === "observe" ? { ...(result as object), listening: [4999] } : result
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    const beforeQueries = f.state.targetQueries
+    foreign = true
+    const error = await browser.confirmHandoff("https://auth.openai.com/codex/device").catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+    expect(readBrowserObservation(error)).toMatchObject({
+      handoffPhase: "ownership",
+      handoffOutcome: "failed",
+      handoffListeners: 1,
+      handoffListenerOwned: false,
+    })
+    expect(f.state.targetQueries).toBe(beforeQueries)
+    foreign = false
+    await browser.stop()
+    expect(browser.observation()).toMatchObject({
+      handoffPhase: "ownership",
+      handoffOutcome: "failed",
+      handoffListenerOwned: false,
+    })
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("owner stop fails closed before any native operation when a confirmation read is still active", async () => {
+  const f = await fixture()
+  let releaseRead = () => {}
+  let readStarted = () => {}
+  const pending = new Promise<void>((resolve) => {
+    releaseRead = resolve
+  })
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve
+  })
+  let hold = false
+  const native = f.io.native
+  f.io.native = async (request) => {
+    if (hold && request.operation === "observe") {
+      readStarted()
+      await pending
+    }
+    return native(request)
+  }
+  try {
+    const browser = await startOwnedWindowsReviewBrowser(f.input, f.io)
+    hold = true
+    const confirming = browser.confirmHandoff("https://auth.openai.com/codex/device")
+    await started
+    const calls = [...f.state.calls]
+    const error = await browser.stop().catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+    expect(readBrowserObservation(error)).toMatchObject({
+      cleanupFailurePhase: "cleanup-quiescence",
+      handoffQuiescence: "unconfirmed",
+    })
+    expect(f.state.calls).toEqual(calls)
+    expect(f.state.unrefs).toBe(1)
+    expect(f.state.running).toBe(true)
+    await access(f.input.root)
+    releaseRead()
+    expect(await confirming).toBe(false)
+    await expect(browser.confirmHandoff("https://auth.openai.com/codex/device")).rejects.toThrow()
+    expect(f.state.calls.filter((call) => call === "stop")).toHaveLength(0)
+  } finally {
+    releaseRead()
+    await f.cleanup()
+  }
+})

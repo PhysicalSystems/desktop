@@ -16,6 +16,7 @@ import { providerBrowserReviewTransport } from "./provider-browser-transport"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { sha256File } from "./qualification"
 import { browserObservationError, type BrowserObservation } from "./browser-observation"
+import { createBrowserHandoffTask } from "./browser-handoff-task"
 
 type ArtifactUploader = (
   name: string,
@@ -52,6 +53,7 @@ export async function runOwnedProviderBrowserReview(
     fetcher?: typeof fetch
     platform?: NodeJS.Platform
     timeoutMs?: number
+    quiescenceTimeoutMs?: number
     pollMs?: number
   } = {},
 ) {
@@ -71,6 +73,7 @@ export async function runOwnedProviderBrowserReview(
   let cleanupFailed = false
   let acquiring = false
   let openerUnconfirmed = false
+  let confirmationUnsettled = false
   const observation: BrowserObservation = { reviewPhase: "context", openerAcknowledged: false }
   let observedError: unknown
   try {
@@ -80,6 +83,7 @@ export async function runOwnedProviderBrowserReview(
       io.startBrowser ?? (platform === "win32" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser)
     )({ env: input.env, root: browserRoot })
     acquiring = false
+    const handoff = createBrowserHandoffTask(browser, io.quiescenceTimeoutMs)
     // Runtime starts from the qualifier's scrubbed env. Never copy controller
     // env wholesale: Actions upload credentials stay exclusively in this process.
     acquiring = true
@@ -115,7 +119,7 @@ export async function runOwnedProviderBrowserReview(
               openerUnconfirmed = false
               if (reviewFinished) return false
               observation.reviewPhase = "target"
-              return await browser!.confirmHandoff(url)
+              return await handoff.confirm(url)
             },
             timeoutMs: io.timeoutMs,
             pollMs: io.pollMs,
@@ -144,9 +148,13 @@ export async function runOwnedProviderBrowserReview(
         } catch (error) {
           observedError = error
           observation.failedReviewPhase ??= observation.reviewPhase
-          return { status: "REVIEW_FAILED" as const }
+          throw error
         } finally {
           reviewFinished = true
+          const drained = await handoff.drain()
+          confirmationUnsettled = !drained.settled
+          if (confirmationUnsettled) cleanupFailed = true
+          Object.assign(observation, drained.observation)
         }
       },
     )
@@ -166,7 +174,8 @@ export async function runOwnedProviderBrowserReview(
     // stop the browser, but retain the shared private QA paths.
     try {
       observation.reviewPhase = "browser-cleanup"
-      await browser?.stop({ retainProfile: cleanupFailed })
+      if (confirmationUnsettled) browser?.releaseController?.()
+      else await browser?.stop({ retainProfile: cleanupFailed })
     } catch (error) {
       observedError = error
       observation.failedReviewPhase ??= observation.reviewPhase

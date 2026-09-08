@@ -12,6 +12,7 @@ const phases = [
   "cdp-targets",
   "ready",
   "handoff-targets",
+  "cleanup-quiescence",
   "cleanup-identity",
   "cleanup-observe",
   "cleanup-signal",
@@ -136,6 +137,20 @@ export type BrowserObservation = {
   readinessPortReleased?: boolean
   readinessDebugPortMatched?: boolean
   readinessDebugAddressMatched?: boolean
+  handoffPhase?: "context" | "native" | "ownership" | "targets" | "complete"
+  handoffOutcome?: "pending" | "matched" | "not-matched" | "canceled" | "failed"
+  handoffQuiescence?: "settled" | "unconfirmed"
+  handoffDeadlineExpired?: boolean
+  handoffPolicyOwned?: boolean
+  handoffListenerOwned?: boolean
+  handoffTargetsAvailable?: boolean
+  handoffTargetMatched?: boolean
+  handoffPolls?: number
+  handoffListeners?: number
+  handoffUnknownProcesses?: number
+  handoffTargetCount?: number
+  handoffWindowsNativePhase?: (typeof windowsPhases)[number]
+  handoffWindowsNativeOutcome?: BrowserObservation["windowsNativeOutcome"]
 }
 const codes = [
   "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
@@ -147,6 +162,11 @@ const codes = [
   "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED",
 ] as const
 const bools = [
+  "handoffDeadlineExpired",
+  "handoffPolicyOwned",
+  "handoffListenerOwned",
+  "handoffTargetsAvailable",
+  "handoffTargetMatched",
   "childExitedAtFailure",
   "profileMarkerReadComplete",
   "profileLocalStatePresent",
@@ -176,6 +196,10 @@ const bools = [
   "readinessDebugAddressMatched",
 ]
 const counts = [
+  "handoffPolls",
+  "handoffListeners",
+  "handoffUnknownProcesses",
+  "handoffTargetCount",
   "ownedProcesses",
   "targetCount",
   "argvFields",
@@ -193,33 +217,40 @@ function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
-    const allowed = ["windowsObservePhase", "failedWindowsObservePhase"].includes(key)
-      ? windowsObservePhases
-      : ["machineRemoteDebugging", "userRemoteDebugging"].includes(key)
-        ? ["absent", "allow", "deny", "invalid"]
-        : ["machineDeveloperTools", "userDeveloperTools"].includes(key)
-          ? ["absent", "restricted", "allow", "deny", "invalid"]
-          : ["windowsNativePhase", "failedWindowsNativePhase"].includes(key)
-            ? windowsPhases
-            : ["browserPhase", "failedBrowserPhase", "cleanupFailurePhase"].includes(key)
-              ? phases
-              : ["reviewPhase", "failedReviewPhase"].includes(key)
-                ? reviews
-                : key === "windowsNativeOutcome"
-                  ? ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]
-                  : key === "syscallFailure"
-                    ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "OTHER"]
-                    : key === "processState"
-                      ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
-                      : key === "termination"
-                        ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
-                        : key === "windowsDebugMessage"
-                          ? ["none", "other", "listening", "bind-failed", "default-profile", "policy-denied"]
-                          : key === "stderrCategory"
-                            ? ["sandbox", "display", "dbus", "other"]
-                            : key === "inspectPhase"
-                              ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
-                              : undefined
+    const allowed =
+      key === "handoffPhase"
+        ? ["context", "native", "ownership", "targets", "complete"]
+        : key === "handoffOutcome"
+          ? ["pending", "matched", "not-matched", "canceled", "failed"]
+          : key === "handoffQuiescence"
+            ? ["settled", "unconfirmed"]
+            : ["windowsObservePhase", "failedWindowsObservePhase"].includes(key)
+              ? windowsObservePhases
+              : ["machineRemoteDebugging", "userRemoteDebugging"].includes(key)
+                ? ["absent", "allow", "deny", "invalid"]
+                : ["machineDeveloperTools", "userDeveloperTools"].includes(key)
+                  ? ["absent", "restricted", "allow", "deny", "invalid"]
+                  : ["windowsNativePhase", "failedWindowsNativePhase", "handoffWindowsNativePhase"].includes(key)
+                    ? windowsPhases
+                    : ["browserPhase", "failedBrowserPhase", "cleanupFailurePhase"].includes(key)
+                      ? phases
+                      : ["reviewPhase", "failedReviewPhase"].includes(key)
+                        ? reviews
+                        : ["windowsNativeOutcome", "handoffWindowsNativeOutcome"].includes(key)
+                          ? ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"]
+                          : key === "syscallFailure"
+                            ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "OTHER"]
+                            : key === "processState"
+                              ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
+                              : key === "termination"
+                                ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
+                                : key === "windowsDebugMessage"
+                                  ? ["none", "other", "listening", "bind-failed", "default-profile", "policy-denied"]
+                                  : key === "stderrCategory"
+                                    ? ["sandbox", "display", "dbus", "other"]
+                                    : key === "inspectPhase"
+                                      ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
+                                      : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)

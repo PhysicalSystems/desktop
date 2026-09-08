@@ -207,6 +207,21 @@ minutes. Individual sidecar calls are bounded to 6.5 seconds, browser acknowledg
 to six seconds and encrypted upload to thirty seconds. Cleanup remains bounded
 after timeout. Polling does not restart or retry authentication automatically.
 
+Both native review wrappers share one memoized target-confirmation task. Expiry
+cancels further reads and drains the already-started read for at most thirteen
+seconds before app cleanup. This is cleanup time, not an extension of the six-second
+provider or twelve-second local handoff eligibility deadline. A late target match
+cannot turn an expired review into success. Native ownership/listener validation
+still precedes every Windows CDP query.
+
+If that read cannot settle, browser signals, launcher restoration and profile
+removal are skipped; only controller handles are released, and the disposable
+runner retains the private state with an unconfirmed-cleanup failure. The browser
+owner also rejects cleanup while a confirmation remains active. Fixed handoff
+phase, ownership and target counts are captured before cleanup can change its own
+observations. Inert cancellation/timeout regressions cover both wrappers; they do
+not establish a native handoff or real-provider sign-in result.
+
 The existing producer has no selected real account or reviewer key provisioned.
 The executable wrapper/action has only inert automated test evidence. Native
 integration must still be exercised on the exact selected artifact after a real

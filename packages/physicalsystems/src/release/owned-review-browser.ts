@@ -17,7 +17,11 @@ const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export type OwnedReviewBrowser = {
   environment: NodeJS.ProcessEnv
-  confirmHandoff(url: string): Promise<boolean>
+  confirmHandoff(url: string, options?: { signal?: AbortSignal }): Promise<boolean>
+  /** Fixed facts only. Reading this snapshot never starts an OS operation. */
+  observation?(): BrowserObservation
+  /** Release controller handles only; retained browser state remains unconfirmed. */
+  releaseController?(): void
   stop(options?: { retainProfile?: boolean }): Promise<void>
 }
 
@@ -439,6 +443,9 @@ async function startLinuxReviewBrowser(
   let origin: string | undefined
   let birth: string | undefined
   let stopped = false
+  let cleanupStarted = false
+  let handoffPending = false
+  let handoffCancellation: AbortController | undefined
   const inspect = async () => {
     if (!child.pid) throw failure()
     const entries = await readdir("/proc")
@@ -495,6 +502,14 @@ async function startLinuxReviewBrowser(
       // An acquisition failure before identity verification cannot authorize a
       // signal or deletion. The caller retains the entire isolated review root.
       try {
+        cleanupStarted = true
+        handoffCancellation?.abort()
+        observation.browserPhase = "cleanup-quiescence"
+        if (handoffPending) {
+          observation.handoffQuiescence = "unconfirmed"
+          throw cleanupFailure()
+        }
+
         observation.browserPhase = "cleanup-identity"
         if (!birth) throw cleanupFailure()
         for (const signal of ["SIGTERM", "SIGKILL"] as const) {
@@ -621,24 +636,57 @@ async function startLinuxReviewBrowser(
     observation.browserPhase = "ready"
     return {
       environment: env,
-      async confirmHandoff(url: string) {
+      async confirmHandoff(url: string, options: { signal?: AbortSignal } = {}) {
+        if (handoffPending || cleanupStarted) throw failure()
+        handoffPending = true
+        handoffCancellation = new AbortController()
         observation.browserPhase = "handoff-targets"
-        if (url !== expectedURL) throw failure()
-        const until = Date.now() + 4000
-        while (Date.now() < until) {
-          if (
-            (await targets())?.some(
-              (target) =>
-                target.type === "page" &&
-                (input.probeURL === undefined
-                  ? /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url)
-                  : target.url === expectedURL),
-            )
-          )
-            return true
-          await pause(50)
+        observation.handoffPhase = "context"
+        observation.handoffOutcome = "pending"
+        const canceled = () => {
+          if (!options.signal?.aborted && !handoffCancellation?.signal.aborted) return false
+          observation.handoffOutcome = "canceled"
+          return true
         }
-        return false
+        try {
+          if (url !== expectedURL) throw failure()
+          const until = Date.now() + 4000
+          while (Date.now() < until && !canceled()) {
+            observation.handoffPhase = "targets"
+            observation.handoffPolls = Math.min((observation.handoffPolls ?? 0) + 1, 65536)
+            const current = await targets()
+            observation.handoffTargetsAvailable = current !== undefined
+            observation.handoffTargetCount = Math.min(current?.length ?? 0, 65536)
+            observation.handoffTargetMatched = Boolean(
+              current?.some(
+                (target) =>
+                  target.type === "page" &&
+                  (input.probeURL === undefined
+                    ? /^https:\/\/auth\.openai\.com(?:\/|$)/.test(target.url)
+                    : target.url === expectedURL),
+              ),
+            )
+            if (canceled()) return false
+            if (observation.handoffTargetMatched) {
+              observation.handoffPhase = "complete"
+              observation.handoffOutcome = "matched"
+              return true
+            }
+            await pause(50)
+          }
+          if (!canceled()) observation.handoffOutcome = "not-matched"
+          return false
+        } catch (error) {
+          observation.handoffOutcome = "failed"
+          throw browserObservationError("PROVIDER_REVIEW_BROWSER_UNCONFIRMED", error, observation)
+        } finally {
+          handoffPending = false
+        }
+      },
+      observation: () => ({ ...observation }),
+      releaseController() {
+        child.stderr?.destroy()
+        child.unref()
       },
       stop,
     }

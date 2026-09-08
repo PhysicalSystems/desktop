@@ -154,3 +154,45 @@ test("cleanup branch observation carries only exact scope booleans and a fixed i
   } as const
   expect(readBrowserObservation({ browserObservation: value })).toEqual(value)
 })
+
+test("handoff facts remain fixed and distinct from cleanup process snapshots", () => {
+  const observed = {
+    browserPhase: "handoff-targets",
+    handoffPhase: "native",
+    handoffOutcome: "canceled",
+    handoffQuiescence: "settled",
+    handoffDeadlineExpired: true,
+    handoffPolicyOwned: true,
+    handoffListenerOwned: true,
+    handoffTargetsAvailable: false,
+    handoffTargetMatched: false,
+    handoffPolls: 1,
+    handoffListeners: 1,
+    handoffUnknownProcesses: 0,
+    handoffTargetCount: 0,
+    handoffWindowsNativePhase: "listener",
+    handoffWindowsNativeOutcome: "timeout",
+  } as const
+  expect(readBrowserObservation({ browserObservation: observed })).toEqual(observed)
+  const failure = browserObservationError("BROWSER_HANDOFF_UNCONFIRMED", undefined, observed)
+  const cleanup = browserObservationError("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED", failure, {
+    browserPhase: "cleanup-profile",
+    observedProcesses: 0,
+  })
+  expect(readBrowserObservation(cleanup)).toMatchObject({
+    ...observed,
+    browserPhase: "cleanup-profile",
+    observedProcesses: 0,
+  })
+  for (const invalid of [
+    { handoffPhase: "PRIVATE" },
+    { handoffOutcome: "PASS" },
+    { handoffQuiescence: "PRIVATE" },
+    { handoffListenerOwned: "PRIVATE" },
+    { handoffTargetCount: 65537 },
+    { handoffWindowsNativePhase: "PRIVATE" },
+    { handoffWindowsNativeOutcome: "PRIVATE" },
+  ]) {
+    expect(readBrowserObservation({ browserObservation: { ...observed, ...invalid } })).toBeUndefined()
+  }
+})

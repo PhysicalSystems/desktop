@@ -7,6 +7,7 @@ import { join } from "node:path"
 import { PassThrough } from "node:stream"
 import { runOwnedProviderBrowserReview, type OwnedProviderReviewSession } from "./owned-provider-review"
 import { ownedReviewBrowserEnvironment, reviewBrowserProcess, startOwnedReviewBrowser } from "./owned-review-browser"
+import { readBrowserObservation } from "./browser-observation"
 import { providerAccountMarker } from "./provider-account"
 
 const keys = generateKeyPairSync("rsa", { modulusLength: 3072 })
@@ -20,6 +21,8 @@ async function fixture(
     handoff?: boolean
     opened?: boolean
     rejectedOpen?: boolean
+    targetRead?: "delayed" | "pending"
+    credentialRemovalFails?: boolean
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "owned-provider-review-")))
@@ -36,6 +39,8 @@ async function fixture(
     nativeEnv: {} as NodeJS.ProcessEnv,
     sealed: "",
     lifecycle: [] as string[],
+    settleTarget: () => {},
+    confirmationActive: false,
   }
   const stderr = new PassThrough()
   let connected = false
@@ -117,10 +122,33 @@ async function fixture(
     async startBrowser(input: { env: NodeJS.ProcessEnv; root: string }) {
       return {
         environment: ownedReviewBrowserEnvironment(input.root, input.env),
-        async confirmHandoff() {
+        async confirmHandoff(_url: string, input: { signal?: AbortSignal } = {}) {
+          if (options.targetRead) {
+            state.lifecycle.push("target-start")
+            state.confirmationActive = true
+            const pending = new Promise<void>((resolve) => {
+              state.settleTarget = resolve
+            })
+            if (options.targetRead === "delayed")
+              input.signal?.addEventListener(
+                "abort",
+                () => {
+                  state.lifecycle.push("target-cancel")
+                  setTimeout(state.settleTarget, 10)
+                },
+                { once: true },
+              )
+            await pending
+            state.confirmationActive = false
+            state.lifecycle.push("target-settled")
+          }
           return options.handoff !== false
         },
+        releaseController() {
+          state.lifecycle.push("browser-release")
+        },
         async stop(stop: { retainProfile?: boolean } = {}) {
+          expect(state.confirmationActive).toBe(false)
           state.lifecycle.push("browser-stop")
           state.retained = stop.retainProfile === true
           if (options.browserCleanupFails) throw Error("PRIVATE-BROWSER-STOP")
@@ -175,6 +203,7 @@ async function fixture(
         return response({ status: "complete" })
       }
       if (init?.method === "DELETE" && parsed.pathname === "/api/credential/cred_inert") {
+        if (options.credentialRemovalFails) throw Error("PRIVATE-REMOVE-OUTCOME-LOST")
         connected = false
         state.removed = true
       }
@@ -263,11 +292,7 @@ test("failed handoff/upload/cleanup cannot return observed and do not leak error
   ]) {
     const f = await fixture(options)
     try {
-      await expect(runOwnedProviderBrowserReview(f.input, f.io)).rejects.toThrow(
-        options.browserCleanupFails || options.nativeCleanupFails
-          ? "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED"
-          : "PROVIDER_REVIEW_UNCONFIRMED",
-      )
+      await expect(runOwnedProviderBrowserReview(f.input, f.io)).rejects.toThrow("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
       expect(f.state.lifecycle).toContain("browser-stop")
       if (options.nativeCleanupFails)
         expect(
@@ -328,5 +353,58 @@ test("failed browser/native acquisition retains private paths when no owner is r
     } finally {
       await f.cleanup()
     }
+  }
+})
+
+test("provider eligibility timeout drains the exact target task before native cleanup, or retains without browser operations", async () => {
+  for (const targetRead of ["delayed", "pending"] as const) {
+    const f = await fixture({ targetRead })
+    try {
+      const error = await runOwnedProviderBrowserReview(f.input, { ...f.io, quiescenceTimeoutMs: 100 }).catch(
+        (error) => error,
+      )
+      expect(error.message).toBe("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+      expect(f.state.uploaded).toBe(false)
+      expect(readBrowserObservation(error)).toMatchObject({
+        handoffQuiescence: targetRead === "delayed" ? "settled" : "unconfirmed",
+        failedReviewPhase: "target",
+      })
+      if (targetRead === "delayed") {
+        expect(f.state.lifecycle).toEqual([
+          "launch",
+          "target-start",
+          "target-cancel",
+          "target-settled",
+          "native-stop",
+          "browser-stop",
+        ])
+      } else {
+        expect(f.state.lifecycle).toEqual(["launch", "target-start", "native-stop", "browser-release"])
+        await access(f.input.root)
+        f.state.settleTarget()
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        expect(f.state.browserStopped).toBe(false)
+        await access(f.input.root)
+      }
+    } finally {
+      f.state.settleTarget()
+      await f.cleanup()
+    }
+  }
+}, 20000)
+
+test("failed credential removal propagates cleanup uncertainty and preserves private review state", async () => {
+  const f = await fixture({ credentialRemovalFails: true })
+  try {
+    const error = await runOwnedProviderBrowserReview(f.input, f.io).catch((error) => error)
+    expect(error.message).toBe("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+    expect(f.state.removed).toBe(false)
+    expect(f.state.retained).toBe(true)
+    expect(f.state.nativeStopped).toBe(true)
+    expect(f.state.browserStopped).toBe(true)
+    expect(JSON.stringify(error)).not.toContain("PRIVATE")
+    await access(f.input.root)
+  } finally {
+    await f.cleanup()
   }
 })

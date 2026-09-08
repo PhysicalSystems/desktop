@@ -8,6 +8,7 @@ import { startOwnedWindowsReviewBrowser } from "./owned-windows-review-browser"
 import { verifyOwnedReviewContext, type OwnedProviderReviewSession } from "./owned-provider-review"
 import { validateProviderBrowserReviewContext, type ProviderBrowserReviewContext } from "./provider-browser-review"
 import { browserObservationError, type BrowserObservation } from "./browser-observation"
+import { createBrowserHandoffTask } from "./browser-handoff-task"
 
 const failure = () => Error("BROWSER_HANDOFF_UNCONFIRMED")
 
@@ -30,6 +31,7 @@ export async function runOwnedBrowserHandoffReview(
     startBrowser?: typeof startOwnedReviewBrowser
     platform?: NodeJS.Platform
     timeoutMs?: number
+    quiescenceTimeoutMs?: number
   } = {},
 ) {
   if (!input.env.PS_BROWSER_REVIEW || input.env.PS_BROWSER_REVIEW === "0")
@@ -40,6 +42,10 @@ export async function runOwnedBrowserHandoffReview(
   const context = validateProviderBrowserReviewContext(input.context)
   const timeoutMs = io.timeoutMs ?? 12000
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 12000) throw failure()
+  // A Windows observation has a 12s native bound. Cancellation prevents the
+  // next read; this separate bound lets the current one settle before cleanup.
+  const quiescenceTimeoutMs = io.quiescenceTimeoutMs ?? 13000
+  if (!Number.isInteger(quiescenceTimeoutMs) || quiescenceTimeoutMs < 1 || quiescenceTimeoutMs > 13000) throw failure()
   const nonce = randomBytes(32).toString("hex")
   const path = `/physicalsystems-browser-review/${nonce}`
   let host: string | undefined
@@ -81,6 +87,7 @@ export async function runOwnedBrowserHandoffReview(
   let browser: Awaited<ReturnType<typeof startOwnedReviewBrowser>> | undefined
   let uncertain = false
   let acquiring = false
+  let confirmationUnsettled = false
   const observation: BrowserObservation = { reviewPhase: "context", openerAcknowledged: false, requestObserved: false }
   let observedError: unknown
   try {
@@ -99,6 +106,7 @@ export async function runOwnedBrowserHandoffReview(
       io.startBrowser ?? (platform === "win32" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser)
     )({ env: input.env, root: browserRoot, probeURL })
     acquiring = false
+    const handoff = createBrowserHandoffTask(browser, quiescenceTimeoutMs)
     acquiring = true
     observation.reviewPhase = "app-session"
     const observed = await input.withSession(
@@ -125,13 +133,15 @@ export async function runOwnedBrowserHandoffReview(
               if (!openerAcknowledged) uncertain = true
               if (expired || !openerAcknowledged) return false
               observation.reviewPhase = "target"
-              if (!(await browser!.confirmHandoff(probeURL))) return false
+              if (!(await handoff.confirm(probeURL)) || expired) return false
               observation.reviewPhase = "request"
               return await requestArrived.then(() => true)
             })(),
             new Promise<false>((resolve) => {
               timer = setTimeout(() => {
                 expired = true
+                observation.handoffDeadlineExpired = true
+                handoff.cancel()
                 // An unresolved OS handoff may still launch a process after
                 // cleanup. Read-only CDP/HTTP timeouts carry no such authority.
                 if (!openerAcknowledged) uncertain = true
@@ -146,6 +156,11 @@ export async function runOwnedBrowserHandoffReview(
           return false
         } finally {
           clearTimeout(timer)
+          const drained = await handoff.drain()
+          confirmationUnsettled = !drained.settled
+          if (confirmationUnsettled) uncertain = true
+          Object.assign(observation, drained.observation)
+          observation.requestObserved = requestObserved
         }
       },
     )
@@ -170,7 +185,11 @@ export async function runOwnedBrowserHandoffReview(
     if (acquiring) uncertain = true
     try {
       observation.reviewPhase = "browser-cleanup"
-      await browser?.stop({ retainProfile: uncertain })
+      if (confirmationUnsettled) {
+        // No new native reads/signals/registry mutation while a prior read has
+        // an unknown outcome. Release only controller handles; retain state.
+        browser?.releaseController?.()
+      } else await browser?.stop({ retainProfile: uncertain })
     } catch (error) {
       observedError = error
       observation.failedReviewPhase ??= observation.reviewPhase

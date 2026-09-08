@@ -18,6 +18,9 @@ async function fixture(
     request?: boolean
     lateRequest?: boolean
     pendingOpen?: boolean
+    pendingTarget?: boolean
+    delayedTarget?: boolean
+    ignoredTargetCancellation?: boolean
     rejectedOpen?: boolean
     nativeCleanupFails?: boolean
     browserCleanupFails?: boolean
@@ -45,6 +48,8 @@ async function fixture(
     nativeStarted: false,
     retained: false,
     settleOpen: () => {},
+    settleTarget: () => {},
+    confirmationActive: false,
   }
   const input = {
     env: {
@@ -123,12 +128,42 @@ async function fixture(
       expect(validateBrowserProbeURL(state.url)).toBe(state.url)
       return {
         environment: { HOME: value.root },
-        async confirmHandoff(url: string) {
+        async confirmHandoff(url: string, input: { signal?: AbortSignal } = {}) {
           expect(url).toBe(state.url)
           state.events.push("owned-target")
-          return options.target !== false
+          if (options.pendingTarget || options.delayedTarget) {
+            state.confirmationActive = true
+            const pending = new Promise<void>((resolve) => {
+              state.settleTarget = resolve
+            })
+            if (options.delayedTarget)
+              input.signal?.addEventListener(
+                "abort",
+                () => {
+                  state.events.push("target-cancel")
+                  setTimeout(state.settleTarget, 10)
+                },
+                { once: true },
+              )
+            await pending
+            state.confirmationActive = false
+            state.events.push("target-settled")
+          }
+          return (!input.signal?.aborted || options.ignoredTargetCancellation === true) && options.target !== false
+        },
+        observation() {
+          return {
+            browserPhase: "handoff-targets" as const,
+            handoffPhase: "targets" as const,
+            handoffTargetCount: 1,
+            handoffTargetMatched: options.target !== false,
+          }
+        },
+        releaseController() {
+          state.events.push("browser-release")
         },
         async stop(stop: { retainProfile?: boolean } = {}) {
+          expect(state.confirmationActive).toBe(false)
           state.events.push("browser-stop")
           state.retained = stop.retainProfile === true
           if (options.nativeCleanupFails) expect(stop.retainProfile).toBe(true)
@@ -296,6 +331,83 @@ test("browser review remains opt-in and never accepts an arbitrary provider or l
       expect(qualificationFailureCode(new Error(code))).toBe(code)
       expect(qualificationFailureCode(new Error(code + " private-error"))).toBe("QUALIFICATION_UNEXPECTED_ERROR")
     }
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("deadline cancels and drains target inspection before app and browser cleanup; late success cannot pass", async () => {
+  const f = await fixture({ delayedTarget: true, ignoredTargetCancellation: true })
+  try {
+    const error = await runOwnedBrowserHandoffReview(f.input, {
+      ...f.io,
+      timeoutMs: 20,
+      quiescenceTimeoutMs: 100,
+    }).catch((error) => error)
+    expect(error.message).toBe("BROWSER_HANDOFF_UNCONFIRMED")
+    expect(f.state.events).toEqual([
+      "native-open",
+      "owned-target",
+      "target-cancel",
+      "target-settled",
+      "native-stop",
+      "browser-stop",
+    ])
+    expect(f.state.retained).toBe(false)
+    expect(readBrowserObservation(error)).toMatchObject({
+      handoffDeadlineExpired: true,
+      handoffQuiescence: "settled",
+      failedReviewPhase: "target",
+      handoffPhase: "targets",
+      handoffTargetCount: 1,
+      handoffTargetMatched: true,
+      openerAcknowledged: true,
+      requestObserved: true,
+    })
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("unresponsive target inspection retains paths and releases controller without another native browser operation", async () => {
+  const f = await fixture({ pendingTarget: true })
+  try {
+    const error = await runOwnedBrowserHandoffReview(f.input, {
+      ...f.io,
+      timeoutMs: 20,
+      quiescenceTimeoutMs: 20,
+    }).catch((error) => error)
+    expect(error.message).toBe("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED")
+    expect(f.state.events).toEqual(["native-open", "owned-target", "native-stop", "browser-release"])
+    expect(readBrowserObservation(error)).toMatchObject({
+      handoffDeadlineExpired: true,
+      handoffQuiescence: "unconfirmed",
+      handoffOutcome: "pending",
+      failedReviewPhase: "target",
+    })
+    await access(f.input.root)
+    f.state.settleTarget()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(f.state.events).not.toContain("browser-stop")
+    await access(f.input.root)
+  } finally {
+    f.state.settleTarget()
+    await f.cleanup()
+  }
+})
+
+test("cleanup failure preserves the frozen target result instead of substituting cleanup's snapshots", async () => {
+  const f = await fixture({ target: false, browserCleanupFails: true })
+  try {
+    const error = await runOwnedBrowserHandoffReview(f.input, f.io).catch((error) => error)
+    expect(error.message).toBe("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED")
+    expect(readBrowserObservation(error)).toMatchObject({
+      handoffPhase: "targets",
+      handoffTargetMatched: false,
+      handoffTargetCount: 1,
+      handoffQuiescence: "settled",
+      failedReviewPhase: "target",
+    })
   } finally {
     await f.cleanup()
   }

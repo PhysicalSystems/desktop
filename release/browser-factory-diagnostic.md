@@ -52,6 +52,11 @@ writing partial target bytes and holds a descendant query until interruption is
 requested. No installer runs. This catches Windows-specific lifecycle regressions
 before the full candidate spends time installing build dependencies.
 
+Inert filesystem tests also verify native file identities and bounded private-root
+removal, including directory replacement and junction/symlink preservation. These
+tests do not open a browser. Actual cleanup still requires settled handoff reads,
+confirmed process shutdown and exact launcher restoration before deleting a profile.
+
 Windows startup stderr is drained privately and classified within 64 KiB. Only
 fixed message categories and a truncation flag enter the report. A message saying
 DevTools is listening cannot establish ownership or authorize a CDP request.
