@@ -18,6 +18,30 @@ const phases = [
   "cleanup-wait",
   "cleanup-profile",
   "stopped",
+  "windows-preflight",
+  "windows-preflight-shape",
+  "windows-policy-write",
+  "windows-policy-restore",
+] as const
+const windowsPhases = [
+  "bootstrap",
+  "machine-policy",
+  "ambient-browser",
+  "association-progid",
+  "association-executable",
+  "signature",
+  "policy-read",
+  "policy-compare",
+  "policy-write",
+  "policy-readback",
+  "process-tree",
+  "process-identity",
+  "listener",
+  "policy-restore",
+  "policy-keys",
+  "process-signal",
+  "process-wait",
+  "output",
 ] as const
 const reviews = [
   "context",
@@ -56,9 +80,17 @@ export type BrowserObservation = {
   ownedProcesses?: number
   targetCount?: number
   syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "OTHER"
+  windowsNativePhase?: (typeof windowsPhases)[number]
+  failedWindowsNativePhase?: (typeof windowsPhases)[number]
+  policyOwned?: boolean
+  sidMatched?: boolean
+  observedProcesses?: number
+  unknownProcesses?: number
+  listenerProcesses?: number
 }
 const codes = [
   "PROVIDER_REVIEW_BROWSER_UNCONFIRMED",
+  "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
   "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED",
   "PROVIDER_REVIEW_UNCONFIRMED",
   "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED",
@@ -76,27 +108,40 @@ const bools = [
   "stderrTruncated",
   "sameSession",
   "databaseMatched",
+  "policyOwned",
+  "sidMatched",
 ]
-const counts = ["ownedProcesses", "targetCount", "argvFields", "argvReads", "emptyArgvReads"]
+const counts = [
+  "ownedProcesses",
+  "targetCount",
+  "argvFields",
+  "argvReads",
+  "emptyArgvReads",
+  "observedProcesses",
+  "unknownProcesses",
+  "listenerProcesses",
+]
 function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
-    const allowed = ["browserPhase", "failedBrowserPhase", "cleanupFailurePhase"].includes(key)
-      ? phases
-      : ["reviewPhase", "failedReviewPhase"].includes(key)
-        ? reviews
-        : key === "syscallFailure"
-          ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
-          : key === "processState"
-            ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
-            : key === "termination"
-              ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
-              : key === "stderrCategory"
-                ? ["sandbox", "display", "dbus", "other"]
-                : key === "inspectPhase"
-                  ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
-                  : undefined
+    const allowed = ["windowsNativePhase", "failedWindowsNativePhase"].includes(key)
+      ? windowsPhases
+      : ["browserPhase", "failedBrowserPhase", "cleanupFailurePhase"].includes(key)
+        ? phases
+        : ["reviewPhase", "failedReviewPhase"].includes(key)
+          ? reviews
+          : key === "syscallFailure"
+            ? ["ENOENT", "ESRCH", "EACCES", "EPERM", "OTHER"]
+            : key === "processState"
+              ? ["R", "S", "D", "T", "t", "I", "P", "Z", "X", "x"]
+              : key === "termination"
+                ? ["SIGABRT", "SIGSEGV", "SIGTRAP", "SIGTERM", "SIGKILL", "OTHER"]
+                : key === "stderrCategory"
+                  ? ["sandbox", "display", "dbus", "other"]
+                  : key === "inspectPhase"
+                    ? ["proc-stat", "proc-status", "cmdline", "uid", "crashpad-executable", "birth"]
+                    : undefined
     if (
       allowed
         ? !(allowed as readonly unknown[]).includes(item)

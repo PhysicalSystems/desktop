@@ -3,7 +3,13 @@ import { expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { browserObservationError } from "./browser-observation"
-import { browserDiagnosticContext, pendingBrowserDiagnostic, runBrowserFactoryDiagnostic } from "./browser-diagnostic"
+import {
+  browserDiagnosticContext,
+  browserDiagnosticProbeURL,
+  pendingBrowserDiagnostic,
+  runBrowserFactoryDiagnostic,
+} from "./browser-diagnostic"
+import { validateBrowserProbeURL } from "./owned-review-browser"
 
 const revision = "a".repeat(40)
 const env: NodeJS.ProcessEnv = {
@@ -32,8 +38,8 @@ test("actual diagnostic CLI rejects a local environment before creating or launc
   expect(result.stderr.trim()).toBe("BROWSER_DIAGNOSTIC_INCOMPLETE")
 })
 
-test("diagnostic requires the exact owned dispatched source on a Linux hosted runner", () => {
-  expect(context).toEqual({ sourceRevision: revision, runId: "123", runAttempt: 1 })
+test("diagnostic requires the exact owned dispatched source and selected hosted platform", () => {
+  expect(context).toEqual({ sourceRevision: revision, runId: "123", runAttempt: 1, platform: "linux-x64" })
   for (const changed of [
     { CI: "false" },
     { GITHUB_ACTIONS: "false" },
@@ -42,6 +48,8 @@ test("diagnostic requires the exact owned dispatched source on a Linux hosted ru
     { GITHUB_WORKFLOW_REF: "PhysicalSystems/desktop/.github/workflows/other.yml@refs/heads/main" },
     { RUNNER_ENVIRONMENT: "self-hosted" },
     { RUNNER_OS: "Windows" },
+    { BROWSER_DIAGNOSTIC_PLATFORM: "windows-x64" },
+    { BROWSER_DIAGNOSTIC_PLATFORM: "unowned" },
     { BROWSER_DIAGNOSTIC_SOURCE_SHA: "main" },
     { GITHUB_SHA: "b".repeat(40) },
     { GITHUB_RUN_ID: "0" },
@@ -69,6 +77,51 @@ test("diagnostic requires the exact owned dispatched source on a Linux hosted ru
         ...changed,
       }),
     ).toThrow("BROWSER_DIAGNOSTIC_CONTEXT_UNCONFIRMED")
+})
+
+test("Windows selection is anchored to the real Windows host and only HTTP association scope", async () => {
+  const windowsEnv = { ...env, RUNNER_OS: "Windows", BROWSER_DIAGNOSTIC_PLATFORM: "windows-x64" }
+  const windows = browserDiagnosticContext({
+    env: windowsEnv,
+    checkedOutRevision: revision,
+    platform: "win32",
+    architecture: "x64",
+  })
+  expect(windows.platform).toBe("windows-x64")
+  expect(() =>
+    browserDiagnosticContext({ env: windowsEnv, checkedOutRevision: revision, platform: "linux", architecture: "x64" }),
+  ).toThrow()
+  for (const selected of [undefined, "linux-x64", "windows-arm64"])
+    expect(() =>
+      browserDiagnosticContext({
+        env: { ...windowsEnv, BROWSER_DIAGNOSTIC_PLATFORM: selected },
+        checkedOutRevision: revision,
+        platform: "win32",
+        architecture: "x64",
+      }),
+    ).toThrow()
+  const calls: string[] = []
+  const result = await runBrowserFactoryDiagnostic(windows, async () => {
+    calls.push("acquire")
+    return {
+      stop: async () => {
+        calls.push("stop")
+      },
+    }
+  })
+  expect(calls).toEqual(["acquire", "stop"])
+  expect(result).toMatchObject({
+    platform: "windows-x64",
+    associationProtocol: "http",
+    result: "COMPLETE",
+    cleanup: "STOPPED",
+    browserHandoff: "NOT_TESTED",
+    providerLogin: "NOT_TESTED",
+    qualification: false,
+    publication: false,
+  })
+  expect(validateBrowserProbeURL(browserDiagnosticProbeURL)).toBe(browserDiagnosticProbeURL)
+  expect(browserDiagnosticProbeURL).toStartWith("http://127.0.0.1:1/")
 })
 
 test("factory diagnostic starts once, stops once, and never produces product or provider qualification", async () => {

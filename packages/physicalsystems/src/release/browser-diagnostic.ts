@@ -2,15 +2,24 @@
 import { readBrowserObservation, type BrowserObservation } from "./browser-observation"
 import type { OwnedReviewBrowser } from "./owned-review-browser"
 
-export type BrowserDiagnosticContext = { sourceRevision: string; runId: string; runAttempt: number }
+// Select the same HTTP association as the inert native handoff check. This
+// sentinel is never opened, fetched or navigated to; only about:blank is loaded.
+export const browserDiagnosticProbeURL = `http://127.0.0.1:1/physicalsystems-browser-review/${"0".repeat(64)}`
+
+export type BrowserDiagnosticContext = {
+  sourceRevision: string
+  runId: string
+  runAttempt: number
+  platform: "linux-x64" | "windows-x64"
+}
 export type BrowserDiagnosticReport = BrowserDiagnosticContext & {
   schemaVersion: 1
   kind: "owned-browser-factory-diagnostic"
-  platform: "linux-x64"
   result: "COMPLETE" | "FAILED" | "INCOMPLETE"
   acquisition: "NOT_STARTED" | "READY" | "UNCONFIRMED"
   cleanup: "STOPPED" | "UNCONFIRMED"
   retentionRequired: boolean
+  associationProtocol: "http"
   browserObservation?: BrowserObservation
   desktop: "NOT_TESTED"
   browserHandoff: "NOT_TESTED"
@@ -19,7 +28,7 @@ export type BrowserDiagnosticReport = BrowserDiagnosticContext & {
   publication: false
 }
 
-/** This diagnostic is available only on an exact workflow-dispatched Linux
+/** This diagnostic is available only on an exact workflow-dispatched
  * hosted-runner revision. It has no arbitrary source or browser override. */
 export function browserDiagnosticContext(input: {
   env: NodeJS.ProcessEnv
@@ -28,15 +37,18 @@ export function browserDiagnosticContext(input: {
   architecture?: string
 }): BrowserDiagnosticContext {
   const env = input.env
+  const platform = input.platform ?? process.platform
+  const selected = env.BROWSER_DIAGNOSTIC_PLATFORM ?? "linux-x64"
   if (
-    (input.platform ?? process.platform) !== "linux" ||
+    !["linux", "win32"].includes(platform) ||
+    selected !== (platform === "win32" ? "windows-x64" : "linux-x64") ||
     (input.architecture ?? process.arch) !== "x64" ||
     env.CI !== "true" ||
     env.GITHUB_ACTIONS !== "true" ||
     env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
     env.GITHUB_REPOSITORY !== "PhysicalSystems/desktop" ||
     env.RUNNER_ENVIRONMENT !== "github-hosted" ||
-    env.RUNNER_OS !== "Linux" ||
+    env.RUNNER_OS !== (platform === "win32" ? "Windows" : "Linux") ||
     !env.GITHUB_WORKFLOW_REF?.startsWith("PhysicalSystems/desktop/.github/workflows/desktop-release.yml@refs/heads/") ||
     !/^[a-f0-9]{40}$/.test(env.BROWSER_DIAGNOSTIC_SOURCE_SHA ?? "") ||
     env.BROWSER_DIAGNOSTIC_SOURCE_SHA !== env.GITHUB_SHA ||
@@ -50,6 +62,7 @@ export function browserDiagnosticContext(input: {
     sourceRevision: env.BROWSER_DIAGNOSTIC_SOURCE_SHA!,
     runId: env.GITHUB_RUN_ID!,
     runAttempt: Number(env.GITHUB_RUN_ATTEMPT),
+    platform: selected as BrowserDiagnosticContext["platform"],
   })
 }
 
@@ -60,11 +73,12 @@ export function pendingBrowserDiagnostic(context: BrowserDiagnosticContext): Bro
     sourceRevision: context.sourceRevision,
     runId: context.runId,
     runAttempt: context.runAttempt,
-    platform: "linux-x64",
+    platform: context.platform,
     result: "INCOMPLETE",
     acquisition: "NOT_STARTED",
     cleanup: "UNCONFIRMED",
     retentionRequired: true,
+    associationProtocol: "http",
     desktop: "NOT_TESTED",
     browserHandoff: "NOT_TESTED",
     providerLogin: "NOT_TESTED",

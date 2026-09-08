@@ -12,7 +12,8 @@ import {
   windowsReviewProcesses,
 } from "./owned-windows-review-browser"
 import type { WindowsReviewNative, WindowsReviewProcess } from "./windows-review-native"
-import { windowsReviewNative } from "./windows-review-native"
+import { windowsReviewNative, windowsReviewNativeFailure } from "./windows-review-native"
+import { browserObservationError, readBrowserObservation } from "./browser-observation"
 import { qualificationFailureCode } from "./qualification"
 
 const executable = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
@@ -35,6 +36,7 @@ async function fixture(
     reusedPid?: boolean
     wrongRootSid?: boolean
     reuseOrphanAfterStop?: boolean
+    nativeFailure?: "preflight" | "set" | "observe" | "restore"
   } = {},
 ) {
   const temporary = await realpath(await mkdtemp(join(tmpdir(), "windows-review-fixture-")))
@@ -55,15 +57,28 @@ async function fixture(
     restored: false,
     orphan: false,
     observedRoots: [] as number[][],
+    unrefs: 0,
     nativeEnv: {} as NodeJS.ProcessEnv,
   }
   const child = Object.assign(new EventEmitter(), {
     pid: 4100,
     exitCode: null,
     signalCode: null,
+    unref() {
+      state.unrefs++
+    },
   }) as unknown as ChildProcess
   const native: WindowsReviewNative = async (request) => {
     state.calls.push(request.operation)
+    if (request.operation === options.nativeFailure && request.operation !== "set")
+      throw windowsReviewNativeFailure(
+        "PRIVATE-NATIVE-ERROR\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_" +
+          (request.operation === "preflight"
+            ? "association-progid"
+            : request.operation === "restore"
+              ? "policy-restore"
+              : "process-identity"),
+      )
     if ("scheme" in request) state.schemes.push(request.scheme)
     if (request.operation === "preflight")
       return {
@@ -76,6 +91,8 @@ async function fixture(
       expect(request.before).toEqual(before)
       state.profile = request.profile
       state.policy = { keys: [true, true, true], value: { kind: "String", data: request.profile } }
+      if (options.nativeFailure === "set")
+        throw windowsReviewNativeFailure("PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_policy-write")
       if (options.policySetLost) throw Error("PRIVATE-POLICY-WRITE-RESPONSE-LOST")
       return { written: true }
     }
@@ -329,4 +346,62 @@ test("provider diagnostics retain only fixed reviewed failure codes", () => {
       "QUALIFICATION_UNEXPECTED_ERROR",
     )
   }
+})
+
+test("Windows acquisition and cleanup preserve exact fixed native phases without private values", async () => {
+  for (const nativeFailure of ["preflight", "set", "observe", "restore"] as const) {
+    const f = await fixture({ nativeFailure })
+    try {
+      const error =
+        nativeFailure === "restore"
+          ? await (await startOwnedWindowsReviewBrowser(f.input, f.io)).stop().catch((error: unknown) => error)
+          : await startOwnedWindowsReviewBrowser(f.input, f.io).catch((error: unknown) => error)
+      const observation = readBrowserObservation(
+        browserObservationError("BROWSER_HANDOFF_CLEANUP_UNCONFIRMED", error, {
+          reviewPhase: "browser-cleanup",
+          failedReviewPhase: "browser-acquisition",
+        }),
+      )
+      expect(observation).toBeDefined()
+      if (nativeFailure === "preflight") {
+        expect(observation?.failedBrowserPhase).toBe("windows-preflight")
+        expect(observation?.failedWindowsNativePhase).toBe("association-progid")
+        expect(observation?.pidObserved).toBe(false)
+      } else if (nativeFailure === "set") {
+        expect(observation?.failedBrowserPhase).toBe("windows-policy-write")
+        expect(observation?.failedWindowsNativePhase).toBe("policy-write")
+        expect(f.state.restored).toBe(true)
+      } else if (nativeFailure === "observe") {
+        expect(observation?.failedBrowserPhase).toBe("identity-stat")
+        expect(observation?.cleanupFailurePhase).toBe("cleanup-observe")
+        expect(observation?.failedWindowsNativePhase).toBe("process-identity")
+      } else {
+        expect(observation?.cleanupFailurePhase).toBe("windows-policy-restore")
+        expect(observation?.windowsNativePhase).toBe("policy-restore")
+        expect(observation?.ownedProcesses).toBe(0)
+      }
+      expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+      if (f.state.profile) expect(JSON.stringify(observation)).not.toContain(f.state.profile)
+      if (["observe", "restore"].includes(nativeFailure)) {
+        expect(f.state.unrefs).toBeGreaterThan(0)
+        await access(f.input.root)
+      }
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("native phase parser accepts only one authored marker, never raw native errors or identities", () => {
+  const privateValue = "PRIVATE-PATH-SID-CREDENTIAL"
+  const result = windowsReviewNativeFailure(`${privateValue}\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\n`)
+  expect(readBrowserObservation(result)?.windowsNativePhase).toBe("signature")
+  expect(JSON.stringify(readBrowserObservation(result))).not.toContain(privateValue)
+  for (const value of [
+    privateValue,
+    `PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_${privateValue}`,
+    "PHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature\nPHYSICALSYSTEMS_WINDOWS_BROWSER_PHASE_signature",
+    "x".repeat(1024 * 1024 + 1),
+  ])
+    expect(readBrowserObservation(windowsReviewNativeFailure(value))?.windowsNativePhase).toBeUndefined()
 })

@@ -4,10 +4,12 @@ import { mkdir, mkdtemp, realpath, rename, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
   browserDiagnosticContext,
+  browserDiagnosticProbeURL,
   pendingBrowserDiagnostic,
   runBrowserFactoryDiagnostic,
 } from "../packages/physicalsystems/src/release/browser-diagnostic"
 import { startOwnedReviewBrowser } from "../packages/physicalsystems/src/release/owned-review-browser"
+import { startOwnedWindowsReviewBrowser } from "../packages/physicalsystems/src/release/owned-windows-review-browser"
 import { requireDisposablePublicRunner } from "../packages/physicalsystems/src/release/public-qualification"
 
 try {
@@ -34,7 +36,10 @@ try {
     flag: "wx",
   })
   const root = await mkdtemp(join(temporary, "private-browser-factory-"))
-  const result = await runBrowserFactoryDiagnostic(context, () => startOwnedReviewBrowser({ env: process.env, root }))
+  const acquire = context.platform === "windows-x64" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser
+  const result = await runBrowserFactoryDiagnostic(context, () =>
+    acquire({ env: process.env, root, probeURL: browserDiagnosticProbeURL }),
+  )
   const completed = join(reports, "browser-diagnostic.next.json")
   await writeFile(completed, JSON.stringify(result, null, 2) + "\n", { mode: 0o600, flag: "wx" })
   await rename(completed, report)

@@ -5,6 +5,7 @@ import { lstat, mkdir, readFile, readdir, realpath, rm } from "node:fs/promises"
 import { join, win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { reviewBrowserTargets, validateBrowserProbeURL } from "./owned-review-browser"
+import { browserObservationError, readBrowserObservation, type BrowserObservation } from "./browser-observation"
 import {
   windowsReviewNative,
   type WindowsReviewBaseline,
@@ -130,6 +131,33 @@ export function windowsReviewOwnership(input: {
 /** Windows-only real browser owner. It never changes the default association,
  * imports credentials, returns PASS, or stops a pre-existing/unowned browser. */
 export async function startOwnedWindowsReviewBrowser(
+  input: Parameters<typeof acquireWindowsReviewBrowser>[0],
+  io: Parameters<typeof acquireWindowsReviewBrowser>[1] = {},
+) {
+  const observation: BrowserObservation = {
+    browserPhase: "context",
+    pidObserved: false,
+    birthVerified: false,
+    cdpReady: false,
+  }
+  try {
+    return await acquireWindowsReviewBrowser(input, io, observation)
+  } catch (error) {
+    observation.failedBrowserPhase ??= observation.browserPhase
+    const native = readBrowserObservation(error)
+    const phase = native?.failedWindowsNativePhase ?? native?.windowsNativePhase
+    if (phase) observation.failedWindowsNativePhase ??= phase
+    throw browserObservationError(
+      error instanceof Error && error.message === "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED"
+        ? "PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED"
+        : "PROVIDER_REVIEW_WINDOWS_UNCONFIRMED",
+      error,
+      observation,
+    )
+  }
+}
+
+async function acquireWindowsReviewBrowser(
   input: { env: NodeJS.ProcessEnv; root: string; probeURL?: string },
   io: {
     native?: WindowsReviewNative
@@ -138,7 +166,8 @@ export async function startOwnedWindowsReviewBrowser(
     platform?: NodeJS.Platform
     timeoutMs?: number
     pollMs?: number
-  } = {},
+  },
+  observation: BrowserObservation,
 ) {
   const expectedURL =
     input.probeURL === undefined ? "https://auth.openai.com/codex/device" : validateBrowserProbeURL(input.probeURL)
@@ -160,7 +189,9 @@ export async function startOwnedWindowsReviewBrowser(
   const root = await realpath(input.root)
   if ((await readdir(root)).length) throw failure()
   const native = io.native ?? windowsReviewNative(input.env, root)
+  observation.browserPhase = "windows-preflight"
   const raw = record(await native({ operation: "preflight", scheme }))
+  observation.browserPhase = "windows-preflight-shape"
   if (
     typeof raw.executable !== "string" ||
     !/^[A-Za-z]:\\[^\r\n\0]+\\Microsoft\\Edge\\Application\\msedge\.exe$/i.test(raw.executable) ||
@@ -174,7 +205,10 @@ export async function startOwnedWindowsReviewBrowser(
     policy: windowsReviewPolicy(raw.policy),
     processes: windowsReviewProcesses(raw.processes),
   }
+  observation.observedProcesses = baseline.processes.length
+  observation.unknownProcesses = baseline.processes.length
   if (baseline.processes.length) throw failure()
+  observation.browserPhase = "directories"
   const profile = join(root, "profile")
   await mkdir(profile, { mode: 0o700 })
   const environment: NodeJS.ProcessEnv = Object.fromEntries(
@@ -213,6 +247,7 @@ export async function startOwnedWindowsReviewBrowser(
       }),
     )
     const processes = windowsReviewProcesses(value.processes)
+    observation.observedProcesses = processes.length
     for (const item of processes) {
       const prior = observed.get(item.pid)
       if (prior && !windowsReviewSameProcess(prior, item)) throw failure()
@@ -225,6 +260,10 @@ export async function startOwnedWindowsReviewBrowser(
       typeof value.policyOwned !== "boolean"
     )
       throw failure()
+    observation.policyOwned = value.policyOwned
+    observation.listenerProcesses = Math.min(value.listening.length, 65536)
+    observation.ownedProcesses = 0
+    observation.unknownProcesses = processes.length
     if (!main)
       return {
         processes,
@@ -242,6 +281,8 @@ export async function startOwnedWindowsReviewBrowser(
       sid: baseline.sid,
     })
     for (const [pid, process] of ownership.owned) known.set(pid, process)
+    observation.ownedProcesses = ownership.owned.size
+    observation.unknownProcesses = ownership.unknown.length
     return {
       processes,
       listening: [...new Set(value.listening as number[])],
@@ -254,10 +295,12 @@ export async function startOwnedWindowsReviewBrowser(
     try {
       const until = Date.now() + timeoutMs
       while (true) {
+        observation.browserPhase = "cleanup-observe"
         const current = await observe()
         if (!current.processes.length) break
         if (!main) throw cleanupFailure()
         if (current.owned.size) {
+          observation.browserPhase = "cleanup-signal"
           // Native adapter retains each process handle and rechecks its creation
           // time, executable, Windows session and SID before terminating it.
           await native({
@@ -266,8 +309,10 @@ export async function startOwnedWindowsReviewBrowser(
           }).catch(() => {})
         }
         if (Date.now() >= until) throw cleanupFailure()
+        observation.browserPhase = "cleanup-wait"
         await pause(pollMs)
       }
+      observation.browserPhase = "windows-policy-restore"
       if (
         policyAttempted &&
         record(
@@ -276,6 +321,7 @@ export async function startOwnedWindowsReviewBrowser(
       )
         throw cleanupFailure()
       if (!options.retainProfile) {
+        observation.browserPhase = "cleanup-profile"
         await rm(root, { recursive: true })
         if (
           await lstat(root).then(
@@ -286,13 +332,21 @@ export async function startOwnedWindowsReviewBrowser(
           throw cleanupFailure()
       }
       stopped = true
-    } catch {
-      throw cleanupFailure()
+      observation.browserPhase = "stopped"
+    } catch (error) {
+      observation.cleanupFailurePhase = observation.browserPhase
+      throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", error, observation)
+    } finally {
+      // This only releases the controller's event-loop reference. Unknown
+      // browser ownership remains a failure and its private paths stay intact.
+      child?.unref()
     }
   }
   try {
     policyAttempted = true
+    observation.browserPhase = "windows-policy-write"
     if (record(await native({ operation: "set", profile, before: baseline.policy })).written !== true) throw failure()
+    observation.browserPhase = "spawn"
     child = (io.spawn ?? spawn)(
       baseline.executable,
       [
@@ -306,16 +360,20 @@ export async function startOwnedWindowsReviewBrowser(
       ],
       { cwd: root, env: environment, shell: false, stdio: "ignore", windowsHide: false },
     )
+    observation.pidObserved = Boolean(child.pid)
     child.once("error", () => {
       spawnFailed = true
     })
-    child.once("close", () => {
+    child.once("close", (code: number | null) => {
       closed = true
+      observation.processExited = true
+      if (code !== null && Number.isInteger(code) && code >= 0 && code <= 255) observation.exitCode = code
     })
     const until = Date.now() + timeoutMs
     let ready = false
     while (Date.now() < until) {
       if (!child.pid || spawnFailed || closed || child.exitCode !== null) throw failure()
+      observation.browserPhase = "identity-stat"
       const current = await observe()
       if (!current.policyOwned) throw failure()
       if (!main) {
@@ -324,17 +382,24 @@ export async function startOwnedWindowsReviewBrowser(
           await pause(pollMs)
           continue
         }
+        observation.browserPhase = "identity-argv"
+        observation.sidMatched = observed.sid === baseline.sid
+        observation.profileTokenMatched = observed.args.some(
+          (arg) => arg.startsWith("--user-data-dir=") && pathEqual(arg.slice(16), profile),
+        )
         if (
-          observed.sid !== baseline.sid ||
+          !observation.sidMatched ||
           !pathEqual(observed.executable, baseline.executable) ||
-          !observed.args.some((arg) => arg.startsWith("--user-data-dir=") && pathEqual(arg.slice(16), profile))
+          !observation.profileTokenMatched
         )
           throw failure()
         main = observed
+        observation.birthVerified = true
         known.set(main.pid, main)
         continue
       }
       const file = join(profile, "DevToolsActivePort")
+      observation.browserPhase = "port-file"
       const value = await lstat(file).then(
         async (stat) => {
           if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 256) throw failure()
@@ -345,6 +410,7 @@ export async function startOwnedWindowsReviewBrowser(
         },
       )
       if (value && /^[1-9]\d{0,4}$/.test(value) && Number(value) <= 65535) port = Number(value)
+      observation.browserPhase = "cdp-targets"
       if (
         port &&
         current.listening.length === 1 &&
@@ -355,14 +421,17 @@ export async function startOwnedWindowsReviewBrowser(
         )
       ) {
         ready = true
+        observation.cdpReady = true
         break
       }
       await pause(pollMs)
     }
     if (!ready) throw failure()
+    observation.browserPhase = "ready"
     return {
       environment,
       async confirmHandoff(url: string) {
+        observation.browserPhase = "handoff-targets"
         if (url !== expectedURL || !port || !main || stopped || closed) throw failure()
         const until = Date.now() + Math.min(timeoutMs, 4000)
         while (Date.now() < until) {
@@ -386,8 +455,15 @@ export async function startOwnedWindowsReviewBrowser(
       },
       stop,
     }
-  } catch {
-    await stop()
-    throw failure()
+  } catch (error) {
+    observation.failedBrowserPhase ??= observation.browserPhase
+    const phase = readBrowserObservation(error)?.windowsNativePhase
+    if (phase) observation.failedWindowsNativePhase ??= phase
+    try {
+      await stop()
+    } catch (cleanup) {
+      throw browserObservationError("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED", cleanup, observation)
+    }
+    throw browserObservationError("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED", error, observation)
   }
 }
