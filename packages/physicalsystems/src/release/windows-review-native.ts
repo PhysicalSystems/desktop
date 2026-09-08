@@ -197,28 +197,126 @@ export function dispatchWindowsReviewNative(
   })
 }
 
+/** The executable path must observe close, not just execFile's callback: Bun
+ * can invoke the callback from error/failed-kill handling before close. Keep
+ * the existing operation deadline and add at most 500ms for close confirmation,
+ * fitting inside the handoff controller's 13s drain for a 12s native operation.
+ * An unconfirmed close permanently quarantines this owner, including after a
+ * late close; it cannot start another helper to stop, restore or delete state. */
+export function createWindowsReviewNativeTransport(
+  execute: (
+    options: Readonly<{ timeout: 12000 | 30000 }>,
+    complete: (error: unknown, stdout: string, stderr: string) => void,
+  ) => Pick<ChildProcess, "stdin" | "stdout" | "stderr" | "once" | "unref">,
+  closeTimeoutMs = 500,
+): WindowsReviewNative {
+  if (!Number.isInteger(closeTimeoutMs) || closeTimeoutMs < 1 || closeTimeoutMs > 500)
+    throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+  let active = false
+  let retained = false
+  const unconfirmed = () =>
+    browserObservationError("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED", undefined, {
+      browserPhase: "cleanup-quiescence",
+      windowsNativeOutcome: "unknown",
+      handoffQuiescence: "unconfirmed",
+    })
+  return async (request) => {
+    if (active || retained) throw unconfirmed()
+    active = true
+    try {
+      return await new Promise<unknown>((resolve, reject) => {
+        let child: ReturnType<typeof execute> | undefined
+        let closed = false
+        let started = false
+        let finished = false
+        let result: { value: unknown } | { error: unknown } | undefined
+        let timer: ReturnType<typeof setTimeout> | undefined
+        let deadline = 0
+        const finish = () => {
+          if (finished || !closed || !result) return
+          finished = true
+          clearTimeout(timer)
+          if ("error" in result)
+            reject(
+              browserObservationError("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED", result.error, {
+                browserPhase: "context",
+              }),
+            )
+          else resolve(result.value)
+        }
+        const expire = () => {
+          if (finished) return
+          finished = true
+          retained = !closed
+          if (retained) {
+            // Release controller handles only. No new signals, process lookup,
+            // registry mutation or profile deletion is authorized here.
+            for (const pipe of [child?.stdin, child?.stdout, child?.stderr]) {
+              try {
+                pipe?.destroy()
+              } catch {}
+            }
+            try {
+              child?.unref()
+            } catch {}
+          }
+          reject(unconfirmed())
+        }
+        const settled = (value: NonNullable<typeof result>) => {
+          if (finished) return
+          result = value
+          if (!started) {
+            finished = true
+            reject(windowsReviewNativeFailure("", "", "unknown"))
+            return
+          }
+          if (closed) return finish()
+          clearTimeout(timer)
+          timer = setTimeout(expire, Math.max(1, Math.min(closeTimeoutMs, deadline - Date.now())))
+        }
+        dispatchWindowsReviewNative(request, (options, complete) => {
+          started = true
+          deadline = Date.now() + options.timeout + closeTimeoutMs
+          timer = setTimeout(expire, options.timeout + closeTimeoutMs)
+          child = execute(options, complete)
+          child.once("close", () => {
+            if (finished) return
+            closed = true
+            finish()
+          })
+          return child
+        }).then(
+          (value) => settled({ value }),
+          (error) => settled({ error }),
+        )
+      })
+    } finally {
+      active = false
+    }
+  }
+}
+
 export function windowsReviewNative(env: NodeJS.ProcessEnv, root: string): WindowsReviewNative {
   if (process.platform !== "win32") throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   const environment = windowsReviewNativeEnvironment(env, root)
   const executable = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
   const args = windowsReviewNativeArguments(executable)
-  return async (request) =>
-    dispatchWindowsReviewNative(request, (deadline, complete) =>
-      execFile(
-        executable,
-        args,
-        {
-          cwd: root,
-          env: environment,
-          shell: false,
-          windowsHide: true,
-          encoding: "utf8",
-          maxBuffer: 1024 * 1024,
-          timeout: deadline.timeout,
-        },
-        complete,
-      ),
-    )
+  return createWindowsReviewNativeTransport((deadline, complete) =>
+    execFile(
+      executable,
+      args,
+      {
+        cwd: root,
+        env: environment,
+        shell: false,
+        windowsHide: true,
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024,
+        timeout: deadline.timeout,
+      },
+      complete,
+    ),
+  )
 }
 
 /** Isolated for inert hosted-Windows tests; no native read or absence default. */

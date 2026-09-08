@@ -9,7 +9,8 @@ export function createBrowserHandoffTask(
   quiescenceTimeoutMs = 13000,
 ) {
   // The production Windows transport owns its execFile child and enforces a
-  // 12s timeout; this drain depends on that transport contract. Already-started
+  // 12s operation deadline plus at most 500ms to confirm close, within this
+  // 13s drain. A rejected but unconfirmed close remains retained uncertainty.
   // CDP is bounded to 2s. Abort between reads keeps these budgets separate.
   if (!Number.isInteger(quiescenceTimeoutMs) || quiescenceTimeoutMs < 1 || quiescenceTimeoutMs > 13000)
     throw Error("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
@@ -17,6 +18,7 @@ export function createBrowserHandoffTask(
   let task: Promise<boolean> | undefined
   let url: string | undefined
   let settled = false
+  let nativeCloseUnconfirmed = false
   let draining: Promise<{ settled: boolean; observation: BrowserObservation }> | undefined
   return {
     confirm(value: string) {
@@ -29,6 +31,10 @@ export function createBrowserHandoffTask(
           return browser.confirmHandoff(value, { signal: cancellation.signal })
         })
         .then((result) => result === true && !cancellation.signal.aborted)
+        .catch((error) => {
+          nativeCloseUnconfirmed = readBrowserObservation(error)?.handoffQuiescence === "unconfirmed"
+          throw error
+        })
         .finally(() => {
           settled = true
         }))
@@ -52,12 +58,13 @@ export function createBrowserHandoffTask(
           ])
           clearTimeout(timer)
         }
-        const quiescent = !task || settled
+        const quiescent = (!task || settled) && !nativeCloseUnconfirmed
         const observation: BrowserObservation = { handoffQuiescence: quiescent ? "settled" : "unconfirmed" }
         const snapshot = readBrowserObservation({ browserObservation: browser.observation?.() })
         if (snapshot)
           for (const [key, value] of Object.entries(snapshot))
             if (key.startsWith("handoff")) Object.assign(observation, { [key]: value })
+        observation.handoffQuiescence = quiescent ? "settled" : "unconfirmed"
         if (!quiescent) observation.handoffOutcome = "pending"
         return { settled: quiescent, observation: Object.freeze(observation) }
       })())

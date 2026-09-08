@@ -214,6 +214,11 @@ provider or twelve-second local handoff eligibility deadline. A late target matc
 cannot turn an expired review into success. Native ownership/listener validation
 still precedes every Windows CDP query.
 
+Windows also requires the native helper's `close` event before accepting its
+completion callback. A fixed 500-millisecond closure drain fits within the
+thirteen-second handoff drain. Unconfirmed closure permanently blocks subsequent
+native operations and remains an uncertain handoff even if its promise rejects.
+
 If that read cannot settle, browser signals, launcher restoration and profile
 removal are skipped; only controller handles are released, and the disposable
 runner retains the private state with an unconfirmed-cleanup failure. The browser

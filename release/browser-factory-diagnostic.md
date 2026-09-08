@@ -46,6 +46,11 @@ the listener cmdlet to distinguish successful empty queries from failed or parti
 queries. Production uses an exact-port CIM query with terminating errors; a failed
 query can never become an empty listener result.
 
+The fixture constructs its error records before expected-error handling and checks
+that `Continue` returns while the production `Stop` query throws the exact error.
+Separate inert child-process tests require the native helper's `close` event;
+an early completion callback cannot authorize another helper or cleanup.
+
 The same early step checks the installer partial-copy watcher using inert files
 and fake processes. Its fixture sequences a real absent-file observation before
 writing partial target bytes and holds a descendant query until interruption is
@@ -67,6 +72,9 @@ The five-minute job includes a 90-second Linux command deadline or a four-minute
 Windows step deadline. Windows allows 30 seconds for the read-only preflight,
 which includes native signature verification; registration writes, observations,
 process stopping and registration restoration retain their 12-second operation limits.
+The transport allows a further 500 milliseconds to confirm helper closure. If
+closure remains unconfirmed, that adapter permanently refuses subsequent native
+operations and private state is retained.
 The longer outer deadline leaves room for ownership checks and cleanup. Signature
 requirements and native trust/network behavior are unchanged; the native
 transport does not retry operations when their deadlines expire. It uploads

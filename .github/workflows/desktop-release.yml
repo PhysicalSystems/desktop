@@ -122,7 +122,7 @@ jobs:
       - name: Verify Windows process lifecycle regressions with inert callbacks
         if: runner.os == 'Windows'
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/windows-review-native.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
+        run: bun test ./src/release/windows-review-native.test.ts ./src/release/windows-review-transport.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
       - name: Start and stop the actual owned Windows browser factory
         if: runner.os == 'Windows'
         timeout-minutes: 4
