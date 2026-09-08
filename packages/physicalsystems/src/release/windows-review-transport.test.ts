@@ -2,7 +2,11 @@
 import { expect, test } from "bun:test"
 import { ChildProcess } from "node:child_process"
 import { PassThrough } from "node:stream"
-import { createWindowsReviewNativeTransport, type WindowsReviewNative } from "./windows-review-native"
+import {
+  createWindowsReviewNativeTransport,
+  createWindowsReviewRequestTransport,
+  type WindowsReviewNative,
+} from "./windows-review-native"
 import { createBrowserHandoffTask } from "./browser-handoff-task"
 import { readBrowserObservation } from "./browser-observation"
 
@@ -194,4 +198,46 @@ test("native helper-close uncertainty survives rejected confirmation and any lat
   expect(await task.confirm("http://127.0.0.1/exact-inert")).toBe(false)
   await expect(f.native({ operation: "stop", processes: [] })).rejects.toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   expect(f.calls).toHaveLength(1)
+})
+
+test("separate fixed-script request transport preserves exact JSON limits and closure without widening native operations", async () => {
+  const child = new ChildProcess()
+  const stdin = new PassThrough()
+  let payload = ""
+  stdin.on("data", (chunk) => {
+    payload += chunk
+  })
+  Object.defineProperty(child, "stdin", { value: stdin })
+  let calls = 0
+  let complete: ((error: unknown, stdout: string, stderr: string) => void) | undefined
+  const request = createWindowsReviewRequestTransport<{ url: string }>(
+    (options, done) => {
+      calls++
+      expect(options.timeout).toBe(12000)
+      complete = done
+      return child
+    },
+    () => 12000,
+  )
+  await expect(request({ url: "x".repeat(128 * 1024) })).rejects.toThrow("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+  expect(calls).toBe(0)
+  const privateRequest = {
+    url: "inert",
+    toJSON() {
+      throw Error("PRIVATE-SERIALIZATION-CREDENTIAL")
+    },
+  }
+  const refused = await outcome(request(privateRequest))
+  expect("error" in refused).toBe(true)
+  const error = "error" in refused ? (refused.error as Error) : undefined
+  expect(error?.message).toBe("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
+  expect(error?.stack).not.toContain("PRIVATE")
+  expect(calls).toBe(0)
+  const result = request({ url: "inert-only" })
+  expect(JSON.parse(payload)).toEqual({ url: "inert-only" })
+  complete!(null, '{"acknowledged":true}', "")
+  child.emit("close", 0, null)
+  expect(await result).toEqual({ acknowledged: true })
+  expect(calls).toBe(1)
+  stdin.destroy()
 })

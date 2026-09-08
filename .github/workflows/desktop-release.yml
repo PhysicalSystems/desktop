@@ -32,6 +32,11 @@ on:
         type: boolean
         default: false
         required: false
+      browser_factory_loopback:
+        description: Optional Windows OS loopback handoff inside the factory diagnostic; no desktop or provider qualification
+        type: boolean
+        default: false
+        required: false
       browser_factory_platform:
         description: Hosted platform for the optional browser factory diagnostic only
         type: choice
@@ -85,6 +90,7 @@ jobs:
       CI: "true"
       BROWSER_DIAGNOSTIC_SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       BROWSER_DIAGNOSTIC_PLATFORM: ${{ inputs.browser_factory_platform || 'linux-x64' }}
+      BROWSER_DIAGNOSTIC_LOOPBACK: ${{ inputs.browser_factory_loopback && '1' || '0' }}
       PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
       OPENCODE_DISABLE_MODELS_FETCH: "1"
     steps:
@@ -96,6 +102,8 @@ jobs:
           if (process.env.GITHUB_REPOSITORY !== 'PhysicalSystems/desktop' ||
               process.env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
               !['linux-x64', 'windows-x64'].includes(platform) || process.env.RUNNER_ARCH !== 'X64' ||
+              !['0', '1'].includes(process.env.BROWSER_DIAGNOSTIC_LOOPBACK) ||
+              (process.env.BROWSER_DIAGNOSTIC_LOOPBACK === '1' && platform !== 'windows-x64') ||
               process.env.RUNNER_OS !== (platform === 'windows-x64' ? 'Windows' : 'Linux') ||
               !/^[a-f0-9]{40}$/.test(source || '') || source !== process.env.GITHUB_SHA)
             throw new Error('Browser diagnostic requires the exact owned workflow revision');
@@ -122,8 +130,8 @@ jobs:
       - name: Verify Windows process lifecycle regressions with inert callbacks
         if: runner.os == 'Windows'
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/windows-review-native.test.ts ./src/release/windows-review-transport.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
-      - name: Start and stop the actual owned Windows browser factory
+        run: bun test ./src/release/windows-review-native.test.ts ./src/release/windows-review-transport.test.ts ./src/release/windows-loopback-diagnostic.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts
+      - name: Diagnose the owned Windows browser with optional OS loopback handoff
         if: runner.os == 'Windows'
         timeout-minutes: 4
         run: bun script/desktop-browser-diagnostic.ts
@@ -148,7 +156,14 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       CHANNEL: ${{ inputs.channel }}
       REQUESTED_VERSION: ${{ inputs.version }}
+      BROWSER_DIAGNOSTIC_LOOPBACK: ${{ inputs.browser_factory_loopback && '1' || '0' }}
     steps:
+      - name: Reject diagnostic-only options in candidate mode
+        run: |
+          if [ "$BROWSER_DIAGNOSTIC_LOOPBACK" != "0" ]; then
+            echo 'BROWSER_DIAGNOSTIC_CONTEXT_UNCONFIRMED' >&2
+            exit 1
+          fi
       - name: Require an immutable source revision
         id: source
         run: |

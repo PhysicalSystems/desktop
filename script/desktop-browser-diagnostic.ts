@@ -4,12 +4,14 @@ import { mkdir, mkdtemp, realpath, rename, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import {
   browserDiagnosticContext,
+  browserDiagnosticMode,
   browserDiagnosticProbeURL,
   pendingBrowserDiagnostic,
   runBrowserFactoryDiagnostic,
 } from "../packages/physicalsystems/src/release/browser-diagnostic"
 import { startOwnedReviewBrowser } from "../packages/physicalsystems/src/release/owned-review-browser"
 import { startOwnedWindowsReviewBrowser } from "../packages/physicalsystems/src/release/owned-windows-review-browser"
+import { runWindowsLoopbackDiagnostic } from "../packages/physicalsystems/src/release/windows-loopback-diagnostic"
 import { requireDisposablePublicRunner } from "../packages/physicalsystems/src/release/public-qualification"
 
 try {
@@ -24,6 +26,7 @@ try {
       timeout: 5000,
     }).trim(),
   })
+  const mode = browserDiagnosticMode(process.env, context)
   const temporary = await realpath(process.env.RUNNER_TEMP!)
   const reports = join(temporary, "desktop-browser-diagnostic-report")
   await mkdir(reports, { mode: 0o700 })
@@ -31,15 +34,18 @@ try {
   const report = join(reports, "browser-diagnostic.json")
   // If the command deadline interrupts the controller, retained evidence stays
   // explicitly incomplete. Only this fixed report is uploaded, never profiles.
-  await writeFile(report, JSON.stringify(pendingBrowserDiagnostic(context), null, 2) + "\n", {
+  await writeFile(report, JSON.stringify(pendingBrowserDiagnostic(context, mode), null, 2) + "\n", {
     mode: 0o600,
     flag: "wx",
   })
   const root = await mkdtemp(join(temporary, "private-browser-factory-"))
   const acquire = context.platform === "windows-x64" ? startOwnedWindowsReviewBrowser : startOwnedReviewBrowser
-  const result = await runBrowserFactoryDiagnostic(context, () =>
-    acquire({ env: process.env, root, probeURL: browserDiagnosticProbeURL }),
-  )
+  const result =
+    mode === "windows-os-loopback"
+      ? await runWindowsLoopbackDiagnostic(context, { env: process.env, root })
+      : await runBrowserFactoryDiagnostic(context, () =>
+          acquire({ env: process.env, root, probeURL: browserDiagnosticProbeURL }),
+        )
   const completed = join(reports, "browser-diagnostic.next.json")
   await writeFile(completed, JSON.stringify(result, null, 2) + "\n", { mode: 0o600, flag: "wx" })
   await rename(completed, report)

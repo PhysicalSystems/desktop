@@ -179,19 +179,28 @@ export function dispatchWindowsReviewNative(
     complete: (error: unknown, stdout: string, stderr: string) => void,
   ) => Pick<ChildProcess, "stdin">,
 ): Promise<unknown> {
+  return dispatchWindowsReviewRequest(request, request.operation === "preflight" ? 30000 : 12000, execute)
+}
+
+function dispatchWindowsReviewRequest<Request>(
+  request: Request,
+  timeout: 12000 | 30000,
+  execute: (
+    options: Readonly<{ timeout: 12000 | 30000 }>,
+    complete: (error: unknown, stdout: string, stderr: string) => void,
+  ) => Pick<ChildProcess, "stdin">,
+): Promise<unknown> {
+  if (timeout !== 12000 && timeout !== 30000) throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   const payload = JSON.stringify(request)
   if (payload.length > 128 * 1024) throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   return new Promise((resolve, reject) => {
-    const child = execute(
-      Object.freeze({ timeout: request.operation === "preflight" ? 30000 : 12000 }),
-      (error, stdout, stderr) => {
-        try {
-          resolve(windowsReviewNativeResult({ error, stdout, stderr }))
-        } catch (error) {
-          reject(error)
-        }
-      },
-    )
+    const child = execute(Object.freeze({ timeout }), (error, stdout, stderr) => {
+      try {
+        resolve(windowsReviewNativeResult({ error, stdout, stderr }))
+      } catch (error) {
+        reject(error)
+      }
+    })
     child.stdin?.on("error", () => {})
     child.stdin?.end(payload)
   })
@@ -204,12 +213,26 @@ export function dispatchWindowsReviewNative(
  * An unconfirmed close permanently quarantines this owner, including after a
  * late close; it cannot start another helper to stop, restore or delete state. */
 export function createWindowsReviewNativeTransport(
+  execute: Parameters<typeof createWindowsReviewRequestTransport>[0],
+  closeTimeoutMs = 500,
+): WindowsReviewNative {
+  return createWindowsReviewRequestTransport<Parameters<WindowsReviewNative>[0]>(
+    execute,
+    (request) => (request.operation === "preflight" ? 30000 : 12000),
+    closeTimeoutMs,
+  )
+}
+
+/** Internal fixed-script adapters may share process-close ownership without
+ * widening the production native request union or accepting arbitrary code. */
+export function createWindowsReviewRequestTransport<Request>(
   execute: (
     options: Readonly<{ timeout: 12000 | 30000 }>,
     complete: (error: unknown, stdout: string, stderr: string) => void,
   ) => Pick<ChildProcess, "stdin" | "stdout" | "stderr" | "once" | "unref">,
+  timeoutForRequest: (request: Request) => 12000 | 30000,
   closeTimeoutMs = 500,
-): WindowsReviewNative {
+): (request: Request) => Promise<unknown> {
   if (!Number.isInteger(closeTimeoutMs) || closeTimeoutMs < 1 || closeTimeoutMs > 500)
     throw Error("PROVIDER_REVIEW_WINDOWS_UNCONFIRMED")
   let active = false
@@ -274,18 +297,25 @@ export function createWindowsReviewNativeTransport(
           clearTimeout(timer)
           timer = setTimeout(expire, Math.max(1, Math.min(closeTimeoutMs, deadline - Date.now())))
         }
-        dispatchWindowsReviewNative(request, (options, complete) => {
-          started = true
-          deadline = Date.now() + options.timeout + closeTimeoutMs
-          timer = setTimeout(expire, options.timeout + closeTimeoutMs)
-          child = execute(options, complete)
-          child.once("close", () => {
-            if (finished) return
-            closed = true
-            finish()
+        let dispatched: Promise<unknown>
+        try {
+          dispatched = dispatchWindowsReviewRequest(request, timeoutForRequest(request), (options, complete) => {
+            started = true
+            deadline = Date.now() + options.timeout + closeTimeoutMs
+            timer = setTimeout(expire, options.timeout + closeTimeoutMs)
+            child = execute(options, complete)
+            child.once("close", () => {
+              if (finished) return
+              closed = true
+              finish()
+            })
+            return child
           })
-          return child
-        }).then(
+        } catch (error) {
+          settled({ error })
+          return
+        }
+        dispatched.then(
           (value) => settled({ value }),
           (error) => settled({ error }),
         )

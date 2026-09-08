@@ -12,9 +12,14 @@ export type BrowserDiagnosticContext = {
   runAttempt: number
   platform: "linux-x64" | "windows-x64"
 }
+export type BrowserDiagnosticMode = "acquisition" | "windows-os-loopback"
+
 export type BrowserDiagnosticReport = BrowserDiagnosticContext & {
   schemaVersion: 1
   kind: "owned-browser-factory-diagnostic"
+  mode: BrowserDiagnosticMode
+  osLoopbackHandoff: "NOT_TESTED" | "OBSERVED" | "UNCONFIRMED"
+  productOpener: "NOT_TESTED"
   result: "COMPLETE" | "FAILED" | "INCOMPLETE"
   acquisition: "NOT_STARTED" | "READY" | "UNCONFIRMED"
   cleanup: "STOPPED" | "UNCONFIRMED"
@@ -66,10 +71,26 @@ export function browserDiagnosticContext(input: {
   })
 }
 
-export function pendingBrowserDiagnostic(context: BrowserDiagnosticContext): BrowserDiagnosticReport {
+export function browserDiagnosticMode(
+  env: NodeJS.ProcessEnv,
+  context: BrowserDiagnosticContext,
+): BrowserDiagnosticMode {
+  const selected = env.BROWSER_DIAGNOSTIC_LOOPBACK ?? "0"
+  if (!["0", "1"].includes(selected) || (selected === "1" && context.platform !== "windows-x64"))
+    throw Error("BROWSER_DIAGNOSTIC_CONTEXT_UNCONFIRMED")
+  return selected === "1" ? "windows-os-loopback" : "acquisition"
+}
+
+export function pendingBrowserDiagnostic(
+  context: BrowserDiagnosticContext,
+  mode: BrowserDiagnosticMode = "acquisition",
+): BrowserDiagnosticReport {
   return {
     schemaVersion: 1,
     kind: "owned-browser-factory-diagnostic",
+    mode,
+    osLoopbackHandoff: "NOT_TESTED",
+    productOpener: "NOT_TESTED",
     sourceRevision: context.sourceRevision,
     runId: context.runId,
     runAttempt: context.runAttempt,

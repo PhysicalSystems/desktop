@@ -14,14 +14,14 @@ platform, so they can run alongside a full candidate build. Candidate version
 allocation remains serialized in `desktop-release-candidate`. Neither group
 cancels a running job when another dispatch arrives.
 
-This mode skips candidate preparation, packaging and qualification. It calls the
+By default this mode skips candidate preparation, packaging and qualification. It calls the
 same `startOwnedReviewBrowser` or `startOwnedWindowsReviewBrowser` factory used by native smoke, waits for its owned
 `about:blank` target, then calls its ownership-checked `stop()` exactly once. It
 does not call an opener, navigate to a provider, sign in, build or install the
 desktop app. Successful completion is not desktop or public release evidence.
 Existing PR source checks still validate the pushed revision independently.
 
-A fixed validated loopback sentinel selects the **HTTP** association used by the
+In the default acquisition mode, a fixed validated loopback sentinel selects the **HTTP** association used by the
 inert handoff test; the sentinel is never opened, fetched or navigated to. Only
 `about:blank` is loaded. Windows verifies its current HTTP handler and temporarily
 registers a per-user launch command for the same signed Edge executable with its
@@ -30,6 +30,37 @@ after confirmed process cleanup. Existing profile policies or alternate activati
 handlers prevent acquisition; they are never disabled. This does not test HTTPS
 provider routing, a real browser handoff, or sign-in. It never changes the default
 browser association.
+
+An explicit `browser_factory_loopback=true` together with
+`browser_factory_diagnostic=true` and `browser_factory_platform=windows-x64`
+adds an **OS-only loopback handoff**. Other combinations fail before acquisition.
+It uses the same owned Edge factory and a fresh, exclusive loopback HTTP server.
+One fixed PowerShell adapter invokes `.NET Process.Start` with
+`UseShellExecute=true` for the exact nonce URL; Microsoft documents this as the
+[current user's graphical shell association](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.useshellexecute).
+It accepts only the authored numeric IPv4 loopback URL and nonce path, has no
+arbitrary executable, script or URL option, and leaves the existing default
+association intact. A reused browser may return no process object; that return
+value is never used as browser ownership evidence.
+
+The fixed opener helper must return its acknowledgment **and close**. The
+controller then requires both the exact server GET and the same owned browser's
+CDP target. It issues the opener once, keeps the 12-second handoff deadline, and
+drains the exact confirmation before cleanup. False, late or unconfirmed opener
+outcomes retain state and release only controller handles. An unconfirmed native
+helper or target read cannot authorize more native calls, launcher restoration
+or profile deletion. The 13-second drain includes the existing 12-second helper
+budget and 500-millisecond close allowance. These are the same close and
+ownership checks used by the production factory, with an independent fixed
+request type for the OS opener.
+
+This diagnostic launches no desktop application and exercises no product IPC
+opener, provider authorization, installer or credential store. Its report records
+`mode: "windows-os-loopback"` and `osLoopbackHandoff: "OBSERVED"` only when both
+observations succeed. Cleanup must also succeed for `result: "COMPLETE"`.
+`desktop`, `productOpener`, the product `browserHandoff`, and `providerLogin`
+remain `NOT_TESTED`; qualification and publication remain false. The ordinary
+`about:blank` mode is unchanged and reports `osLoopbackHandoff: "NOT_TESTED"`.
 
 Windows reserves one loopback port and releases its reservation immediately before
 launching Edge with that exact port. The adapter verifies the browser's process
@@ -82,7 +113,7 @@ only `browser-diagnostic.json` under an artifact named
 `desktop-browser-diagnostic-<linux|windows>-<run>-<attempt>`, retained for seven days.
 The report binds the exact source/run/attempt/platform and HTTP association scope, and records acquisition, cleanup,
 fixed failure phases, safe error categories, counts and booleans. Desktop,
-browser handoff and provider login remain `NOT_TESTED`; qualification and
+product opener, product browser handoff and provider login remain `NOT_TESTED`; qualification and
 publication remain false. An interrupted command leaves an explicit `INCOMPLETE`
 report. Inspect the job's timeout outcome alongside that report.
 
@@ -97,4 +128,4 @@ controller's child handle. The diagnostic never retries cleanup or deletes the
 retained profile itself. No browser profile, raw log, process command line,
 credential, URL or environment dump is uploaded. GitHub destroys the disposable
 runner afterward. Do not run this native command on an operator computer or
-self-hosted runner; local regressions use inert factory callbacks only.
+self-hosted runner; local regressions use inert factory/child callbacks and owned loopback sockets only.

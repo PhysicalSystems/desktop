@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { browserObservationError } from "./browser-observation"
 import {
   browserDiagnosticContext,
+  browserDiagnosticMode,
   browserDiagnosticProbeURL,
   pendingBrowserDiagnostic,
   runBrowserFactoryDiagnostic,
@@ -226,5 +227,21 @@ test("only an authored stopped phase establishes cleanup after failed acquisitio
     acquisition: "UNCONFIRMED",
     cleanup: "STOPPED",
     retentionRequired: false,
+  })
+})
+
+test("OS-loopback mode is an explicit Windows-only opt-in; ordinary factory behavior is unchanged", () => {
+  const windows = { ...context, platform: "windows-x64" as const }
+  expect(browserDiagnosticMode({}, windows)).toBe("acquisition")
+  expect(browserDiagnosticMode({ BROWSER_DIAGNOSTIC_LOOPBACK: "0" }, context)).toBe("acquisition")
+  expect(browserDiagnosticMode({ BROWSER_DIAGNOSTIC_LOOPBACK: "1" }, windows)).toBe("windows-os-loopback")
+  for (const flag of ["true", "false", "", "2"])
+    expect(() => browserDiagnosticMode({ BROWSER_DIAGNOSTIC_LOOPBACK: flag }, windows)).toThrow()
+  expect(() => browserDiagnosticMode({ BROWSER_DIAGNOSTIC_LOOPBACK: "1" }, context)).toThrow()
+  expect(pendingBrowserDiagnostic(windows, "windows-os-loopback")).toMatchObject({
+    mode: "windows-os-loopback",
+    osLoopbackHandoff: "NOT_TESTED",
+    productOpener: "NOT_TESTED",
+    qualification: false,
   })
 })
