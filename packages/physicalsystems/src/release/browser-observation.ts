@@ -40,6 +40,8 @@ export type BrowserObservation = {
   cdpReady?: boolean
   openerAcknowledged?: boolean
   requestObserved?: boolean
+  profileTokenMatched?: boolean
+  argvFields?: number
   ownedProcesses?: number
   targetCount?: number
   syscallFailure?: "ENOENT" | "ESRCH" | "EACCES" | "EPERM" | "OTHER"
@@ -52,8 +54,15 @@ const codes = [
   "BROWSER_HANDOFF_UNCONFIRMED",
   "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED",
 ] as const
-const bools = ["pidObserved", "birthVerified", "cdpReady", "openerAcknowledged", "requestObserved"]
-const counts = ["ownedProcesses", "targetCount"]
+const bools = [
+  "pidObserved",
+  "birthVerified",
+  "cdpReady",
+  "openerAcknowledged",
+  "requestObserved",
+  "profileTokenMatched",
+]
+const counts = ["ownedProcesses", "targetCount", "argvFields"]
 function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}

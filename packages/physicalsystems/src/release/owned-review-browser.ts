@@ -4,6 +4,7 @@ import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, writeFile } fr
 import { join } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { browserObservationError, browserSyscallFailure, type BrowserObservation } from "./browser-observation"
+import { linuxProcessArguments } from "./linux-qualification"
 
 const failure = () => new Error("PROVIDER_REVIEW_BROWSER_UNCONFIRMED")
 const cleanupFailure = () => new Error("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
@@ -61,6 +62,18 @@ export function reviewBrowserProcess(stat: string) {
  * Keep this path distinct from Electron's profile/Crashpad convention. */
 export function reviewBrowserCrashDatabase(root: string) {
   return join(root, "config", "google-chrome", "Crash Reports")
+}
+
+/** ContentMain rewrites even the main Chrome argv as one space-separated title.
+ * Real argv retains spaces inside its values; a rewritten profile containing
+ * whitespace is ambiguous and cannot establish our exact ownership token.
+ * Chromium: content/app/content_main.cc -> base/process/set_process_title.cc. */
+export function reviewBrowserProfileArgument(commandLine: string, profile: string) {
+  if (!profile.startsWith("/") || /[\0\r\n]/.test(profile)) return false
+  const fields = commandLine.split("\0").filter((value) => value.length > 0)
+  if (fields.length === 1 && /\s/.test(profile)) return false
+  const matching = linuxProcessArguments(commandLine).filter((value) => /^--user-data-dir(?:=|$)/.test(value))
+  return matching.length === 1 && matching[0] === `--user-data-dir=${profile}`
 }
 
 export function reviewBrowserUid(status: string, expected: number) {
@@ -407,8 +420,10 @@ async function startLinuxReviewBrowser(
         observation.browserPhase = "identity-uid"
         reviewBrowserUid(await readFile(`/proc/${child.pid}/status`, "utf8"), uid)
         observation.browserPhase = "identity-argv"
-        const command = (await readFile(`/proc/${child.pid}/cmdline`, "utf8")).split("\0")
-        if (!command.includes(`--user-data-dir=${profile}`)) throw failure()
+        const command = await readFile(`/proc/${child.pid}/cmdline`, "utf8")
+        observation.argvFields = command.split("\0").filter((value) => value.length > 0).length
+        observation.profileTokenMatched = reviewBrowserProfileArgument(command, profile)
+        if (!observation.profileTokenMatched) throw failure()
         birth = stat.birth
         observation.birthVerified = true
       }

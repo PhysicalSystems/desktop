@@ -41,6 +41,9 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
     { browserPhase: "ready", targetCount: 1.5 },
     { browserPhase: "ready", cdpReady: "true" },
     { browserPhase: "ready", syscallFailure: "PRIVATE" },
+    { browserPhase: "identity-argv", argvFields: -1 },
+    { browserPhase: "identity-argv", argvFields: 65537 },
+    { browserPhase: "identity-argv", profileTokenMatched: "PRIVATE" },
     {},
     [],
     null,
@@ -53,4 +56,9 @@ test("unknown fields/values, URLs, unsafe counts and getter failures cannot ente
       },
     }),
   ).toBeUndefined()
+  expect(
+    readBrowserObservation({
+      browserObservation: { browserPhase: "identity-argv", argvFields: 1, profileTokenMatched: true },
+    }),
+  ).toEqual({ browserPhase: "identity-argv", argvFields: 1, profileTokenMatched: true })
 })

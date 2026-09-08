@@ -8,6 +8,7 @@ import {
   reviewBrowserCrashDatabase,
   reviewBrowserCrashpad,
   reviewBrowserProcess,
+  reviewBrowserProfileArgument,
   reviewBrowserSignalIdentity,
   reviewBrowserTargets,
   reviewBrowserUid,
@@ -40,6 +41,41 @@ test("Chrome Crashpad uses exact branded Linux config path, executable and NUL-d
       command: `--database=${database}\0`,
     }),
   ).toBe(false)
+})
+
+test("main Chrome rewritten title proves one exact profile token without changing real argv boundaries", () => {
+  const executable = "/opt/google/chrome/chrome"
+  const profile = "/owned/review/profile"
+  const title = `${executable} --user-data-dir=${profile} --no-first-run --remote-debugging-port=0 about:blank\0\0`
+  // The previous lookup deterministically rejects Chromium's joined title.
+  expect(title.split("\0").includes(`--user-data-dir=${profile}`)).toBe(false)
+  for (const command of [
+    title,
+    title.replaceAll("\0", ""),
+    `${executable}\0--user-data-dir=${profile}\0--no-first-run\0`,
+  ])
+    expect(reviewBrowserProfileArgument(command, profile)).toBe(true)
+  expect(
+    reviewBrowserProfileArgument(`${executable}\0--user-data-dir=/owned/review profile\0`, "/owned/review profile"),
+  ).toBe(true)
+  for (const command of [
+    "",
+    "\0\0",
+    `${executable}\0`,
+    `${executable}\0--user-data-dir=${profile}-foreign\0`,
+    `${executable}\0--note=--user-data-dir=${profile}\0`,
+    `${executable}\0--note=ignored --user-data-dir=${profile}\0`,
+    `${executable}\0--user-data-dir\0${profile}\0`,
+    `${executable} --user-data-dir=${profile}-foreign\0`,
+    `${executable} --note=--user-data-dir=${profile}\0`,
+    `${title.replaceAll("\0", "")} --user-data-dir=/foreign\0`,
+    `${executable}\0--user-data-dir=${profile}\0--user-data-dir=${profile}\0`,
+  ])
+    expect(reviewBrowserProfileArgument(command, profile)).toBe(false)
+  for (const profile of ["/owned/review profile", "/owned/review\tprofile", "/owned/review\nprofile"])
+    expect(reviewBrowserProfileArgument(`${executable} --user-data-dir=${profile} --no-first-run\0`, profile)).toBe(
+      false,
+    )
 })
 
 test("ownership rejects changed PID/birth/session/group and every changed native UID before signaling", () => {
