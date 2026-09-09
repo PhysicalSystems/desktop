@@ -281,7 +281,11 @@ export async function collectPublicDistribution(input: {
     const nativeChecks = checkMap(native.checks, true)
     if (
       nativeChecks.size !== unimplementedPublicChecks.length ||
-      unimplementedPublicChecks.some((id) => nativeChecks.get(id) !== "PASS")
+      unimplementedPublicChecks.some(
+        (id) =>
+          nativeChecks.get(id) !== "PASS" &&
+          !(build.channel === "preview" && id === "provider-browser-sign-in" && nativeChecks.get(id) === "NOT_TESTED"),
+      )
     )
       throw invalid()
     if (platform === "windows-x64") {

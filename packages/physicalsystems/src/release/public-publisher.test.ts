@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 const sha = (value: string) => createHash("sha256").update(value).digest("hex")
 const api = "https://api.github.com/repos/PhysicalSystems/physicalsystems/"
-async function fixture(unsigned = false) {
+async function fixture(unsigned = false, skipProvider = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "physical-public-publisher-"))
   roots.push(directory)
   const version = "0.1.0-beta.1"
@@ -67,7 +67,7 @@ async function fixture(unsigned = false) {
             reload: "PASS",
             cleanup: "PASS",
             "native-credential-storage": "PASS",
-            "provider-browser-sign-in": "PASS",
+            "provider-browser-sign-in": skipProvider ? "NOT_TESTED" : "PASS",
             "fresh-install": "PASS",
             upgrade: "PASS",
             "failed-upgrade-recovery": "PASS",
@@ -203,9 +203,10 @@ async function fixture(unsigned = false) {
 
 describe("protected exact-byte public desktop publisher", () => {
   test("explicit unsigned preview keeps all formats, protected approval and exact warning through publication", async () => {
-    const data = await fixture(true)
+    const data = await fixture(true, true)
     const prepared = await preparePublicPublication(data.common)
     expect(data.state.releases[0].body).toContain(unsignedWindowsPreviewWarning)
+    expect(data.state.releases[0].body).toContain("Provider sign-in has not been verified for this preview.")
     expect(data.state.releases[0].body).toContain("downloaded unsigned preview `.exe`")
     expect(data.state.releases[0].body).not.toContain("downloaded signed")
     expect(data.state.releases[0].prerelease).toBe(true)
@@ -213,6 +214,9 @@ describe("protected exact-byte public desktop publisher", () => {
     expect(prepared.prepared.assets).toHaveLength(3)
     const published = await data.publish(prepared)
     expect(published.review.windowsSigning.status).toBe("unsigned-preview")
+    expect(
+      published.review.assets.every((asset) => asset.qualification.checks["provider-browser-sign-in"] === "NOT_TESTED"),
+    ).toBe(true)
     expect(published.review.approval.decision).toBe("approved")
     expect(published.selection.schemaVersion).toBe(2)
     expect(published.selection.release.windowsSigning).toEqual({

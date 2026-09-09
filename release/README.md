@@ -101,6 +101,7 @@ The candidate identity is deliberately `Physical Systems Candidate`, using the d
 Public release remains blocked until the applicable evidence and infrastructure exist:
 
 - Run and review the new CI workflow on both target platforms. Local unit or configuration validation does not substitute for Windows installer execution.
+- Provider account sign-in is optional for a preview: use `provider_qa=disabled`. The release records `NOT_TESTED` and discloses that sign-in was not verified. Stable still requires provider sign-in to pass; failed checks and incomplete installer cleanup continue to block publication.
 - Select the public Windows policy explicitly. Signed releases require a provisioned signing identity and verification of both executable and installer. An unsigned Windows preview requires `channel=preview` and `windows_signing=unsigned-preview`, native proof that both files are unsigned, and the download warning. Stable still requires signing. Internal candidate receipts cannot qualify either public mode.
 - Qualify provider browser opening and native credential storage on supported OS profiles. Fixture-provider tests and fake encryption are separate evidence.
 - Qualify actual supported OS versions, Linux installation/launcher behavior, X11/Xwayland and Wayland display behavior, plus clean-machine operation without developer Node/Bun in the installed application's runtime path.

@@ -245,7 +245,7 @@ See the [installation guide for this exact source](${source}/install-desktop.md)
 
 ## Qualified scope
 
-Native checks cover GitHub-hosted Windows 2025 and Ubuntu 24.04 x64; Linux compositor checks run under X11/Xvfb. They exercise actual application input, compositor painting and zoom restoration. Wayland, AppImage double-click/FUSE startup, physical display behavior, GPU hardware and optical flicker are not measured.
+${data.facts.assets.some((asset) => asset.qualification.checks["provider-browser-sign-in"] === "NOT_TESTED") ? "Provider sign-in has not been verified for this preview.\n\n" : ""}Native checks cover GitHub-hosted Windows 2025 and Ubuntu 24.04 x64; Linux compositor checks run under X11/Xvfb. They exercise actual application input, compositor painting and zoom restoration. Wayland, AppImage double-click/FUSE startup, physical display behavior, GPU hardware and optical flicker are not measured.
 
 The workflow uses synthetic experiments with device access disabled. It does not establish live robot behavior or authorize hardware motion. Upgrade/recovery evidence uses a lower-version public lab from the same reviewed source/storage schema and Windows signing policy; it does not establish historical database migration or power-loss recovery.
 
