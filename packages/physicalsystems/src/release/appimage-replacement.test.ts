@@ -42,74 +42,86 @@ async function fixture() {
   return { input, baseline, target }
 }
 
-test("real portable staging atomically replaces exact baseline bytes with the exact target", async () => {
-  const f = await fixture()
-  const replacement = await prepareAppImageReplacement(f.input)
-  expect(await replacement.complete(stopped)).toEqual({
-    scope: "portable-atomic-replacement",
-    targetBytesMatch: true,
-    directorySynced: true,
-    stagedFileAbsent: true,
-  })
-  expect(await readFile(f.input.runnable)).toEqual(f.target)
-  expect(await readFile(f.input.targetArtifact)).toEqual(f.target)
-  await expect(readFile(replacement.incoming)).rejects.toThrow()
-  await expect(replacement.complete(stopped)).rejects.toThrow("APPIMAGE_REPLACEMENT_UNCONFIRMED")
-})
-
-test("a closed partial stage leaves the baseline usable and recovery completes only that owned replacement", async () => {
-  const f = await fixture()
-  const replacement = await prepareAppImageReplacement(f.input)
-  const observation = await replacement.interrupt(stopped)
-  expect(observation).toEqual({
-    kind: "appimage-partial-staging-before-atomic-replacement",
-    writerClosed: true,
-    baselinePayloadChanged: false,
-    targetInstallationComplete: false,
-    stagedBytes: 350000,
-  })
-  expect(await readFile(f.input.runnable)).toEqual(f.baseline)
-  expect(await readFile(replacement.incoming)).toEqual(f.target.subarray(0, 350000))
-  expect(JSON.stringify(observation)).not.toContain("installerExited")
-  // Actual baseline native relaunch is the common controller's separate duty.
-  await replacement.complete(stopped)
-  expect(await readFile(f.input.runnable)).toEqual(f.target)
-  await expect(readFile(replacement.incoming)).rejects.toThrow()
-})
-
-test("uncertain processes or cache, local runners and preexisting stages prevent replacement", async () => {
-  for (const boundary of ["applicationExited", "descendantsExited", "runtimeCacheRemoved"] as const) {
+test.skipIf(process.platform !== "linux")(
+  "real portable staging atomically replaces exact baseline bytes with the exact target",
+  async () => {
     const f = await fixture()
     const replacement = await prepareAppImageReplacement(f.input)
-    await expect(replacement.complete({ ...stopped, [boundary]: false })).rejects.toThrow(
-      "APPIMAGE_REPLACEMENT_UNCONFIRMED",
-    )
-    expect(await readFile(f.input.runnable)).toEqual(f.baseline)
-  }
-  const f = await fixture()
-  await expect(prepareAppImageReplacement({ ...f.input, env: { ...f.input.env, CI: "false" } })).rejects.toThrow(
-    "REQUIRES_DISPOSABLE_RUNNER",
-  )
-  const replacement = await prepareAppImageReplacement(f.input)
-  await writeFile(replacement.incoming, "preexisting unrelated bytes")
-  await expect(replacement.interrupt(stopped)).rejects.toThrow("APPIMAGE_REPLACEMENT_UNCONFIRMED")
-  expect(await readFile(replacement.incoming, "utf8")).toBe("preexisting unrelated bytes")
-  expect(await readFile(f.input.runnable)).toEqual(f.baseline)
-})
-
-test("changed source, baseline or remembered stage cannot be used for recovery", async () => {
-  for (const variation of ["source", "baseline", "stage", "stage-symlink"]) {
-    const f = await fixture()
-    const replacement = await prepareAppImageReplacement(f.input)
-    await replacement.interrupt(stopped)
-    if (variation === "source") await writeFile(f.input.targetArtifact, Buffer.alloc(f.target.length, 0x63))
-    if (variation === "baseline") await writeFile(f.input.runnable, Buffer.alloc(f.baseline.length, 0x63))
-    if (variation === "stage") await writeFile(replacement.incoming, Buffer.alloc(350000, 0x63))
-    if (variation === "stage-symlink") {
-      await rm(replacement.incoming)
-      await symlink(f.input.targetArtifact, replacement.incoming)
-    }
+    expect(await replacement.complete(stopped)).toEqual({
+      scope: "portable-atomic-replacement",
+      targetBytesMatch: true,
+      directorySynced: true,
+      stagedFileAbsent: true,
+    })
+    expect(await readFile(f.input.runnable)).toEqual(f.target)
+    expect(await readFile(f.input.targetArtifact)).toEqual(f.target)
+    await expect(readFile(replacement.incoming)).rejects.toThrow()
     await expect(replacement.complete(stopped)).rejects.toThrow("APPIMAGE_REPLACEMENT_UNCONFIRMED")
-    expect(await readFile(f.input.runnable)).not.toEqual(f.target)
-  }
-})
+  },
+)
+
+test.skipIf(process.platform !== "linux")(
+  "a closed partial stage leaves the baseline usable and recovery completes only that owned replacement",
+  async () => {
+    const f = await fixture()
+    const replacement = await prepareAppImageReplacement(f.input)
+    const observation = await replacement.interrupt(stopped)
+    expect(observation).toEqual({
+      kind: "appimage-partial-staging-before-atomic-replacement",
+      writerClosed: true,
+      baselinePayloadChanged: false,
+      targetInstallationComplete: false,
+      stagedBytes: 350000,
+    })
+    expect(await readFile(f.input.runnable)).toEqual(f.baseline)
+    expect(await readFile(replacement.incoming)).toEqual(f.target.subarray(0, 350000))
+    expect(JSON.stringify(observation)).not.toContain("installerExited")
+    // Actual baseline native relaunch is the common controller's separate duty.
+    await replacement.complete(stopped)
+    expect(await readFile(f.input.runnable)).toEqual(f.target)
+    await expect(readFile(replacement.incoming)).rejects.toThrow()
+  },
+)
+
+test.skipIf(process.platform !== "linux")(
+  "uncertain processes or cache, local runners and preexisting stages prevent replacement",
+  async () => {
+    for (const boundary of ["applicationExited", "descendantsExited", "runtimeCacheRemoved"] as const) {
+      const f = await fixture()
+      const replacement = await prepareAppImageReplacement(f.input)
+      await expect(replacement.complete({ ...stopped, [boundary]: false })).rejects.toThrow(
+        "APPIMAGE_REPLACEMENT_UNCONFIRMED",
+      )
+      expect(await readFile(f.input.runnable)).toEqual(f.baseline)
+    }
+    const f = await fixture()
+    await expect(prepareAppImageReplacement({ ...f.input, env: { ...f.input.env, CI: "false" } })).rejects.toThrow(
+      "REQUIRES_DISPOSABLE_RUNNER",
+    )
+    const replacement = await prepareAppImageReplacement(f.input)
+    await writeFile(replacement.incoming, "preexisting unrelated bytes")
+    await expect(replacement.interrupt(stopped)).rejects.toThrow("APPIMAGE_REPLACEMENT_UNCONFIRMED")
+    expect(await readFile(replacement.incoming, "utf8")).toBe("preexisting unrelated bytes")
+    expect(await readFile(f.input.runnable)).toEqual(f.baseline)
+  },
+)
+
+test.skipIf(process.platform !== "linux")(
+  "changed source, baseline or remembered stage cannot be used for recovery",
+  async () => {
+    for (const variation of ["source", "baseline", "stage", "stage-symlink"]) {
+      const f = await fixture()
+      const replacement = await prepareAppImageReplacement(f.input)
+      await replacement.interrupt(stopped)
+      if (variation === "source") await writeFile(f.input.targetArtifact, Buffer.alloc(f.target.length, 0x63))
+      if (variation === "baseline") await writeFile(f.input.runnable, Buffer.alloc(f.baseline.length, 0x63))
+      if (variation === "stage") await writeFile(replacement.incoming, Buffer.alloc(350000, 0x63))
+      if (variation === "stage-symlink") {
+        await rm(replacement.incoming)
+        await symlink(f.input.targetArtifact, replacement.incoming)
+      }
+      await expect(replacement.complete(stopped)).rejects.toThrow("APPIMAGE_REPLACEMENT_UNCONFIRMED")
+      expect(await readFile(f.input.runnable)).not.toEqual(f.target)
+    }
+  },
+)

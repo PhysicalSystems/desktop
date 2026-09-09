@@ -432,10 +432,20 @@ test("stages exact committed bytes with real Git and tar on native drive paths",
   await writeFile(path.join(data.root, "private-untracked.txt"), "must never enter candidate\n")
   const transaction = path.join(data.folder, "candidate with spaces")
   await mkdir(transaction)
-  const stage = await stageCandidateSource(data.root, revision, transaction)
+  // A scrubbed Windows build can still encounter host Git defaults. The
+  // immutable archive must retain source bytes despite those line-ending rules.
+  const environment = {
+    ...process.env,
+    GIT_CONFIG_COUNT: "2",
+    GIT_CONFIG_KEY_0: "core.autocrlf",
+    GIT_CONFIG_VALUE_0: "true",
+    GIT_CONFIG_KEY_1: "core.eol",
+    GIT_CONFIG_VALUE_1: "crlf",
+  }
+  const stage = await stageCandidateSource(data.root, revision, transaction, environment)
   expect(await readFile(path.join(stage, "tracked.txt"), "utf8")).toBe("committed candidate bytes\n")
   expect(await lstat(path.join(stage, "private-untracked.txt")).catch(() => undefined)).toBeUndefined()
   expect(await readFile(tracked, "utf8")).toBe("later working tree changes\n")
-  await expect(stageCandidateSource(data.root, revision, transaction)).rejects.toThrow()
+  await expect(stageCandidateSource(data.root, revision, transaction, environment)).rejects.toThrow()
   expect(await readFile(path.join(stage, "tracked.txt"), "utf8")).toBe("committed candidate bytes\n")
 })

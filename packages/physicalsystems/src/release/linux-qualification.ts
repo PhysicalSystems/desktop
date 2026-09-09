@@ -23,12 +23,17 @@ export async function requireDisposableLinuxRunner(env: NodeJS.ProcessEnv, root:
   return owned
 }
 
-export function debianCandidatePlan(version: string, metadata: string, kind: "candidate" | "public" = "candidate") {
+/** electron-builder maps prereleases to Debian ordering and appends buildNumber 0. */
+export function debianPackageVersion(version: string) {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/.test(version))
     throw new Error("LINUX_QUALIFICATION_DEBIAN_IDENTITY_INVALID")
+  return version.replace("-beta.", "~beta.") + "-0"
+}
+
+export function debianCandidatePlan(version: string, metadata: string, kind: "candidate" | "public" = "candidate") {
   const identity = desktopIdentity(kind)
   const packageName = identity.packageName
-  const packageVersion = version.replace("-beta.", "~beta.") + "-0"
+  const packageVersion = debianPackageVersion(version)
   if (metadata.trim() !== `${packageName}\n${packageVersion}\namd64`)
     throw new Error("LINUX_QUALIFICATION_DEBIAN_IDENTITY_INVALID")
   return {

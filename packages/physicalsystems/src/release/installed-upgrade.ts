@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { desktopIdentity } from "./identity"
+import { debianPackageVersion } from "./linux-qualification"
 import type { ReinstallObservation } from "./installed-reinstall"
 import {
   publicAuthenticodeObservation,
@@ -253,7 +254,7 @@ export function requireDebianUpgradeStatus(status: string, version: string, stat
     values.filter((line) => line.startsWith("Package:")).length !== 1 ||
     values.filter((line) => line.startsWith("Version:")).length !== 1 ||
     values.filter((line) => line.startsWith("Status:")).length !== 1 ||
-    !values.includes(`Version: ${version}`) ||
+    !values.includes(`Version: ${debianPackageVersion(version)}`) ||
     !values.includes(`Status: install ok ${state}`)
   )
     throw failure("DEBIAN_STATE_UNCONFIRMED")

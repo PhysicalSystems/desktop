@@ -261,19 +261,30 @@ test("unsigned Windows upgrade and recovery require both exact unsigned observat
   }
 })
 
-test("Debian phase interruption requires the exact public package/version unpacked state", () => {
-  const status = "Package: physical-systems-desktop\nVersion: 0.1.0-beta.2\nStatus: install ok unpacked\n"
-  expect(() => requireDebianUpgradeStatus(status, "0.1.0-beta.2", "unpacked")).not.toThrow()
-  for (const changed of [
-    status.replace("unpacked", "installed"),
-    status.replace("desktop", "desktop-candidate"),
-    status.replace("beta.2", "beta.1"),
-    status + "Status: install ok installed\n",
-    status + "\n" + status,
-  ])
-    expect(() => requireDebianUpgradeStatus(changed, "0.1.0-beta.2", "unpacked")).toThrow(
-      "PUBLIC_UPGRADE_DEBIAN_STATE_UNCONFIRMED",
-    )
+test("Debian upgrade phases require the exact native package version and installed or unpacked state", () => {
+  for (const [version, nativeVersion] of [
+    ["0.1.0-beta.2", "0.1.0~beta.2-0"],
+    ["0.1.0", "0.1.0-0"],
+  ]) {
+    for (const state of ["installed", "unpacked"] as const) {
+      const status = `Package: physical-systems-desktop\nVersion: ${nativeVersion}\nStatus: install ok ${state}\n`
+      expect(() => requireDebianUpgradeStatus(status, version, state)).not.toThrow()
+      for (const changed of [
+        status.replace(`ok ${state}`, `ok ${state === "installed" ? "unpacked" : "installed"}`),
+        status.replace("desktop", "desktop-candidate"),
+        status.replace(nativeVersion, version),
+        status.replace(nativeVersion, nativeVersion.replace(/-0$/, "")),
+        status.replace(nativeVersion, nativeVersion.replace(/-0$/, "-1")),
+        status.replace(nativeVersion, nativeVersion.replace("0.1.0", "0.0.9")),
+        status + "Status: install ok installed\n",
+        status + `Version: ${nativeVersion}\n`,
+        status + "\n" + status,
+      ])
+        expect(() => requireDebianUpgradeStatus(changed, version, state)).toThrow(
+          "PUBLIC_UPGRADE_DEBIAN_STATE_UNCONFIRMED",
+        )
+    }
+  }
 })
 
 test("portable recovery requires a real baseline relaunch with unchanged state and encrypted vault", async () => {

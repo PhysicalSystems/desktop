@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { gzipSync } from "node:zlib"
@@ -16,10 +16,18 @@ import { publicReviewDigest } from "./public-downloads"
 import { candidateNames } from "./artifacts"
 
 const directories: string[] = []
+const templates: string[] = []
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex")
 const json = (value: unknown) => JSON.stringify(value, null, 2) + "\n"
 const history = { complete: true as const, versions: [] as string[] }
 const realPolicy = JSON.parse(await readFile(new URL("../../../../release/desktop.json", import.meta.url), "utf8"))
+let template: Awaited<ReturnType<typeof sourceFixture>>
+beforeAll(async () => {
+  template = await sourceFixture()
+})
+afterAll(async () => {
+  await Promise.all(templates.splice(0).map((folder) => rm(folder, { recursive: true, force: true })))
+})
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((folder) => rm(folder, { recursive: true, force: true })))
 })
@@ -211,9 +219,9 @@ function commit(root: string) {
     "test: immutable public build",
   )
 }
-async function fixture() {
+async function sourceFixture() {
   const folder = await mkdtemp(join(tmpdir(), "public-build-command-"))
-  directories.push(folder)
+  templates.push(folder)
   const root = join(folder, "repo")
   await mkdir(root)
   git(root, "init", "--quiet")
@@ -291,6 +299,25 @@ async function fixture() {
   }
 }
 
+async function fixture() {
+  const folder = await mkdtemp(join(tmpdir(), "public-build-case-"))
+  directories.push(folder)
+  // Commit and source-verify once, then isolate each case's files and .git. The
+  // real driver still verifies its inputs and stages the immutable commit.
+  await cp(template.folder, folder, { recursive: true, errorOnExist: true, force: false })
+  const flags = args(folder)
+  flags[5] = template.inputs.sha256
+  flags[7] = publicReviewDigest(template.build)
+  return {
+    folder,
+    root: join(folder, "repo"),
+    inputs: structuredClone(template.inputs),
+    build: structuredClone(template.build),
+    flags,
+    env: { ...template.env, PHYSICALSYSTEMS_PFX_FILE: join(folder, "certificate.pfx") },
+  }
+}
+
 test("actual immutable source staging builds only exact public outputs and emits no native qualification claims", async () => {
   const data = await fixture()
   const phases: string[] = []
@@ -356,8 +383,8 @@ test("actual immutable source staging builds only exact public outputs and emits
   )
 })
 
-test("binding mismatches and symlink inputs fail before any build or output mutation", async () => {
-  for (const field of ["sourceRevision", "version", "channel"] as const) {
+for (const field of ["sourceRevision", "version", "channel"] as const)
+  test(`public ${field} mismatch fails before any build or output mutation`, async () => {
     const data = await fixture()
     if (field === "sourceRevision") data.build.sourceRevision = "d".repeat(40)
     if (field === "version") data.build.version = "0.1.0-beta.2"
@@ -377,7 +404,9 @@ test("binding mismatches and symlink inputs fail before any build or output muta
       }),
     ).rejects.toThrow("differs")
     await expect(readdir(join(data.folder, "output"))).rejects.toThrow()
-  }
+  })
+
+test("symlink inputs fail before any build or output mutation", async () => {
   const data = await fixture()
   const alias = join(data.folder, "alias.json")
   await symlink(join(data.folder, "public-build-inputs.json"), alias)
