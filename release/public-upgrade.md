@@ -41,15 +41,18 @@ shutdown. Its originally baseline-seeded profile must still match before the
 second sequence. The interruption and recovery observations are format-specific:
 
 - **Windows NSIS:** both baseline and target installers and payload executables
-  must have actual valid signatures matching the pinned policy. The controller
-  observes removal of the old ASAR and real partial target ASAR copying, then
-  interrupts only the owned live installer tree with a PID-scoped native command.
-  Expensive process enumeration runs independently of the partial-copy watcher.
-  It requires confirmed installer and observed
-  descendant exits and a payload different from both complete versions before
-  reinstalling the exact target. If copying races to completion, recovery remains
-  unconfirmed; there is no timing hook, altered installer, fabricated interruption
-  or blind retry.
+  must match the pinned public signing policy, including actual unsigned
+  observations for an explicitly selected unsigned preview. After observing the
+  old ASAR disappear, the controller can interrupt only its owned live installer
+  tree when it observes partial target bytes or a new nonempty busy destination.
+  A busy file is only a one-shot stop trigger. After confirmed installer and
+  observed descendant exits, the real byte observer must prove partial target
+  ASAR content for either trigger path, and the full payload must differ from
+  both complete versions before reinstalling the exact target. Expensive process
+  enumeration runs independently of the watcher. Complete, unchanged, missing,
+  empty or unreadable post-stop content remains unconfirmed; there is no timing
+  hook, altered installer, fabricated interruption or blind retry. Fixed failure
+  checkpoints record observation progress without paths or file contents.
 - **Debian:** the exact target performs `dpkg --unpack`. The native package database
   must show the exact public package/version as `install ok unpacked`, and its
   executable/resources must match the target. The controlled interruption is

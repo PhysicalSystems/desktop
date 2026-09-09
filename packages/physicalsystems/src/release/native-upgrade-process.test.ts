@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import type { ChildProcess } from "node:child_process"
 import { unlinkSync } from "node:fs"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, open, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
@@ -56,6 +56,52 @@ test("partial-copy diagnostics retain only an authored operation and allowlisted
   expect(
     readNativeUpgradeObservation(Object.assign(new Error("PRIVATE"), { nativeUpgradeObservation: observation })),
   ).toBeUndefined()
+})
+
+test("a busy live destination is unconfirmed until actual partial bytes can be read", async () => {
+  const root = await mkdtemp(join(tmpdir(), "upgrade-busy-payload-fixture-"))
+  roots.push(root)
+  const actual = join(root, "actual")
+  const target = join(root, "reference")
+  const bytes = Buffer.alloc(256 * 1024, 37)
+  await writeFile(target, bytes)
+  let opens = 0
+  const checkpoints: string[] = []
+  const io = {
+    onCheckpoint: (checkpoint: string) => checkpoints.push(checkpoint),
+    openPayload: async (...args: Parameters<typeof open>) => {
+      expect(args).toEqual([actual, "r"])
+      if (++opens === 1) throw Object.assign(new Error("PRIVATE BUSY PATH"), { code: "EBUSY" })
+      return open(...args)
+    },
+  }
+  expect(await observePartialWindowsPayload(actual, target, bytes.length, io)).toBe("ABSENT")
+  await writeFile(actual, bytes.subarray(0, 64 * 1024))
+  expect(await observePartialWindowsPayload(actual, target, bytes.length, io)).toBe("UNCONFIRMED")
+  expect(await observePartialWindowsPayload(actual, target, bytes.length, io)).toBe("PARTIAL")
+  await writeFile(actual, bytes)
+  expect(await observePartialWindowsPayload(actual, target, bytes.length, io)).toBe("UNCONFIRMED")
+  expect(checkpoints).toEqual(["absent", "busyOpen", "readableOpen", "partial", "readableOpen", "sampledEndsMatch"])
+  for (const code of ["EACCES", "EPERM", "EIO"]) {
+    const error = await observePartialWindowsPayload(actual, target, bytes.length, {
+      openPayload: async () => {
+        throw Object.assign(new Error("PRIVATE OPEN FAILURE"), { code })
+      },
+    }).catch((error) => error)
+    expect(error).toBeInstanceOf(Error)
+    expect(readNativeUpgradeObservation(error)).toEqual({ phase: "payload-open", nativeCode: code })
+  }
+  const readError = await observePartialWindowsPayload(actual, target, bytes.length, {
+    openPayload: async (...args) => {
+      const handle = await open(...args)
+      handle.read = async () => {
+        throw Object.assign(new Error("PRIVATE READ FAILURE"), { code: "EBUSY" })
+      }
+      return handle
+    },
+  }).catch((error) => error)
+  expect(readError).toBeInstanceOf(Error)
+  expect(readNativeUpgradeObservation(readError)).toEqual({ phase: "payload-read", nativeCode: "EBUSY" })
 })
 
 test("the owned installer runner uses exact bounded native command arguments and waits for close", async () => {
@@ -255,7 +301,20 @@ test("Windows interruption selects only the owned live PID tree and waits for na
   ).rejects.toThrow("INTERRUPTION_UNCONFIRMED")
 })
 
-for (const scenario of ["partial-copy", "observer-error"] as const)
+for (const scenario of [
+  "partial-copy",
+  "observer-error",
+  "busy-then-partial",
+  "busy-then-complete",
+  "partial-then-complete",
+  "busy-then-missing",
+  "busy-then-empty",
+  "busy-then-invalid",
+  "busy-without-absence",
+  "busy-before-absence-only",
+  "busy-until-exit",
+  "busy-until-timeout",
+] as const)
   test.skipIf(process.platform !== "win32")(
     `slow native descendant inspection cannot block the Windows partial-copy watcher: ${scenario}`,
     async () => {
@@ -298,7 +357,9 @@ for (const scenario of ["partial-copy", "observer-error"] as const)
       let queryDeadline: ReturnType<typeof setTimeout> | undefined
       const observations: string[] = []
       let partialWritten = false
+      let busyOpens = 0
       let helperClosed: Promise<void> | undefined
+      let stops = 0
       const running = runNativeUpgradeInstaller(
         {
           env: {
@@ -322,7 +383,7 @@ for (const scenario of ["partial-copy", "observer-error"] as const)
           targetAsarReference: { file: target, bytes: targetBytes.length, sha256: await sha256File(target) },
           descendants: async () => {
             queries++
-            if (queries === 1) {
+            if (queries === 1 && scenario !== "busy-until-timeout") {
               // A broken watcher must fail inside the fixture's normal test
               // budget and release its fake process, rather than hang forever.
               queryDeadline = setTimeout(() => slowQuery.reject(new Error("INERT_WATCHER_DID_NOT_INTERRUPT")), 2000)
@@ -337,48 +398,181 @@ for (const scenario of ["partial-copy", "observer-error"] as const)
           },
         },
         {
-          timeoutMs: 3000,
-          observePayload: async (...args) => {
-            if (scenario === "observer-error")
+          timeoutMs: scenario === "busy-until-timeout" ? 1000 : 3000,
+          observePayload: async (file, reference, bytes, io) => {
+            if (scenario === "observer-error") {
+              Reflect.apply(io!.onCheckpoint!, undefined, ["PRIVATE CHECKPOINT"])
               throw Object.assign(new Error("PRIVATE OBSERVER PATH"), { code: "EBUSY", path: "PRIVATE PATH" })
+            }
+            if (scenario === "busy-before-absence-only" && busyOpens === 1) await rm(actual)
             // The first real ABSENT result returns to the watcher before the
             // next call writes partial bytes. No timer or background I/O can
             // hide the removal transition from a slow hosted Windows runner.
-            if (observations.at(-1) === "ABSENT" && !partialWritten) {
+            if (
+              !partialWritten &&
+              (observations.at(-1) === "ABSENT" || (scenario === "busy-without-absence" && busyOpens === 1))
+            ) {
               await writeFile(actual, targetBytes.subarray(0, 64 * 1024))
               partialWritten = true
             }
-            const observation = await observePartialWindowsPayload(...args)
+            const observation = await observePartialWindowsPayload(file, reference, bytes, {
+              ...io,
+              openPayload: async (...args) => {
+                if (
+                  scenario.startsWith("busy") &&
+                  (++busyOpens === 1 ||
+                    !["busy-then-partial", "busy-then-complete", "busy-without-absence"].includes(scenario))
+                )
+                  throw Object.assign(new Error("PRIVATE BUSY DESTINATION"), { code: "EBUSY" })
+                return open(...args)
+              },
+            })
             observations.push(observation)
+            if (
+              (scenario === "busy-until-exit" && busyOpens === 3) ||
+              (scenario === "busy-before-absence-only" && observation === "ABSENT") ||
+              (scenario === "busy-without-absence" && observation === "PARTIAL")
+            ) {
+              slowQuery.resolve()
+              closeParent()
+            }
             return observation
           },
           spawn: (file, args) => {
             if (file === artifact) {
               // Baseline verification has finished; remove its resource before
               // the watcher starts, while the fake installer remains alive.
-              unlinkSync(actual)
+              if (
+                !["busy-without-absence", "busy-before-absence-only", "busy-until-exit", "busy-until-timeout"].includes(
+                  scenario,
+                )
+              )
+                unlinkSync(actual)
               return parent
             }
             expect(file).toBe("C:\\Windows\\System32\\taskkill.exe")
+            expect(++stops).toBe(1)
             expect(args).toEqual(["/PID", "123456789", "/T", "/F"])
             interruptedBeforeQuery = queries > queriesFinished
             slowQuery.resolve()
             const helper = new EventEmitter() as ChildProcess
             Object.assign(helper, { kill: () => false, unref: () => helper })
             helperClosed = new Promise((resolve) => helper.once("close", () => resolve()))
-            queueMicrotask(() => {
-              closeParent()
-              helper.emit("close", 0)
-            })
+            void (async () => {
+              if (scenario === "busy-then-complete" || scenario === "partial-then-complete")
+                await writeFile(actual, targetBytes)
+              if (scenario === "busy-then-missing") await rm(actual)
+              if (scenario === "busy-then-empty") await writeFile(actual, "")
+              if (scenario === "busy-then-invalid") {
+                await rm(actual)
+                await mkdir(actual)
+              }
+            })().then(
+              () => {
+                closeParent()
+                helper.emit("close", 0)
+              },
+              (error) => {
+                closeParent()
+                helper.emit("error", error)
+                helper.emit("close", 1)
+              },
+            )
             return helper
           },
         },
       )
       try {
+        if (scenario === "busy-before-absence-only") {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe("PUBLIC_UPGRADE_INTERRUPTION_UNOBSERVED")
+          expect(observations).toEqual(["UNCONFIRMED", "ABSENT"])
+          expect(stops).toBe(0)
+          expect(parentClosed).toBe(true)
+          return
+        }
+        if (scenario === "busy-then-complete" || scenario === "partial-then-complete") {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe("PUBLIC_UPGRADE_INTERRUPTION_UNCONFIRMED")
+          expect(observations).toEqual(["ABSENT", scenario === "busy-then-complete" ? "UNCONFIRMED" : "PARTIAL"])
+          expect(readNativeUpgradeObservation(error)?.payloadProgress).toEqual({
+            absent: 1,
+            busyOpen: scenario === "busy-then-complete" ? 1 : 0,
+            readableOpen: scenario === "busy-then-complete" ? 1 : 2,
+            sampledEndsMatch: 1,
+            partial: scenario === "busy-then-complete" ? 0 : 1,
+            lastCheckpoint: "sampledEndsMatch",
+            installerExitedAtFailure: true,
+          })
+          expect(helperClosed).toBeDefined()
+          return
+        }
+        if (["busy-then-missing", "busy-then-empty", "busy-then-invalid"].includes(scenario)) {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe("PUBLIC_UPGRADE_INTERRUPTION_UNCONFIRMED")
+          expect(observations).toEqual(["ABSENT", "UNCONFIRMED"])
+          expect(readNativeUpgradeObservation(error)?.payloadProgress?.partial).toBe(0)
+          expect(helperClosed).toBeDefined()
+          expect(parentClosed).toBe(true)
+          return
+        }
+        if (scenario === "busy-without-absence") {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe("PUBLIC_UPGRADE_INTERRUPTION_UNOBSERVED")
+          expect(observations).toEqual(["UNCONFIRMED", "PARTIAL"])
+          expect(readNativeUpgradeObservation(error)?.payloadProgress).toEqual({
+            absent: 0,
+            busyOpen: 1,
+            readableOpen: 1,
+            sampledEndsMatch: 0,
+            partial: 1,
+            lastCheckpoint: "partial",
+            installerExitedAtFailure: true,
+          })
+          expect(helperClosed).toBeUndefined()
+          expect(parentClosed).toBe(true)
+          return
+        }
+        if (scenario === "busy-until-exit" || scenario === "busy-until-timeout") {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe(
+            scenario === "busy-until-exit"
+              ? "PUBLIC_UPGRADE_INTERRUPTION_UNOBSERVED"
+              : "PUBLIC_UPGRADE_INSTALLER_TIMEOUT",
+          )
+          expect(observations.length).toBeGreaterThan(0)
+          expect(observations.every((value) => value === "UNCONFIRMED")).toBe(true)
+          expect(readNativeUpgradeObservation(error)?.payloadProgress).toEqual({
+            absent: 0,
+            busyOpen: observations.length,
+            readableOpen: 0,
+            sampledEndsMatch: 0,
+            partial: 0,
+            lastCheckpoint: "busyOpen",
+            installerExitedAtFailure: scenario === "busy-until-exit",
+          })
+          expect(Object.isFrozen(readNativeUpgradeObservation(error)?.payloadProgress)).toBe(true)
+          expect(interruptedBeforeQuery).toBe(false)
+          expect(helperClosed).toBeUndefined()
+          expect(parentClosed).toBe(true)
+          return
+        }
         if (scenario === "observer-error") {
           const error = await running.catch((error) => error)
           expect(error.message).toBe("PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED")
-          expect(readNativeUpgradeObservation(error)).toEqual({ phase: "payload-observation", nativeCode: "EBUSY" })
+          expect(readNativeUpgradeObservation(error)).toEqual({
+            phase: "payload-observation",
+            nativeCode: "EBUSY",
+            payloadProgress: {
+              absent: 0,
+              busyOpen: 0,
+              readableOpen: 0,
+              sampledEndsMatch: 0,
+              partial: 0,
+              lastCheckpoint: "not-observed",
+              installerExitedAtFailure: false,
+            },
+          })
           expect(JSON.stringify(readNativeUpgradeObservation(error))).not.toContain("PRIVATE")
           expect(observations).toEqual([])
           expect(interruptedBeforeQuery).toBe(false)
@@ -386,7 +580,9 @@ for (const scenario of ["partial-copy", "observer-error"] as const)
           return
         }
         const result = await running
-        expect(observations).toEqual(["ABSENT", "PARTIAL"])
+        expect(observations).toEqual(
+          scenario === "busy-then-partial" ? ["ABSENT", "UNCONFIRMED"] : ["ABSENT", "PARTIAL"],
+        )
         expect(interruptedBeforeQuery).toBe(true)
         expect(queriesFinished).toBe(2)
         expect(result).toMatchObject({
