@@ -45,14 +45,25 @@ second sequence. The interruption and recovery observations are format-specific:
   observations for an explicitly selected unsigned preview. After observing the
   old ASAR disappear, the controller can interrupt only its owned live installer
   tree when it observes partial target bytes or a new nonempty busy destination.
-  A busy file is only a one-shot stop trigger. After confirmed installer and
-  observed descendant exits, the real byte observer must prove partial target
+  A prestarted native helper launches this exact installer atomically inside an
+  unnamed Windows Job, with a noninheritable kill-on-close handle and no
+  breakaway permission. The installer retains its original environment, working
+  directory and NSIS arguments; it cannot inherit the helper's control pipes.
+  The one-shot stop uses held process/job handles and requires the root still
+  live. A busy file is only a stop trigger. Completion requires the held root
+  handle signaled, the job's active-process count zero, helper closure and the
+  independent observed-descendant checks. The real byte observer must then prove partial target
   ASAR content for either trigger path, and the full payload must differ from
   both complete versions before reinstalling the exact target. Expensive process
   enumeration runs independently of the watcher. Complete, unchanged, missing,
   empty or unreadable post-stop content remains unconfirmed; there is no timing
   hook, altered installer, fabricated interruption or blind retry. Fixed failure
-  checkpoints record observation progress without paths or file contents.
+  checkpoints and allowlisted helper phases record observation progress without
+  paths, environment values or file contents. The installer retains its 120-second
+  budget and 10-second stop/closure bounds. EOF, helper death or uncertain closure
+  reject recovery authority and retain the private helper directory. An early
+  hosted fixture exercises the same owner with inert process descendants before
+  the public installer build; it grants no release qualification.
 - **Debian:** the exact target performs `dpkg --unpack`. The native package database
   must show the exact public package/version as `install ok unpacked`, and its
   executable/resources must match the target. The controlled interruption is
