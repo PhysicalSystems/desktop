@@ -157,8 +157,12 @@ jobs:
       - name: Install display dependencies on the disposable Linux runner
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0 dbus gnome-keyring libglib2.0-bin
+          # These packages use Ubuntu archives; unrelated preinstalled vendor
+          # repositories must not block native qualification prerequisites.
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          desktop_ubuntu_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=/dev/null)
+          sudo apt-get "${desktop_ubuntu_sources[@]}" update
+          sudo apt-get "${desktop_ubuntu_sources[@]}" install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0 dbus gnome-keyring libglib2.0-bin
       - name: Exercise exact public packages and author native observations
         id: smoke
         uses: ./.github/actions/provider-review-runtime
