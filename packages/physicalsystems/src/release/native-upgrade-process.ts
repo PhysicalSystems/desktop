@@ -29,7 +29,19 @@ type NativeUpgradePhase =
   | "taskkill-environment"
   | "taskkill-spawn"
 const nativeCodes = ["ENOENT", "EACCES", "EPERM", "EBUSY", "EIO", "ENOTDIR", "EBADF", "ESRCH"] as const
-const observations = new WeakMap<Error, Readonly<{ phase: NativeUpgradePhase; nativeCode: string }>>()
+const payloadCheckpoints = ["absent", "busyOpen", "readableOpen", "sampledEndsMatch", "partial"] as const
+type PayloadProgress = Record<(typeof payloadCheckpoints)[number], number>
+type PayloadCheckpoint = (typeof payloadCheckpoints)[number] | "not-observed"
+const observations = new WeakMap<
+  Error,
+  Readonly<{
+    phase: NativeUpgradePhase
+    nativeCode: string
+    payloadProgress?: Readonly<
+      PayloadProgress & { lastCheckpoint: PayloadCheckpoint; installerExitedAtFailure: boolean }
+    >
+  }>
+>()
 
 /** Only authored phases and allowlisted native codes leave the runner. Keeping
  * observations private to this module prevents arbitrary error fields becoming
@@ -65,18 +77,38 @@ function observedFailure(
 /** Observe actual in-place bytes, not a download/preflight failure. A same-size
  * preallocated CopyFile destination counts only after its leading target bytes
  * arrived while its trailing target bytes are still incomplete. */
-export async function observePartialWindowsPayload(file: string, targetReference: string, targetBytes: number) {
+export async function observePartialWindowsPayload(
+  file: string,
+  targetReference: string,
+  targetBytes: number,
+  io: { openPayload?: typeof open; onCheckpoint?: (checkpoint: (typeof payloadCheckpoints)[number]) => void } = {},
+) {
   const stat = await lstat(file).catch((error: NodeJS.ErrnoException) =>
     error.code === "ENOENT" ? undefined : Promise.reject(observedFailure("payload-stat", error)),
   )
-  if (!stat) return "ABSENT" as const
+  if (!stat) {
+    io.onCheckpoint?.("absent")
+    return "ABSENT" as const
+  }
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > targetBytes)
     return "UNCONFIRMED" as const
   const count = Math.min(64 * 1024, stat.size, targetBytes)
-  const actual = await open(file, "r").catch((error: NodeJS.ErrnoException) =>
-    error.code === "ENOENT" ? undefined : Promise.reject(observedFailure("payload-open", error)),
-  )
-  if (!actual) return "ABSENT" as const
+  const actual = await (io.openPayload ?? open)(file, "r").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined
+    // Hosted NSIS extraction can hold this live destination busy. That is no
+    // evidence of removal or partial bytes; observe again within the same gate.
+    if (error.code === "EBUSY") return null
+    throw observedFailure("payload-open", error)
+  })
+  if (actual === null) {
+    io.onCheckpoint?.("busyOpen")
+    return "UNCONFIRMED" as const
+  }
+  if (!actual) {
+    io.onCheckpoint?.("absent")
+    return "ABSENT" as const
+  }
+  io.onCheckpoint?.("readableOpen")
   let target: Awaited<ReturnType<typeof open>> | undefined
   try {
     target = await open(targetReference, "r").catch((error) => {
@@ -91,12 +123,20 @@ export async function observePartialWindowsPayload(file: string, targetReference
     }
     const [prefix, expectedPrefix] = await Promise.all([sample(actual, 0, count), sample(target, 0, count)])
     if (!prefix || prefix !== expectedPrefix) return "UNCONFIRMED" as const
-    if (stat.size < targetBytes) return "PARTIAL" as const
+    if (stat.size < targetBytes) {
+      io.onCheckpoint?.("partial")
+      return "PARTIAL" as const
+    }
     const [suffix, expectedSuffix] = await Promise.all([
       sample(actual, targetBytes - count, count),
       sample(target, targetBytes - count, count),
     ])
-    return suffix && expectedSuffix && suffix !== expectedSuffix ? ("PARTIAL" as const) : ("UNCONFIRMED" as const)
+    if (suffix && expectedSuffix && suffix !== expectedSuffix) {
+      io.onCheckpoint?.("partial")
+      return "PARTIAL" as const
+    }
+    if (suffix && expectedSuffix && suffix === expectedSuffix) io.onCheckpoint?.("sampledEndsMatch")
+    return "UNCONFIRMED" as const
   } finally {
     await actual.close().catch((error) => {
       throw observedFailure("payload-close", error)
@@ -285,7 +325,15 @@ export async function runNativeUpgradeInstaller(
       })
   }
   let removed = false
-  let stoppedPartial = false
+  let stoppedInstaller = false
+  const payloadProgress: PayloadProgress = { absent: 0, busyOpen: 0, readableOpen: 0, sampledEndsMatch: 0, partial: 0 }
+  let lastPayloadCheckpoint: PayloadCheckpoint = "not-observed"
+  const recordCheckpoint = (checkpoint: (typeof payloadCheckpoints)[number]) => {
+    if (payloadCheckpoints.includes(checkpoint)) {
+      payloadProgress[checkpoint] = Math.min(payloadProgress[checkpoint] + 1, 1000000)
+      lastPayloadCheckpoint = checkpoint
+    }
+  }
   try {
     while (!exited && !processError) {
       if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0)
@@ -295,20 +343,29 @@ export async function runNativeUpgradeInstaller(
       // CIM/PowerShell can take seconds. Never await that query on the actual
       // partial-copy watcher; allow only one owned bounded snapshot in flight.
       if (Date.now() - lastInspection >= 150) inspect()
-      if (windows && interrupted && !stoppedPartial) {
+      if (windows && interrupted && !stoppedInstaller) {
         const reference = input.targetAsarReference!
+        let busyDestination = false
         const observation = await (options.observePayload ?? observePartialWindowsPayload)(
           join(input.installation, "resources", "app.asar"),
           reference.file,
           reference.bytes,
+          {
+            onCheckpoint(checkpoint) {
+              recordCheckpoint(checkpoint)
+              if (checkpoint === "busyOpen") busyDestination = true
+            },
+          },
         ).catch((error) => {
           throw observedFailure("payload-observation", error)
         })
         if (observation === "ABSENT") removed = true
-        if (removed && observation === "PARTIAL") {
+        // A current busy nonempty destination can justify stopping this owned
+        // installer, but never proves partial bytes or authorizes recovery.
+        if (removed && (observation === "PARTIAL" || busyDestination)) {
           if (exited) throw failure("INTERRUPTION_UNCONFIRMED")
           await stopOwnedWindowsInstaller(child, { env: input.env, spawn: options.spawn })
-          stoppedPartial = true
+          stoppedInstaller = true
         }
       }
       await Promise.race([closed, pause(windows && interrupted ? 5 : 50)])
@@ -356,7 +413,18 @@ export async function runNativeUpgradeInstaller(
         targetInstallationComplete: false,
       } satisfies UpgradeInterruption
     }
-    if (!stoppedPartial) throw failure("INTERRUPTION_UNOBSERVED")
+    if (!stoppedInstaller) throw failure("INTERRUPTION_UNOBSERVED")
+    // All native mutation has stopped. Read the real destination again for
+    // both trigger paths; neither a prior sample nor a busy event is proof.
+    if (
+      (await observePartialWindowsPayload(
+        join(input.installation, "resources", "app.asar"),
+        input.targetAsarReference!.file,
+        input.targetAsarReference!.bytes,
+        { onCheckpoint: recordCheckpoint },
+      )) !== "PARTIAL"
+    )
+      throw failure("INTERRUPTION_UNCONFIRMED")
     const after = await payloadFingerprint(executable)
       .then((value) => value.sha256)
       .catch((error: NodeJS.ErrnoException) => {
@@ -373,6 +441,7 @@ export async function runNativeUpgradeInstaller(
       targetInstallationComplete: false,
     } satisfies UpgradeInterruption
   } catch (error) {
+    const installerExitedAtFailure = exited
     // A timeout/error grants no recovery authority. Stop only this owned child,
     // bound the wait, and let the caller retain uncertain package/system state.
     if (!exited && child.pid) {
@@ -390,6 +459,18 @@ export async function runNativeUpgradeInstaller(
         : failure("INSTALLER_UNCONFIRMED")
     const observation = readNativeUpgradeObservation(error)
     if (observation) observations.set(result, observation)
+    if (windows && interrupted)
+      observations.set(
+        result,
+        Object.freeze({
+          ...(observation ?? { phase: "payload-observation" as const, nativeCode: "OTHER" }),
+          payloadProgress: Object.freeze({
+            ...payloadProgress,
+            lastCheckpoint: lastPayloadCheckpoint,
+            installerExitedAtFailure,
+          }),
+        }),
+      )
     throw result
   }
 }
