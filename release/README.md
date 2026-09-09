@@ -22,9 +22,12 @@ All jobs check out a fixed SHA. Download caches are keyed by OS, architecture, N
 
 Dependency and Electron download caches are saved immediately after successful
 setup, so a later packaged-app test failure does not discard that completed work.
-Packaging-tool downloads use a separate cache saved after a successful job, since
-those downloads may occur during the later build. Installed dependencies and
-application outputs are rebuilt; neither cache substitutes for qualification.
+Packaging-tool downloads use a separate cache saved after successful packaging,
+before native qualification; public builds require both target and lab baseline
+packaging to succeed. A later display-setup or native-test failure therefore does
+not discard verified tooling. Failed packaging does not save the cache. Installed
+dependencies and application outputs are rebuilt; neither cache substitutes for
+qualification.
 
 ## Files and commands
 
@@ -78,9 +81,9 @@ The input bundle contains `release-inputs.json`, `history.json`, the decoded `mo
 
 In GitHub Actions, every consuming CLI command also requires `PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256` and `PHYSICALSYSTEMS_RELEASE_REPOSITORY`. The expected digest comes from the trusted prepare job's output, and the repository comes from the workflow context. They must not be derived from the downloaded record being checked: a self-consistent replacement record is insufficient. Local diagnostics still verify the record against source and may supply the same anchors explicitly.
 
-| Target                        | Files prepared   | Automated qualification boundary                                                                     |
-| ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------- |
-| Windows x64 on `windows-2025` | NSIS `.exe`      | Fresh temporary installation and packaged simulation checks; no signing or real provider credentials |
+| Target                        | Files prepared   | Automated qualification boundary                                                                           |
+| ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| Windows x64 on `windows-2025` | NSIS `.exe`      | Fresh temporary installation and packaged simulation checks; no signing or real provider credentials       |
 | Linux x64 on `ubuntu-24.04`   | `.deb`, AppImage | Owned Debian install/uninstall and original AppImage extract-and-run with scoped sandbox setup, under Xvfb |
 
 Each platform retains the exact installer files, `artifacts.json`, `SHA256SUMS`, per-artifact qualification JSON and a verification report. Failure paths retain available sanitized receipts and `workflow-status.json`; a skipped or missing required check cannot become a pass. The final assessment collects both platform reports and retains `summary.json`, `summary.md`, checksums and `candidate-downloads.json`.
