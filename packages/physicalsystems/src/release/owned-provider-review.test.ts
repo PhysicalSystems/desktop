@@ -180,7 +180,7 @@ async function fixture(
     ) {
       expect(state.nativeStopped).toBe(false)
       expect(state.browserStopped).toBe(false)
-      expect(name).toMatch(/^provider-review-123-2-(?:linux|windows)-x64-[a-f0-9]{12}-[a-f0-9]{12}$/)
+      expect(name).toMatch(/^provider-review-123-2-(?:linux|windows)-x64-[a-f0-9]{64}-[a-f0-9]{64}$/)
       expect(files).toEqual([join(directory, "provider-review.sealed.json")])
       expect(options).toEqual({ retentionDays: 1, compressionLevel: 0 })
       state.sealed = await readFile(files[0]!, "utf8")

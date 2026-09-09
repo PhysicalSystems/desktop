@@ -122,10 +122,14 @@ The wrapper independently checks the installer SHA-256 and run/source/input anch
 It owns a fresh nonce, uploads one exclusive ciphertext file with one-day retention
 and records the returned artifact ID/archive hash. The archive is available while
 that same controller polls the still-live attempt. The reviewer downloads only
-that archive from the exact running workflow and decrypts it privately, checking
-the expected run, attempt, source, installer, recipient fingerprint and expiry
-before entering its device code on the official URL. The RSA private key never
-goes to GitHub. No code or token is printed in Actions logs.
+that archive from the exact running workflow. Its trusted Actions artifact name
+contains the full installer SHA-256 and nonce SHA-256, alongside the run ID, run
+attempt and platform. Before owner approval, obtain those anchors from Actions
+metadata and independently verify the exact source revision, release-input digest
+and recipient public-key fingerprint. Decryption must compare every expected
+anchor and check expiry before displaying the device code privately for approval
+on the official URL. The RSA private key never goes to GitHub. No code or token is
+printed in Actions logs.
 
 The Linux browser controller starts the runner's installed Google Chrome in an
 exclusive profile and process session. Its private XDG handler reuses that profile
