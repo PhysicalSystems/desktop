@@ -4,6 +4,33 @@ import { desktopIdentity } from "./identity"
 import { publicNativeJobReceipt, publicNativeReceipt, validatePublicNativeJob } from "./public-native-receipts"
 import { simulatedPublicNativeFixture } from "./public-native-fixture"
 
+test("unsigned preview retains every native gate and rejects false signing claims", () => {
+  const f = simulatedPublicNativeFixture("windows-x64", 0, true, { provider: "unsigned-preview" })
+  expect(f.report.signing.status).toBe("UNSIGNED_PREVIEW")
+  expect(f.report.signature.status).toBe("UNSIGNED")
+  expect(publicNativeReceipt(f).checks.every((check) => check.status === "PASS")).toBe(true)
+  for (const id of ["native-provider-browser-probe", "native-v2-credential-probe", "native-upgrade-probe"]) {
+    const changed = structuredClone(f)
+    changed.report.checks = changed.report.checks.filter((check) => check.id !== id)
+    expect(publicNativeReceipt(changed).checks.some((check) => check.status === "NOT_TESTED")).toBe(true)
+  }
+  for (const status of ["FAIL", "BLOCKED", "NOT_TESTED"] as const) {
+    const changed = structuredClone(f)
+    changed.report.checks.find((check) => check.id === "public-unsigned-preview")!.status = status
+    expect(publicNativeReceipt(changed).checks.every((check) => check.status === status)).toBe(true)
+  }
+  const signing = f.report.signing
+  if (signing.status !== "UNSIGNED_PREVIEW") throw new Error("Expected an unsigned fixture receipt")
+  for (const report of [
+    { ...f.report, checks: [...f.report.checks, { id: "public-signing", status: "PASS", detail: "false claim" }] },
+    { ...f.report, signature: { status: "PASS", trust: "WINDOWS_AUTHENTICODE_VALID" } },
+    { ...f.report, signing: { ...signing, status: "PASS" } },
+    { ...f.report, signing: { ...signing, installer: { ...signing.installer, publisher: "invented" } } },
+    { ...f.report, signing: { ...signing, executable: { ...signing.executable, sha256: "0".repeat(64) } } },
+  ])
+    expect(() => publicNativeReceipt({ ...f, report })).toThrow()
+})
+
 test("current real smoke can author only its demonstrated installed checks; legacy auth is not V2 evidence", () => {
   for (const platform of ["windows-x64", "linux-x64"] as const) {
     const f = simulatedPublicNativeFixture(platform)

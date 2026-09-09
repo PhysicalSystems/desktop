@@ -2,8 +2,9 @@
 import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { mergeWebsiteSelection, waitForWebsiteSelection } from "./website-merge"
+import { unsignedWindowsPreviewWarning } from "./public-downloads"
 
-function fixture() {
+function fixture(unsigned = false) {
   const sha = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex")
   const head = "a".repeat(40)
   const main = "b".repeat(40)
@@ -12,7 +13,7 @@ function fixture() {
   )
   const bytes = Buffer.from(
     JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       repository: "PhysicalSystems/physicalsystems",
       release: {
         version: "0.1.0-beta.1",
@@ -22,6 +23,9 @@ function fixture() {
         publishedAt: "2026-09-07T20:00:00Z",
         sourceRevision: head,
         inputsSha256: sha("inputs"),
+        windowsSigning: unsigned
+          ? { status: "unsigned-preview", warning: unsignedWindowsPreviewWarning }
+          : { status: "verified" },
         assets: ["windows-x64.exe", "linux-x64.deb", "linux-x64.AppImage"].map((suffix) => ({
           name: `physical-systems-desktop-0.1.0-beta.1-${suffix}`,
           bytes: 100,
@@ -135,6 +139,71 @@ function fixture() {
 }
 
 describe("automatic website integration after release approval", () => {
+  test("unsigned preview continues through exact commit validation, merge and exact public deployment readback", async () => {
+    const data = fixture(true)
+    data.state.queued = true
+    expect(
+      await mergeWebsiteSelection({
+        ...data.input,
+        wait: async () => {
+          data.state.waits++
+          data.state.queued = false
+        },
+      }),
+    ).toEqual({ status: "merged", url: data.input.url })
+    expect(data.state.waits).toBe(1)
+    expect(data.state.mergeCalls).toBe(1)
+    expect(JSON.parse(data.input.bytes.toString()).release.windowsSigning).toEqual({
+      status: "unsigned-preview",
+      warning: unsignedWindowsPreviewWarning,
+    })
+    await waitForWebsiteSelection({
+      bytes: data.input.bytes,
+      wait: async () => {},
+      fetch: async (url, init) => {
+        expect(new Headers(init?.headers).has("Authorization")).toBe(false)
+        if (url.includes("desktop-selection.json")) return new Response(data.input.bytes)
+        if (url.endsWith("/api/health")) return Response.json({ ok: true })
+        return new Response(
+          `<title>Download Desktop | Physical Systems</title><p>${unsignedWindowsPreviewWarning}</p>`,
+          {
+            headers: { "content-type": "text/html" },
+          },
+        )
+      },
+    })
+  })
+
+  test("automatic merge rejects missing unsigned metadata, altered warnings and a legacy-schema downgrade before API access", async () => {
+    for (const change of [
+      (selection: Record<string, unknown>) => {
+        delete (selection.release as Record<string, unknown>).windowsSigning
+      },
+      (selection: Record<string, unknown>) => {
+        ;((selection.release as Record<string, unknown>).windowsSigning as Record<string, unknown>).warning =
+          "Altered warning"
+      },
+      (selection: Record<string, unknown>) => {
+        selection.schemaVersion = 1
+        delete (selection.release as Record<string, unknown>).windowsSigning
+      },
+    ]) {
+      const data = fixture(true)
+      const selection = JSON.parse(data.input.bytes.toString())
+      change(selection)
+      const bytes = Buffer.from(JSON.stringify(selection))
+      await expect(
+        mergeWebsiteSelection({
+          ...data.input,
+          bytes,
+          expectedSha256: createHash("sha256").update(bytes).digest("hex"),
+        }),
+      ).rejects.toThrow()
+      expect(data.state.reads).toBe(0)
+      expect(data.state.mergeCalls).toBe(0)
+    }
+  })
+
   test("waits for exact commit validation, merges once and confirms main selection", async () => {
     const data = fixture()
     data.state.queued = true

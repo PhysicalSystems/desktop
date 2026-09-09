@@ -16,6 +16,7 @@ import {
   freezePublicProducerPolicy,
   preparePublicProducerInputs,
   PublicProducerError,
+  requirePublicProducerSigningSelection,
   withPublicWindowsSigning,
 } from "../packages/physicalsystems/src/release/public-producer"
 
@@ -78,12 +79,14 @@ try {
         `Public build inputs frozen for ${release.version} at ${release.source.revision}.\n\nRelease input SHA-256: \`${release.sha256}\`.\n\nPublic build SHA-256: \`${prepared.sha256}\`.\n\nInstallers and smoke results remain unqualified; this workflow cannot publish.\n`,
       )
   } else if (command === "verify-upgrade") {
-    await loadPublicUpgradeInputs({ root, env: process.env })
+    const upgrade = await loadPublicUpgradeInputs({ root, env: process.env })
+    requirePublicProducerSigningSelection(upgrade.targetPublic.windowsSigning, process.env.DESKTOP_WINDOWS_SIGNING)
     console.log("Independent target and lab baseline bindings verified before package builds")
   } else if (command === "build-windows") {
     if (process.platform !== "win32")
-      throw new PublicProducerError("The signing build step requires its native Windows runner")
+      throw new PublicProducerError("The Windows build step requires its native Windows runner")
     const upgrade = await loadPublicUpgradeInputs({ root, env: process.env })
+    requirePublicProducerSigningSelection(upgrade.targetPublic.windowsSigning, process.env.DESKTOP_WINDOWS_SIGNING)
     await withPublicWindowsSigning(upgrade.targetPublic.windowsSigning, process.env, async (env) => {
       for (const [releaseFile, publicFile, releaseSha, publicSha, output] of [
         [
@@ -143,7 +146,7 @@ try {
     if (process.env.GITHUB_STEP_SUMMARY)
       await appendFile(
         process.env.GITHUB_STEP_SUMMARY,
-        `\nAll required native checks, exact artifact bytes and signatures validated. Qualified distribution SHA-256: \`${result.sha256}\`. Publication still requires the publisher's protected approval.\n`,
+        `\nAll required native checks, exact artifact bytes and the declared Windows signing policy validated. Qualified distribution SHA-256: \`${result.sha256}\`. Publication still requires the publisher's protected approval.\n`,
       )
     console.log(`Qualified distribution SHA-256: ${result.sha256}`)
   }

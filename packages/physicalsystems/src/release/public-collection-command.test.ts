@@ -15,10 +15,11 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-async function fixture(complete = true) {
+async function fixture(complete = true, unsigned = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "public-native-jobs-fixture-")))
   roots.push(root)
-  const base = simulatedPublicNativeFixture()
+  const policy = unsigned ? { provider: "unsigned-preview" as const } : undefined
+  const base = simulatedPublicNativeFixture("windows-x64", 0, complete, policy)
   const jobs: Record<string, { artifacts: string; receipts: string; expectedJobSha256: string }> = {}
   for (const platform of ["windows-x64", "linux-x64"] as const) {
     const jobRoot = join(root, "downloaded", platform === "windows-x64" ? "windows" : "linux")
@@ -28,7 +29,7 @@ async function fixture(complete = true) {
     await mkdir(receipts)
     const inventory = []
     for (const index of platform === "windows-x64" ? [0] : [0, 1]) {
-      const f = simulatedPublicNativeFixture(platform, index, complete)
+      const f = simulatedPublicNativeFixture(platform, index, complete, policy)
       await writeFile(join(artifacts, f.artifact.name), f.bytes)
       const smoke = publicReceiptBytes(f.report)
       const native = publicReceiptBytes(publicNativeReceipt(f))
@@ -42,7 +43,7 @@ async function fixture(complete = true) {
         nativeSha256: native.sha256,
       })
     }
-    const f = simulatedPublicNativeFixture(platform)
+    const f = simulatedPublicNativeFixture(platform, 0, complete, policy)
     const job = publicReceiptBytes(publicNativeJobReceipt({ ...f, platform, artifacts: inventory }))
     await writeFile(join(receipts, "native-job.json"), job.bytes)
     jobs[platform] = { artifacts, receipts, expectedJobSha256: job.sha256 }
@@ -82,6 +83,27 @@ test("real partial observations remain incomplete and cannot emit a qualified bu
   const f = await fixture(false)
   await expect(collectPublicProducer(f.input)).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
   expect(await readdir(f.root)).not.toContain("qualified")
+})
+
+test("unsigned preview traverses both trusted native-job anchors and preserves all native requirements", async () => {
+  const f = await fixture(true, true)
+  const result = await collectPublicProducer(f.input)
+  expect(result.record.facts.windowsSigning.status).toBe("unsigned-preview")
+  expect(result.record.facts.assets).toHaveLength(3)
+  expect(
+    await verifyQualifiedBundle({
+      directory: f.input.output,
+      expectedSha256: result.sha256,
+      sourceRevision: f.input.env.GITHUB_SHA,
+    }),
+  ).toEqual(result.record)
+  const partial = await fixture(false, true)
+  await expect(collectPublicProducer(partial.input)).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+  expect(await readdir(partial.root)).not.toContain("qualified")
+  const changed = await fixture(true, true)
+  changed.input.windows.expectedJobSha256 = "0".repeat(64)
+  await expect(collectPublicProducer(changed.input)).rejects.toThrow()
+  expect(await readdir(changed.root)).not.toContain("qualified")
 })
 
 test("the real workflow CLI collects complete simulated job evidence and exports only the qualification anchor", async () => {

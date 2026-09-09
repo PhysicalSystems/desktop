@@ -1,5 +1,5 @@
 name: Build and qualify public desktop installers
-run-name: Public desktop ${{ inputs.channel }} from ${{ github.sha }}
+run-name: Public desktop ${{ inputs.channel }} (${{ inputs.windows_signing }}) from ${{ github.sha }}
 
 # Native observations are bound through distinct Windows/Linux job outputs.
 # The strict collector succeeds only when every required check actually passes.
@@ -16,6 +16,12 @@ on:
         description: Optional preview version; stable requires an explicit version
         type: string
         required: false
+      windows_signing:
+        description: Windows signing policy; unsigned-preview is allowed only on preview
+        type: choice
+        options: [signed, unsigned-preview]
+        default: signed
+        required: true
 
       browser_review:
         description: Verify the native browser handoff against an owned loopback fixture; no provider sign-in
@@ -52,7 +58,7 @@ env:
 
 jobs:
   prepare:
-    name: Freeze reviewed main and provisioned public signing policy
+    name: Freeze reviewed main and explicit public signing policy
     if: github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
@@ -79,6 +85,8 @@ jobs:
         env:
           DESKTOP_PUBLIC_BUILD_ENABLED: ${{ vars.DESKTOP_PUBLIC_BUILD_ENABLED }}
           DESKTOP_WINDOWS_SIGNING_POLICY: ${{ vars.DESKTOP_WINDOWS_SIGNING_POLICY }}
+          DESKTOP_WINDOWS_SIGNING: ${{ inputs.windows_signing }}
+          CHANNEL: ${{ inputs.channel }}
           PUBLIC_POLICY_DIRECTORY: ${{ runner.temp }}/desktop-public-policy
         run: bun script/desktop-public-producer.ts preflight
       - name: Read complete download-repository history, including drafts
@@ -152,16 +160,17 @@ jobs:
       baseline_version: ${{ needs.prepare.outputs.baseline_version }}
       upgrade_plan_sha256: ${{ needs.prepare.outputs.upgrade_plan_sha256 }}
       platform: windows-x64
+      windows_signing: ${{ inputs.windows_signing }}
       browser_review: ${{ inputs.browser_review }}
       provider_qa: ${{ inputs.provider_qa }}
       provider_qa_public_key: ${{ inputs.provider_qa_public_key }}
       provider_qa_key_sha256: ${{ inputs.provider_qa_key_sha256 }}
     secrets:
-      DESKTOP_WINDOWS_PFX_BASE64: ${{ secrets.DESKTOP_WINDOWS_PFX_BASE64 }}
-      DESKTOP_WINDOWS_PFX_PASSWORD: ${{ secrets.DESKTOP_WINDOWS_PFX_PASSWORD }}
-      DESKTOP_AZURE_TENANT_ID: ${{ secrets.DESKTOP_AZURE_TENANT_ID }}
-      DESKTOP_AZURE_CLIENT_ID: ${{ secrets.DESKTOP_AZURE_CLIENT_ID }}
-      DESKTOP_AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_AZURE_CLIENT_SECRET }}
+      DESKTOP_WINDOWS_PFX_BASE64: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_WINDOWS_PFX_BASE64 || '' }}
+      DESKTOP_WINDOWS_PFX_PASSWORD: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_WINDOWS_PFX_PASSWORD || '' }}
+      DESKTOP_AZURE_TENANT_ID: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_AZURE_TENANT_ID || '' }}
+      DESKTOP_AZURE_CLIENT_ID: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_AZURE_CLIENT_ID || '' }}
+      DESKTOP_AZURE_CLIENT_SECRET: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_AZURE_CLIENT_SECRET || '' }}
 
   linux:
     name: Public linux-x64 installers and native evidence
@@ -177,6 +186,7 @@ jobs:
       baseline_version: ${{ needs.prepare.outputs.baseline_version }}
       upgrade_plan_sha256: ${{ needs.prepare.outputs.upgrade_plan_sha256 }}
       platform: linux-x64
+      windows_signing: ${{ inputs.windows_signing }}
       browser_review: ${{ inputs.browser_review }}
       provider_qa: ${{ inputs.provider_qa }}
       provider_qa_public_key: ${{ inputs.provider_qa_public_key }}
@@ -230,7 +240,7 @@ jobs:
           artifact-ids: ${{ needs.linux.outputs.receipt_artifact_id }}
           path: ${{ runner.temp }}/desktop-public/downloaded/linux/receipts
           merge-multiple: true
-      - name: Strictly collect the exact signed bytes and all native requirements
+      - name: Strictly collect the exact bytes, declared signing policy and all native requirements
         id: collect
         env:
           PUBLIC_BUILD_INPUTS: ${{ runner.temp }}/desktop-public/inputs/public-build-inputs.json

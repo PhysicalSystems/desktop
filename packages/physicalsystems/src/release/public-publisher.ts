@@ -5,6 +5,7 @@ import { lstat, readFile, readdir } from "node:fs/promises"
 import path from "node:path"
 import {
   publicReviewDigest,
+  unsignedWindowsPreviewWarning,
   validateDistributionFacts,
   validateReview,
   verifyPublicDownloads,
@@ -70,7 +71,7 @@ export function validateQualifiedDistribution(input: unknown, expectedSha256: st
     typeof data.qualificationBundleSha256 !== "string" ||
     !/^[a-f0-9]{64}$/.test(data.qualificationBundleSha256)
   )
-    throw new Error("Signed public qualification is required; unsigned candidates are ineligible")
+    throw new Error("Explicit public qualification is required; internal candidates are ineligible")
   return {
     schemaVersion: 1,
     kind: "qualified-public-desktop-distribution",
@@ -232,10 +233,11 @@ function releaseBody(data: QualifiedDistribution, digest: string) {
 Version: ${data.facts.version}
 Desktop source: ${data.facts.sourceRevision}
 Qualified distribution SHA-256: ${digest}
+${data.facts.windowsSigning.status === "unsigned-preview" ? `\n**${unsignedWindowsPreviewWarning}**\n` : ""}
 
 ## Install and remove
 
-- **Windows x64:** open the downloaded signed \`.exe\` installer, then launch **Physical Systems** from Start. To uninstall, use Windows Settings → Apps → Installed apps → Physical Systems → Uninstall.
+- **Windows x64:** open the downloaded ${data.facts.windowsSigning.status === "verified" ? "signed" : "unsigned preview"} \`.exe\` installer, then launch **Physical Systems** from Start. To uninstall, use Windows Settings → Apps → Installed apps → Physical Systems → Uninstall.
 - **Linux x64 (.deb):** the normal Linux download. From the download directory, run \`sudo apt install ./${debian.name}\`, then launch **Physical Systems** from the application menu or run \`physical-systems-desktop\`. Remove the application with \`sudo apt remove physical-systems-desktop\`.
 - **AppImage — advanced:** launch the original artifact with \`--appimage-extract-and-run\` only after configuring its explicit, artifact-specific Ubuntu AppArmor prerequisite. Downloading the file alone does not configure that prerequisite. Follow the [AppImage setup and removal guide](${source}/appimage-runtime.md#advanced-user-setup).
 
@@ -309,7 +311,7 @@ async function verifyRemoteAsset(input: {
       await reader.cancel().catch(() => {})
     }
     if (size !== input.expected.bytes || hash.digest("hex") !== input.expected.sha256)
-      throw new Error("Draft asset bytes differ from the signed and qualified installer")
+      throw new Error("Draft asset bytes differ from the exact qualified installer")
     return
   }
   throw new Error("Draft asset exceeded the redirect limit")
@@ -517,7 +519,7 @@ export async function publishPreparedPublication(input: {
 
 /** The runner supplies these API responses before handling release credentials.
  * A public candidate run, a fork, an earlier attempt or an unprotected environment
- * cannot authenticate signed public qualification or final approval.
+ * cannot authenticate public qualification or final approval.
  */
 export function validatePublisherPrerequisites(input: {
   run: unknown
@@ -559,9 +561,7 @@ export function validatePublisherPrerequisites(input: {
       run.repository?.full_name !== "PhysicalSystems/desktop" ||
       run.head_repository?.full_name !== "PhysicalSystems/desktop"
     )
-      throw new Error(
-        "Expected the exact successful current attempt of the trusted signed public qualification producer",
-      )
+      throw new Error("Expected the exact successful current attempt of the trusted public qualification producer")
   }
   if (!input.environment || typeof input.environment !== "object")
     throw new Error("Protected publication environment is unavailable")

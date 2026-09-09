@@ -28,7 +28,7 @@ const serialize = (value: unknown) => JSON.stringify(value, null, 2) + "\n"
 const fields = (value: unknown) => value as Record<string, unknown>
 const checks = (record: Record<string, unknown>) => record.checks as Record<string, unknown>[]
 
-async function fixture() {
+async function fixture(unsigned = false) {
   // All payloads, signatures and native PASS records below are explicit simulated
   // collector test fixtures. These tests never sign, install or launch an app.
   const root = await realpath(await mkdtemp(join(tmpdir(), "ps-collector-fixture-")))
@@ -44,11 +44,13 @@ async function fixture() {
     channel: "preview",
     identity: desktopIdentity("public"),
     publication: false,
-    windowsSigning: {
-      provider: "pfx",
-      publisher: "SIMULATED COLLECTOR FIXTURE ONLY",
-      certificateThumbprint: "C".repeat(40),
-    },
+    windowsSigning: unsigned
+      ? { provider: "unsigned-preview" }
+      : {
+          provider: "pfx",
+          publisher: "SIMULATED COLLECTOR FIXTURE ONLY",
+          certificateThumbprint: "C".repeat(40),
+        },
   }
   const mode = {
     build,
@@ -71,7 +73,7 @@ async function fixture() {
     await writeFile(join(evidence, item.name), bytes)
     const windows = item.format === "nsis"
     const extra = windows
-      ? ["public-signing", "uninstall", "native-reinstall-probe"]
+      ? [unsigned ? "public-unsigned-preview" : "public-signing", "uninstall", "native-reinstall-probe"]
       : [
           "linux-sandbox-setup",
           "linux-renderer-sandbox",
@@ -81,7 +83,9 @@ async function fixture() {
             ? ["uninstall", "native-reinstall-probe"]
             : ["appimage-launcher", "linux-sandbox-cleanup"]),
         ]
-    const observed = { Status: "Valid", Publisher: build.windowsSigning.publisher, Thumbprint: "C".repeat(40) }
+    const observed = unsigned
+      ? { Status: "NotSigned", Publisher: null, Thumbprint: null }
+      : { Status: "Valid", Publisher: "SIMULATED COLLECTOR FIXTURE ONLY", Thumbprint: "C".repeat(40) }
     const signing = windows
       ? verifyPublicSignaturePair({
           installer: observed,
@@ -104,7 +108,9 @@ async function fixture() {
         }),
       ),
       signature: windows
-        ? { status: "PASS", trust: "WINDOWS_AUTHENTICODE_VALID", signerThumbprint: "C".repeat(40) }
+        ? unsigned
+          ? { status: "UNSIGNED", trust: "WINDOWS_AUTHENTICODE_UNSIGNED" }
+          : { status: "PASS", trust: "WINDOWS_AUTHENTICODE_VALID", signerThumbprint: "C".repeat(40) }
         : { status: "NOT_TESTED", trust: "NOT_APPLICABLE_TO_LINUX_PACKAGE" },
       payload: { sha256: "e".repeat(64), executableSha256: "d".repeat(64) },
       inputsSha256: build.releaseInputsSha256,
@@ -192,6 +198,81 @@ test("collector creates the exact existing publisher bundle only from complete s
       expect(await readFile(join(f.input().output, file), "utf8")).not.toContain("PRIVATE-DETAIL-MUST-NOT-LEAVE")
   }
   await expect(collectPublicDistribution(f.input())).rejects.toThrow()
+})
+
+test("collector carries explicit unsigned preview observations without inventing a signed publisher", async () => {
+  const f = await fixture(true)
+  const result = await collectPublicDistribution(f.input())
+  expect(result.record.facts.windowsSigning).toEqual({
+    status: "unsigned-preview",
+    installerSha256: f.plan.artifacts[0].sha256,
+    executableSha256: "d".repeat(64),
+    verificationReportSha256: result.record.facts.windowsSigning.verificationReportSha256,
+  })
+  const receipt = JSON.parse(
+    await readFile(
+      join(f.input().output, `${result.record.facts.windowsSigning.verificationReportSha256}.json`),
+      "utf8",
+    ),
+  )
+  expect(receipt.status).toBe("UNSIGNED_PREVIEW")
+  expect(receipt.installer).toEqual({ status: "UNSIGNED", sha256: f.plan.artifacts[0].sha256 })
+  expect(JSON.stringify(receipt)).not.toContain("publisher")
+  expect(result.record.facts.assets).toHaveLength(3)
+  for (const asset of result.record.facts.assets) {
+    const report = JSON.parse(
+      await readFile(join(f.input().output, `${asset.qualification.reportSha256}.json`), "utf8"),
+    )
+    expect(report.smokeChecks["public-signing"]).toBeUndefined()
+    if (asset.name.endsWith(".exe")) expect(report.smokeChecks["public-unsigned-preview"]).toBe("PASS")
+  }
+})
+
+test("unsigned collection still requires exact unsigned observations and every native requirement", async () => {
+  for (const change of [
+    (record: Record<string, unknown>) => {
+      delete record.signing
+    },
+    (record: Record<string, unknown>) => {
+      fields(record.signing).status = "PASS"
+    },
+    (record: Record<string, unknown>) => {
+      fields(fields(record.signing).installer).status = "PASS"
+    },
+    (record: Record<string, unknown>) => {
+      fields(fields(record.signing).installer).publisher = "Invented"
+    },
+    (record: Record<string, unknown>) => {
+      fields(fields(record.signing).executable).sha256 = "0".repeat(64)
+    },
+    (record: Record<string, unknown>) => {
+      fields(record.signature).signerThumbprint = "C".repeat(40)
+    },
+    (record: Record<string, unknown>) => {
+      fields(record.signature).status = "PASS"
+    },
+    (record: Record<string, unknown>) => {
+      checks(record).find((check) => check.id === "public-unsigned-preview")!.status = "NOT_TESTED"
+    },
+    (record: Record<string, unknown>) => {
+      checks(record).find((check) => check.id === "public-unsigned-preview")!.id = "public-signing"
+    },
+    (record: Record<string, unknown>) => {
+      checks(record).push({ id: "public-signing", status: "PASS" })
+    },
+  ]) {
+    const f = await fixture(true)
+    await f.edit("smokeSha256", change)
+    await expect(collectPublicDistribution(f.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+    expect(await readdir(f.root)).not.toContain("collected")
+  }
+  for (const id of unimplementedPublicChecks) {
+    const f = await fixture(true)
+    await f.edit("nativeSha256", (record) => {
+      record.checks = checks(record).filter((check) => check.id !== id)
+    })
+    await expect(collectPublicDistribution(f.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+  }
 })
 
 test("current unqualified smoke cannot substitute for absent, skipped or duplicated native checks", async () => {

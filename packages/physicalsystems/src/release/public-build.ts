@@ -6,6 +6,7 @@ import { desktopIdentity } from "./identity"
 import { publicReviewDigest } from "./public-downloads"
 
 export type PublicSigningPolicy =
+  | { provider: "unsigned-preview" }
   | {
       provider: "pfx"
       publisher: string
@@ -79,6 +80,8 @@ export function validatePublicBuildInputs(input: unknown, expectedSha256: string
   if (publicReviewDigest(data.identity) !== publicReviewDigest(desktopIdentity("public")))
     throw new Error("Public app, profile and executable identities are fixed before compilation")
   validatePublicSigningPolicy(data.windowsSigning)
+  if ((data.windowsSigning as PublicSigningPolicy).provider === "unsigned-preview" && data.channel !== "preview")
+    throw new Error("Unsigned Windows builds are allowed only for an explicit preview")
   return data as PublicBuildInputs
 }
 
@@ -86,6 +89,10 @@ export function validatePublicSigningPolicy(input: unknown): PublicSigningPolicy
   if (!input || typeof input !== "object" || Array.isArray(input))
     throw new Error("An explicit signing provider is required")
   const signing = input as Record<string, unknown>
+  if (signing.provider === "unsigned-preview") {
+    exact(signing, ["provider"])
+    return { provider: "unsigned-preview" }
+  }
   if (!text(signing.publisher, 200)) throw new Error("Pin the exact expected signing publisher")
   if (signing.provider === "pfx") {
     exact(signing, ["provider", "publisher", "certificateThumbprint"])
@@ -106,7 +113,7 @@ export function validatePublicSigningPolicy(input: unknown): PublicSigningPolicy
       throw new Error("Pin the owned Azure signing endpoint, account and certificate profile")
     return signing as PublicSigningPolicy
   }
-  throw new Error("Unsupported public signing provider; unsigned fallback is prohibited")
+  throw new Error("Unsupported public signing provider; automatic unsigned fallback is prohibited")
 }
 
 export function loadPublicBuildInputs(env: NodeJS.ProcessEnv) {
@@ -136,6 +143,10 @@ export function compiledDesktopIdentity(env: NodeJS.ProcessEnv) {
 /** Signing credentials remain runner-only and are not included in public inputs. */
 export function publicSigningConfiguration(inputs: PublicBuildInputs, env: NodeJS.ProcessEnv, platform: string) {
   if (platform !== "win32" && platform !== "linux") throw new Error("Public desktop target is not qualified")
+  if (inputs.windowsSigning.provider === "unsigned-preview") {
+    validatePublicBuildInputs(inputs, publicReviewDigest(inputs))
+    return {}
+  }
   if (platform === "linux") return {}
   if (inputs.windowsSigning.provider === "pfx") {
     if (

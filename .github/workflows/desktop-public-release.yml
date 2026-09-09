@@ -1,15 +1,15 @@
 name: Publish qualified desktop installers
 run-name: Public desktop from qualified run ${{ inputs.qualification_run_id }} attempt ${{ inputs.qualification_run_attempt }}
 
-# The unsigned candidate pipeline is ineligible. This workflow consumes a future
-# owned signing/native-qualification producer; it never fabricates its receipts.
+# The candidate pipeline is ineligible. This workflow consumes the owned public
+# native-qualification producer and its declared policy; it never fabricates receipts.
 # One final environment approval covers publication and website selection. No
 # source preparation PR or second website approval is part of this publisher.
 on:
   workflow_dispatch:
     inputs:
       qualification_run_id:
-        description: Successful signed public qualification run from reviewed main
+        description: Successful public qualification run with declared Windows signing policy from reviewed main
         type: string
         required: true
       qualification_run_attempt:
@@ -40,7 +40,7 @@ env:
 
 jobs:
   prepare:
-    name: Validate signed qualification and complete the reserved draft
+    name: Validate qualification and declared signing policy, then complete the reserved draft
     if: github.repository == 'PhysicalSystems/desktop'
     runs-on: ubuntu-24.04
     timeout-minutes: 35

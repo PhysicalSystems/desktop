@@ -11,7 +11,16 @@ import { publicNativeProbeIds } from "./public-native-receipts"
 import { unqualifiedPublicSmokeReport, verifyPublicSignaturePair } from "./public-qualification"
 import { qualificationReport, requiredQualificationChecks } from "./qualification"
 
-export function simulatedPublicNativeFixture(platform: CandidatePlatform = "windows-x64", index = 0, complete = false) {
+export function simulatedPublicNativeFixture(
+  platform: CandidatePlatform = "windows-x64",
+  index = 0,
+  complete = false,
+  policy: PublicBuildInputs["windowsSigning"] = {
+    provider: "pfx",
+    publisher: "SIMULATED FIXTURE ONLY",
+    certificateThumbprint: "C".repeat(40),
+  },
+) {
   const build: PublicBuildInputs = {
     schemaVersion: 1,
     kind: "public-desktop-build",
@@ -21,7 +30,7 @@ export function simulatedPublicNativeFixture(platform: CandidatePlatform = "wind
     channel: "preview",
     identity: desktopIdentity("public"),
     publication: false,
-    windowsSigning: { provider: "pfx", publisher: "SIMULATED FIXTURE ONLY", certificateThumbprint: "C".repeat(40) },
+    windowsSigning: structuredClone(policy),
   }
   const publicBuildInputsSha256 = publicReviewDigest(build)
   const name = candidateNames(build.version, platform)[index]!
@@ -34,7 +43,10 @@ export function simulatedPublicNativeFixture(platform: CandidatePlatform = "wind
   }
   const mode = { build, publicBuildInputsSha256, releaseInputsSha256: build.releaseInputsSha256 }
   const windows = platform === "windows-x64"
-  const observed = { Status: "Valid", Publisher: build.windowsSigning.publisher, Thumbprint: "C".repeat(40) }
+  const unsigned = policy.provider === "unsigned-preview"
+  const observed = unsigned
+    ? { Status: "NotSigned", Publisher: null, Thumbprint: null }
+    : { Status: "Valid", Publisher: policy.publisher, Thumbprint: "C".repeat(40) }
   const signing = windows
     ? verifyPublicSignaturePair({
         installer: observed,
@@ -49,7 +61,7 @@ export function simulatedPublicNativeFixture(platform: CandidatePlatform = "wind
     "public-compiled-identity",
     "native-credential-probe",
     ...(windows
-      ? ["public-signing", "uninstall", "native-reinstall-probe"]
+      ? [unsigned ? "public-unsigned-preview" : "public-signing", "uninstall", "native-reinstall-probe"]
       : [
           "linux-sandbox-setup",
           "linux-renderer-sandbox",
@@ -70,7 +82,9 @@ export function simulatedPublicNativeFixture(platform: CandidatePlatform = "wind
     version: build.version,
     checks: ids.map((id) => ({ id, status: "PASS" as const, detail: "SIMULATED FIXTURE ONLY" })),
     signature: windows
-      ? { status: "PASS", trust: "WINDOWS_AUTHENTICODE_VALID", signerThumbprint: "C".repeat(40) }
+      ? unsigned
+        ? { status: "UNSIGNED", trust: "WINDOWS_AUTHENTICODE_UNSIGNED" }
+        : { status: "PASS", trust: "WINDOWS_AUTHENTICODE_VALID", signerThumbprint: "C".repeat(40) }
       : { status: "NOT_TESTED", trust: "NOT_APPLICABLE_TO_LINUX_PACKAGE" },
     payload: { sha256: "e".repeat(64), executableSha256: "d".repeat(64) },
     inputsSha256: build.releaseInputsSha256,

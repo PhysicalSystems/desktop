@@ -30,6 +30,10 @@ on:
       platform:
         type: string
         required: true
+      windows_signing:
+        type: string
+        required: false
+        default: signed
       browser_review:
         type: boolean
         required: false
@@ -94,6 +98,7 @@ jobs:
       EXPECTED_BASELINE_RELEASE_INPUTS_SHA256: ${{ inputs.baseline_inputs_sha256 }}
       EXPECTED_BASELINE_PUBLIC_BUILD_SHA256: ${{ inputs.baseline_public_build_sha256 }}
       EXPECTED_UPGRADE_PLAN_SHA256: ${{ inputs.upgrade_plan_sha256 }}
+      DESKTOP_WINDOWS_SIGNING: ${{ inputs.windows_signing }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -128,7 +133,7 @@ jobs:
       - name: Verify both frozen versions and their owned lab plan before builds
         run: bun script/desktop-public-producer.ts verify-upgrade
       - name: Build Windows installers using the frozen signing policy
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows_signing == 'signed'
         env:
           # Only this actual build step receives signing secrets. The wrapper
           # creates an exclusive temporary PFX and removes it even on failure.
@@ -137,6 +142,11 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.DESKTOP_AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.DESKTOP_AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_AZURE_CLIENT_SECRET }}
+        run: bun script/desktop-public-producer.ts build-windows
+      - name: Build explicitly unsigned Windows PREVIEW installers
+        if: runner.os == 'Windows' && inputs.windows_signing == 'unsigned-preview'
+        # This branch has no signing secrets. The driver rechecks the frozen
+        # preview policy and disables certificate discovery before packaging.
         run: bun script/desktop-public-producer.ts build-windows
       - name: Build Linux installers under the same frozen public identity
         if: runner.os == 'Linux'

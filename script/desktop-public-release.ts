@@ -25,7 +25,7 @@ try {
       throw new Error("Public publisher must run reviewed main in the owned desktop repository")
     if (process.env.DESKTOP_PUBLIC_RELEASE_ENABLED !== "true")
       throw new Error(
-        "Public publishing is disabled until signing, native qualification and protected credentials are provisioned",
+        "Public publishing is disabled until the declared signing policy, native qualification and protected credentials are ready",
       )
     const token = required("GH_TOKEN")
     const get = async (endpoint: string) => {
@@ -64,7 +64,7 @@ try {
     })
     if (!/^[a-f0-9]{64}$/.test(required("EXPECTED_QUALIFICATION_SHA256")))
       throw new Error("Missing separately trusted qualification digest")
-    console.log("Signed producer identity and final approval protection verified")
+    console.log("Public producer identity and final approval protection verified")
   } else {
     const work = required("PUBLICATION_OUTPUT")
     await mkdir(work, { recursive: true })

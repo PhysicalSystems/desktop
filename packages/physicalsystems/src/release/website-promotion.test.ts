@@ -2,6 +2,7 @@
 import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { proposeWebsiteSelection, selectionTransition } from "./website-promotion"
+import { unsignedWindowsPreviewWarning } from "./public-downloads"
 
 const selectedPath = "public/desktop-selection.json"
 const prefix = "https://api.github.com/repos/PhysicalSystems/platform/"
@@ -11,7 +12,7 @@ const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest(
 
 function selection(version = "0.1.0-beta.1") {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     repository: "PhysicalSystems/physicalsystems",
     release: {
       tag: `desktop-v${version}`,
@@ -21,6 +22,7 @@ function selection(version = "0.1.0-beta.1") {
       publishedAt: "2026-09-07T20:00:00Z",
       sourceRevision: "a".repeat(40),
       inputsSha256: "b".repeat(64),
+      windowsSigning: { status: "verified" },
       assets: ["windows-x64.exe", "linux-x64.deb", "linux-x64.AppImage"].map((suffix, index) => ({
         name: `physical-systems-desktop-${version}-${suffix}`,
         bytes: 100 + index,
@@ -29,6 +31,50 @@ function selection(version = "0.1.0-beta.1") {
     },
   }
 }
+
+function unsignedSelection(version = "0.1.0-beta.1") {
+  const data = selection(version)
+  return {
+    ...data,
+    release: {
+      ...data.release,
+      windowsSigning: { status: "unsigned-preview", warning: unsignedWindowsPreviewWarning },
+    },
+  }
+}
+
+test("website transition keeps explicit unsigned previews and requires the exact warning on new selections", () => {
+  expect(selectionTransition(empty, unsignedSelection())).toBe("advance")
+  expect(selectionTransition(unsignedSelection(), unsignedSelection("0.1.0-beta.2"))).toBe("advance")
+  expect(selectionTransition(unsignedSelection(), selection("0.1.0"))).toBe("advance")
+  expect(() => selectionTransition(empty, unsignedSelection("0.1.0"))).toThrow("signing status")
+  const data = unsignedSelection()
+  for (const signing of [
+    { status: "unsigned-preview" },
+    { status: "unsigned-preview", warning: "Different warning" },
+    { status: "verified", warning: unsignedWindowsPreviewWarning },
+    { status: "unknown" },
+  ]) {
+    expect(() =>
+      selectionTransition(empty, { ...data, release: { ...data.release, windowsSigning: signing } }),
+    ).toThrow("signing status")
+  }
+  const { windowsSigning: _windowsSigning, ...without } = data.release
+  expect(() => selectionTransition(empty, { ...data, release: without })).toThrow("fields")
+  expect(() => selectionTransition(empty, { ...data, schemaVersion: 1 })).toThrow("fields")
+  expect(() =>
+    selectionTransition(data, { ...data, release: { ...data.release, windowsSigning: { status: "verified" } } }),
+  ).toThrow("cannot be replaced")
+})
+
+test("legacy signed selections remain readable when advancing to the explicit signing schema", () => {
+  const data = selection()
+  const { windowsSigning: _windowsSigning, ...release } = data.release
+  const legacy = { ...data, schemaVersion: 1, release }
+  expect(() => selectionTransition(empty, legacy)).toThrow("explicit Windows signing")
+  expect(selectionTransition(legacy, unsignedSelection("0.1.0-beta.2"))).toBe("advance")
+  expect(selectionTransition(legacy, selection("0.1.0"))).toBe("advance")
+})
 
 function fixture(previous: unknown = empty) {
   const next = selection()

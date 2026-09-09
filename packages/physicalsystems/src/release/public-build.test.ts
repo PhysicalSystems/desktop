@@ -52,6 +52,30 @@ async function fixture() {
 }
 
 describe("public desktop compile-time identity and signing policy", () => {
+  test("an explicit unsigned preview needs no signing credentials and cannot become stable", () => {
+    const data = inputs()
+    data.windowsSigning = { provider: "unsigned-preview" }
+    expect(validatePublicBuildInputs(data, publicReviewDigest(data)).windowsSigning).toEqual({
+      provider: "unsigned-preview",
+    })
+    expect(publicSigningConfiguration(data, {}, "win32")).toEqual({})
+    expect(publicSigningConfiguration(data, { AZURE_CLIENT_SECRET: "unused-private-fixture" }, "win32")).toEqual({})
+    data.version = "0.1.0"
+    data.channel = "stable"
+    expect(() => validatePublicBuildInputs(data, publicReviewDigest(data))).toThrow()
+    expect(() => publicSigningConfiguration(data, {}, "win32")).toThrow()
+  })
+  test("unsigned preview policy cannot contain a claimed publisher, certificate or credentials", () => {
+    for (const extra of [
+      { publisher: "invented publisher" },
+      { certificateThumbprint: "C".repeat(40) },
+      { password: "private-fixture" },
+    ]) {
+      const data = inputs()
+      data.windowsSigning = { provider: "unsigned-preview", ...extra } as never
+      expect(() => validatePublicBuildInputs(data, publicReviewDigest(data))).toThrow()
+    }
+  })
   test("retains candidate profile while public preview and stable share a separate upgrade identity", () => {
     expect(compiledDesktopIdentity({}).appId).toBe("systems.physical.desktop.development")
     expect(
@@ -196,5 +220,28 @@ describe("public desktop compile-time identity and signing policy", () => {
     expect(result.win.verifyUpdateCodeSignature).toBe(true)
     expect(result.linux.extraFiles).toEqual([{ from: "resources/AppRun.public", to: "AppRun" }])
     expect(result.deb.packageName).toBe("physical-systems-desktop")
+    data.data.windowsSigning = { provider: "unsigned-preview" }
+    data.env.PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256 = publicReviewDigest(data.data)
+    await writeFile(data.env.PHYSICALSYSTEMS_PUBLIC_BUILD_INPUTS, JSON.stringify(data.data))
+    await writeFile(
+      path.join(data.root, "out/legal/physical-build-identity.json"),
+      JSON.stringify(compiledIdentityRecord(data.env, main)),
+    )
+    const preview = JSON.parse(
+      execFileSync(process.execPath, ["-e", code], {
+        cwd: data.root,
+        env: { ...process.env, ...data.env },
+        encoding: "utf8",
+      }),
+    )
+    expect(preview.appId).toBe(result.appId)
+    expect(preview.productName).toBe(result.productName)
+    expect(preview.publish).toBe(null)
+    expect(preview.forceCodeSigning).toBe(false)
+    expect(preview.win.signExecutable).toBe(false)
+    expect(preview.win.verifyUpdateCodeSignature).toBe(true)
+    expect(preview.win.signtoolOptions).toBeUndefined()
+    expect(preview.win.azureSignOptions).toBeUndefined()
+    expect(preview.linux).toEqual(result.linux)
   })
 })

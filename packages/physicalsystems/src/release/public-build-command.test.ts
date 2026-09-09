@@ -158,6 +158,40 @@ test("Azure credentials are packaging-only and Linux receives no Windows signing
   expect(() => publicBuildEnvironments({ ...input, env: {} })).toThrow("provisioned service identity")
 })
 
+test("unsigned PREVIEW packaging strips every signing credential and disables certificate discovery", () => {
+  const build = { ...publicInput(), windowsSigning: { provider: "unsigned-preview" as const } }
+  const env = {
+    PATH: "/toolchain",
+    PHYSICALSYSTEMS_PFX_FILE: "/unused/signing.pfx",
+    WIN_CSC_KEY_PASSWORD: "fixture-secret",
+    Azure_Client_Secret: "fixture-secret",
+    AZURE_TENANT_ID: "fixture-tenant",
+    AZURE_CLIENT_ID: "fixture-client",
+    CSC_LINK: "fixture-secret",
+    CSC_IDENTITY_AUTO_DISCOVERY: "true",
+    WIN_SIGNING_CERTIFICATE: "fixture-secret",
+  }
+  for (const platform of ["windows-x64", "linux-x64"] as const) {
+    const result = publicBuildEnvironments({
+      env,
+      build,
+      release: { version: build.version, sha256: build.releaseInputsSha256 } as ReleaseInputs,
+      releaseFile: "/snapshot/release.json",
+      publicFile: "/snapshot/public.json",
+      modelsFile: "/snapshot/models.json",
+      publicDigest: publicReviewDigest(build),
+      platform,
+    })
+    expect(result.packaging.CSC_IDENTITY_AUTO_DISCOVERY).toBe("false")
+    for (const key of Object.keys(env).filter((key) => key !== "PATH")) {
+      if (key === "CSC_IDENTITY_AUTO_DISCOVERY") expect(result.build[key]).toBe("false")
+      else expect(result.build[key]).toBeUndefined()
+      if (key !== "CSC_IDENTITY_AUTO_DISCOVERY") expect(result.packaging[key]).toBeUndefined()
+    }
+    expect(result.packaging.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
+  }
+})
+
 function git(root: string, ...args: string[]) {
   return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
 }

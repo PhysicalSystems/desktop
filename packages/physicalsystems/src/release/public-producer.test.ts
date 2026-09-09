@@ -12,6 +12,7 @@ import {
   freezePublicProducerPolicy,
   preparePublicProducerInputs,
   publicSmokeCanContinue,
+  requirePublicProducerSigningSelection,
   validatePublicProducerPolicy,
   withPublicWindowsSigning,
 } from "./public-producer"
@@ -26,6 +27,55 @@ const env = () => ({
   GITHUB_SHA: source,
   DESKTOP_PUBLIC_BUILD_ENABLED: "true",
   DESKTOP_WINDOWS_SIGNING_POLICY: JSON.stringify(signing),
+})
+
+test("workflow keeps explicit signed default, both platforms, and a separate unsigned step without signing secrets", async () => {
+  type Workflow = {
+    on: { workflow_dispatch?: { inputs: Record<string, { default?: string; options?: string[] }> } }
+    jobs: Record<
+      string,
+      {
+        needs?: string[]
+        with?: Record<string, string>
+        secrets?: Record<string, string>
+        steps?: { if?: string; run?: string; env?: Record<string, string> }[]
+      }
+    >
+  }
+  const readWorkflow = async (name: string) =>
+    Bun.YAML.parse(
+      await readFile(new URL(`../../../../.github/workflows/${name}.yml`, import.meta.url), "utf8"),
+    ) as Workflow
+  const build = await readWorkflow("desktop-public-build")
+  expect(build.on.workflow_dispatch!.inputs.windows_signing).toMatchObject({
+    default: "signed",
+    options: ["signed", "unsigned-preview"],
+  })
+  for (const platform of ["windows", "linux"]) {
+    expect(build.jobs[platform]!.needs).toEqual(["prepare", "source"])
+    expect(build.jobs[platform]!.with!.windows_signing).toBe("${{ inputs.windows_signing }}")
+  }
+  expect(build.jobs.linux!.secrets).toBeUndefined()
+  for (const value of Object.values(build.jobs.windows!.secrets!))
+    expect(value).toMatch(/^\$\{\{ inputs\.windows_signing == 'signed' && secrets\.[A-Z0-9_]+ \|\| '' \}\}$/)
+  expect(build.jobs.qualification!.needs).toEqual(["prepare", "source", "windows", "linux"])
+  const steps = (await readWorkflow("desktop-public-package")).jobs.package!.steps!
+  const windows = steps.filter((step) => step.run === "bun script/desktop-public-producer.ts build-windows")
+  expect(windows).toHaveLength(2)
+  expect(
+    windows.find((step) => step.if === "runner.os == 'Windows' && inputs.windows_signing == 'unsigned-preview'")?.env,
+  ).toBeUndefined()
+  expect(
+    windows.some((step) => step.if === "runner.os == 'Windows' && inputs.windows_signing == 'unsigned-preview'"),
+  ).toBe(true)
+  expect(
+    Object.keys(
+      windows.find((step) => step.if === "runner.os == 'Windows' && inputs.windows_signing == 'signed'")!.env!,
+    ),
+  ).toContain("PHYSICALSYSTEMS_PFX_BASE64")
+  expect(steps.findIndex((step) => step.run === "bun script/desktop-public-producer.ts verify-upgrade")).toBeLessThan(
+    steps.indexOf(windows[0]!),
+  )
 })
 
 test("public preparation admits only enabled owned main dispatch with an explicit public signing policy", () => {
@@ -66,6 +116,68 @@ test("public preparation admits only enabled owned main dispatch with an explici
   }
 })
 
+test("unsigned PREVIEW requires the explicit dispatch choice and never replaces missing signed policy", () => {
+  const selected = {
+    ...env(),
+    CHANNEL: "preview",
+    DESKTOP_WINDOWS_SIGNING: "unsigned-preview",
+    DESKTOP_WINDOWS_SIGNING_POLICY: undefined,
+  }
+  const policy = freezePublicProducerPolicy(selected)
+  expect(policy.windowsSigning).toEqual({ provider: "unsigned-preview" })
+  expect(policy.publication).toBe(false)
+  expect(validatePublicProducerPolicy(policy, publicReviewDigest(policy), source)).toEqual(policy)
+  for (const CHANNEL of [undefined, "stable", "beta", ""])
+    expect(() => freezePublicProducerPolicy({ ...selected, CHANNEL })).toThrow("preview channel")
+  for (const DESKTOP_WINDOWS_SIGNING of [undefined, "signed"])
+    expect(() => freezePublicProducerPolicy({ ...selected, DESKTOP_WINDOWS_SIGNING })).toThrow(
+      "DESKTOP_WINDOWS_SIGNING_POLICY",
+    )
+  for (const DESKTOP_WINDOWS_SIGNING of ["", "unsigned", "auto"])
+    expect(() => freezePublicProducerPolicy({ ...selected, DESKTOP_WINDOWS_SIGNING })).toThrow("Select signed")
+  expect(() =>
+    freezePublicProducerPolicy({
+      ...env(),
+      DESKTOP_WINDOWS_SIGNING_POLICY: JSON.stringify({ provider: "unsigned-preview" }),
+    }),
+  ).toThrow("DESKTOP_WINDOWS_SIGNING_POLICY")
+  expect(() => requirePublicProducerSigningSelection(policy.windowsSigning, "unsigned-preview")).not.toThrow()
+  for (const selection of [undefined, "signed", "auto"])
+    expect(() => requirePublicProducerSigningSelection(policy.windowsSigning, selection)).toThrow(
+      "frozen public policy",
+    )
+  expect(() => requirePublicProducerSigningSelection(signing, undefined)).not.toThrow()
+  expect(() => requirePublicProducerSigningSelection(signing, "signed")).not.toThrow()
+  expect(() => requirePublicProducerSigningSelection(signing, "unsigned-preview")).toThrow("frozen public policy")
+})
+
+test("prepared unsigned policy cannot produce stable inputs even with matching source and digests", () => {
+  const policy = freezePublicProducerPolicy({
+    ...env(),
+    CHANNEL: "preview",
+    DESKTOP_WINDOWS_SIGNING: "unsigned-preview",
+  })
+  for (const channel of ["preview", "stable"] as const) {
+    const partial = {
+      source: { repository: "PhysicalSystems/desktop", revision: source },
+      version: channel === "preview" ? "0.1.0-beta.1" : "0.1.0",
+      channel,
+      publication: false,
+    }
+    const release = { ...partial, sha256: releaseInputDigest(partial) } as ReleaseInputs
+    const prepare = () =>
+      preparePublicProducerInputs({
+        policy,
+        expectedPolicySha256: publicReviewDigest(policy),
+        sourceRevision: source,
+        release,
+        expectedInputsSha256: release.sha256,
+      })
+    if (channel === "stable") expect(prepare).toThrow()
+    else expect(prepare().inputs.windowsSigning).toEqual({ provider: "unsigned-preview" })
+  }
+})
+
 test("public inputs freeze the separately verified source, release digest and signing policy", () => {
   const policy = freezePublicProducerPolicy(env())
   // The boundary consumes source-verified ReleaseInputs; a minimal fixture here
@@ -90,6 +202,11 @@ test("public inputs freeze the separately verified source, release digest and si
   expect(result.inputs.releaseInputsSha256).toBe(release.sha256)
   expect(result.inputs.publication).toBe(false)
   expect(result.sha256).toBe(publicReviewDigest(result.inputs))
+  if (
+    policy.windowsSigning.provider === "unsigned-preview" ||
+    result.inputs.windowsSigning.provider === "unsigned-preview"
+  )
+    throw new Error("Expected signed fixture policy")
   policy.windowsSigning.publisher = "Changed after freeze"
   expect(result.inputs.windowsSigning.publisher).toBe(signing.publisher)
   expect(() => preparePublicProducerInputs(input)).toThrow("trusted preparation digest")
@@ -188,6 +305,31 @@ test("missing/malformed PFX cannot enter packaging and Azure receives only its s
     AZURE_CLIENT_ID: "client",
     AZURE_CLIENT_SECRET: "fixture-secret",
   })
+})
+
+test("explicit unsigned packaging never materializes credentials or falls back after an operation failure", async () => {
+  const policy = { provider: "unsigned-preview" as const }
+  const env = {
+    PATH: "fixture-path",
+    PHYSICALSYSTEMS_PFX_BASE64: canary,
+    PHYSICALSYSTEMS_PFX_FILE: "/not-a-certificate",
+    WIN_CSC_KEY_PASSWORD: canary,
+    Csc_Link: canary,
+    Csc_Identity_Auto_Discovery: "true",
+    Azure_Client_Secret: canary,
+  }
+  expect(await withPublicWindowsSigning(policy, env, async (selected) => selected)).toEqual({
+    PATH: "fixture-path",
+    CSC_IDENTITY_AUTO_DISCOVERY: "false",
+  })
+  let calls = 0
+  await expect(
+    withPublicWindowsSigning(policy, env, async () => {
+      calls++
+      throw new Error("Fixture packaging failure")
+    }),
+  ).rejects.toThrow("Fixture packaging failure")
+  expect(calls).toBe(1)
 })
 
 test("the real producer collection command refuses absent independent workflow anchors", async () => {
@@ -311,5 +453,32 @@ test("public smoke continues only after exact-artifact confirmed cleanup, never 
   for (const id of ["public-signing", "installer-signature", "payload-signing"])
     expect(
       publicSmokeCanContinue({ ...input, report: { ...report, checks: [...report.checks, { id, status: "FAIL" }] } }),
+    ).toBe(false)
+  const unsigned = {
+    ...windows,
+    build: { ...prepared.inputs, windowsSigning: { provider: "unsigned-preview" as const } },
+  }
+  expect(publicSmokeCanContinue(unsigned)).toBe(false)
+  expect(
+    publicSmokeCanContinue({
+      ...unsigned,
+      report: { ...report, checks: [...report.checks, { id: "public-signing", status: "PASS" }] },
+    }),
+  ).toBe(false)
+  const checks = [...report.checks, { id: "public-unsigned-preview", status: "PASS" }]
+  expect(publicSmokeCanContinue({ ...unsigned, report: { ...report, checks } })).toBe(true)
+  expect(publicSmokeCanContinue({ ...windows, report: { ...report, checks } })).toBe(false)
+  expect(
+    publicSmokeCanContinue({
+      ...unsigned,
+      report: { ...report, checks: [...checks, { id: "public-signing", status: "PASS" }] },
+    }),
+  ).toBe(false)
+  for (const status of ["FAIL", "BLOCKED", "NOT_TESTED"])
+    expect(
+      publicSmokeCanContinue({
+        ...unsigned,
+        report: { ...report, checks: [...report.checks, { id: "public-unsigned-preview", status }] },
+      }),
     ).toBe(false)
 })

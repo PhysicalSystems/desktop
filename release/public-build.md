@@ -30,7 +30,7 @@ bun script/desktop-build-public.ts \
   --output /absolute/new-public-installers
 ```
 
-Use `windows-x64` on Windows. Its pinned signing policy requires either:
+Use `windows-x64` on Windows. A signed build's pinned policy requires either:
 
 - PFX: an absolute regular `PHYSICALSYSTEMS_PFX_FILE` and runner-only
   `WIN_CSC_KEY_PASSWORD`;
@@ -38,10 +38,19 @@ Use `windows-x64` on Windows. Its pinned signing policy requires either:
   and `AZURE_CLIENT_SECRET`, matching the owned endpoint/account/profile in the
   public policy.
 
-Missing Windows signing setup fails before a build starts. Credentials are
+An explicitly selected unsigned preview uses exactly
+`{"provider":"unsigned-preview"}` in its independently anchored public inputs.
+It requires the preview channel and a beta version; stable builds reject this
+policy. It uses no signing credentials, disables certificate discovery and
+executable signing, and preserves application branding and version resources.
+The native inspection must observe `NotSigned` for both the installer and payload;
+invalid signatures or unknown observations cannot substitute for this result.
+The website and release notes disclose that Windows may warn or block installation.
+
+Missing Windows signing setup for a signed policy fails before a build starts. Credentials are
 passed only to the final packaging subprocess. Installation and bundling receive
 scrubbed environments; credentials and ambient loader hooks are excluded.
-There is no unsigned fallback or command-line publishing option.
+There is no automatic unsigned fallback or command-line publishing option.
 
 The driver snapshots validated inputs outside source, stages the exact Git
 archive, installs frozen dependencies without lifecycle scripts, and compiles

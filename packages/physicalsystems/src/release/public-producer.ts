@@ -31,15 +31,30 @@ export function freezePublicProducerPolicy(env: NodeJS.ProcessEnv): PublicProduc
   )
     throw new PublicProducerError("Public builds require an owned main dispatch at its exact workflow commit")
   if (env.DESKTOP_PUBLIC_BUILD_ENABLED !== "true")
-    throw new PublicProducerError("Public builds are disabled until signing policy and credentials are provisioned")
-  try {
-    const text = env.DESKTOP_WINDOWS_SIGNING_POLICY
-    if (!text || text.length > 8192) throw new Error("Missing policy")
+    throw new PublicProducerError("Public builds are disabled until explicitly enabled for the selected policy")
+  const selection = env.DESKTOP_WINDOWS_SIGNING ?? "signed"
+  if (!["signed", "unsigned-preview"].includes(selection))
+    throw new PublicProducerError("Select signed or unsigned-preview explicitly for Windows builds")
+  if (selection === "unsigned-preview") {
+    if (env.CHANNEL !== "preview") throw new PublicProducerError("Unsigned Windows builds require the preview channel")
     return {
       schemaVersion: 1,
       kind: "public-desktop-producer-policy",
       sourceRevision: env.GITHUB_SHA!,
-      windowsSigning: structuredClone(validatePublicSigningPolicy(JSON.parse(text))),
+      windowsSigning: { provider: "unsigned-preview" },
+      publication: false,
+    }
+  }
+  try {
+    const text = env.DESKTOP_WINDOWS_SIGNING_POLICY
+    if (!text || text.length > 8192) throw new Error("Missing policy")
+    const signing = validatePublicSigningPolicy(JSON.parse(text))
+    if (signing.provider === "unsigned-preview") throw new Error("Signed selection requires a signing provider")
+    return {
+      schemaVersion: 1,
+      kind: "public-desktop-producer-policy",
+      sourceRevision: env.GITHUB_SHA!,
+      windowsSigning: structuredClone(signing),
       publication: false,
     }
   } catch {
@@ -64,6 +79,13 @@ export function validatePublicProducerPolicy(input: unknown, expectedSha256: str
     throw new PublicProducerError("Frozen public policy does not belong to this exact source commit")
   validatePublicSigningPolicy(data.windowsSigning)
   return data
+}
+
+/** A workflow branch cannot reinterpret the separately frozen input policy. */
+export function requirePublicProducerSigningSelection(policy: PublicSigningPolicy, selection: string | undefined) {
+  const expected = policy.provider === "unsigned-preview" ? "unsigned-preview" : "signed"
+  if ((selection ?? "signed") !== expected)
+    throw new PublicProducerError("Workflow signing selection differs from the frozen public policy")
 }
 
 /** ReleaseInputs are independently source-verified by the preparation command. */
@@ -112,6 +134,7 @@ export async function withPublicWindowsSigning<T>(
   const clean = Object.fromEntries(
     Object.entries(env).filter(([key]) => !/^(PHYSICALSYSTEMS_PFX_|WIN_CSC_|CSC_|AZURE_)/i.test(key)),
   )
+  if (policy.provider === "unsigned-preview") return operation({ ...clean, CSC_IDENTITY_AUTO_DISCOVERY: "false" })
   if (policy.provider === "azure-trusted-signing") {
     if (!env.AZURE_TENANT_ID || !env.AZURE_CLIENT_ID || !env.AZURE_CLIENT_SECRET)
       throw new PublicProducerError("Provision the Azure signing service identity before running a public build")
@@ -191,7 +214,15 @@ export function publicSmokeCanContinue(input: {
     passed(input.artifact.format === "AppImage" ? "linux-sandbox-cleanup" : "uninstall") &&
     (input.artifact.format === "nsis" ||
       (passed("native-secret-service-cleanup") && passed("linux-temporary-cleanup"))) &&
-    (input.artifact.format !== "nsis" || passed("public-signing")) &&
+    (input.artifact.format !== "nsis" ||
+      (passed(
+        input.build.windowsSigning.provider === "unsigned-preview" ? "public-unsigned-preview" : "public-signing",
+      ) &&
+        !report.checks.some(
+          (check) =>
+            check.id ===
+            (input.build.windowsSigning.provider === "unsigned-preview" ? "public-signing" : "public-unsigned-preview"),
+        ))) &&
     !report.checks.some((check) => /signing|signature/.test(String(check.id)) && check.status !== "PASS")
   )
 }

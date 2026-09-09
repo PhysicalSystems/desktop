@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { publicReviewDigest, verifyPublicDownloads } from "./public-downloads"
+import {
+  publicReviewDigest,
+  unsignedWindowsPreviewWarning,
+  validateDistributionFacts,
+  verifyPublicDownloads,
+} from "./public-downloads"
 import type { PublicDistributionReview } from "./public-downloads"
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex")
@@ -103,7 +108,7 @@ describe("anonymous public desktop download readback", () => {
       fetch: data.request,
     })
     expect(result).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       repository,
       release: {
         tag: data.review.tag,
@@ -113,6 +118,7 @@ describe("anonymous public desktop download readback", () => {
         publishedAt: data.metadata.published_at,
         sourceRevision: data.review.sourceRevision,
         inputsSha256: data.review.inputsSha256,
+        windowsSigning: { status: "verified" },
         assets: data.review.assets.map(({ qualification: _qualification, ...asset }) => asset),
       },
     })
@@ -125,6 +131,70 @@ describe("anonymous public desktop download readback", () => {
     expect(data.calls[0]?.options?.redirect).toBe("error")
     expect(data.calls[1]?.options?.redirect).toBe("manual")
     expect(JSON.stringify(result)).not.toContain("Fixture Publisher")
+  })
+
+  test("explicit unsigned preview preserves the warning only after all three anonymous downloads match", async () => {
+    const data = fixture()
+    data.review.windowsSigning = {
+      status: "unsigned-preview",
+      installerSha256: data.review.windowsSigning.installerSha256,
+      executableSha256: data.review.windowsSigning.executableSha256,
+      verificationReportSha256: data.review.windowsSigning.verificationReportSha256,
+    }
+    const result = await verifyPublicDownloads({
+      review: data.review,
+      expectedReviewSha256: publicReviewDigest(data.review),
+      fetch: data.request,
+    })
+    expect(result.schemaVersion).toBe(2)
+    expect(result.release.windowsSigning).toEqual({
+      status: "unsigned-preview",
+      warning: unsignedWindowsPreviewWarning,
+    })
+    expect(result.release.assets).toHaveLength(3)
+    expect(data.calls).toHaveLength(4)
+    expect(JSON.stringify(result)).not.toContain("publisher")
+  })
+
+  test("unsigned evidence cannot be relabeled stable, omit hashes, invent a publisher or skip qualification", () => {
+    for (const change of [
+      (facts: Record<string, unknown>) => {
+        facts.version = "0.1.0"
+        facts.channel = "stable"
+        facts.tag = "desktop-v0.1.0"
+      },
+      (facts: Record<string, unknown>) => {
+        delete (facts.windowsSigning as Record<string, unknown>).executableSha256
+      },
+      (facts: Record<string, unknown>) => {
+        ;(facts.windowsSigning as Record<string, unknown>).publisher = "Invented"
+      },
+      (facts: Record<string, unknown>) => {
+        ;(facts.windowsSigning as Record<string, unknown>).status = "verified"
+      },
+      (facts: Record<string, unknown>) => {
+        ;(facts.assets as unknown[]).pop()
+      },
+      (facts: Record<string, unknown>) => {
+        ;(facts.assets as PublicDistributionReview["assets"])[0].qualification.checks.upgrade = "NOT_TESTED" as never
+      },
+    ]) {
+      const {
+        schemaVersion: _schemaVersion,
+        kind: _kind,
+        releaseId: _releaseId,
+        approval: _approval,
+        ...facts
+      } = fixture().review
+      facts.windowsSigning = {
+        status: "unsigned-preview",
+        installerSha256: facts.windowsSigning.installerSha256,
+        executableSha256: facts.windowsSigning.executableSha256,
+        verificationReportSha256: facts.windowsSigning.verificationReportSha256,
+      }
+      change(facts)
+      expect(() => validateDistributionFacts(facts)).toThrow()
+    }
   })
 
   test("does not accept a self-declared approval without the independent trusted digest", async () => {
