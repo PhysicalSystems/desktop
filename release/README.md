@@ -98,12 +98,12 @@ The candidate identity is deliberately `Physical Systems Candidate`, using the d
 Public release remains blocked until the applicable evidence and infrastructure exist:
 
 - Run and review the new CI workflow on both target platforms. Local unit or configuration validation does not substitute for Windows installer execution.
-- Provision the owned Windows signing identity, sign before qualification and verify both installed executable and final installer signatures. Unsigned candidate receipts are always described as unsigned.
+- Select the public Windows policy explicitly. Signed releases require a provisioned signing identity and verification of both executable and installer. An unsigned Windows preview requires `channel=preview` and `windows_signing=unsigned-preview`, native proof that both files are unsigned, and the download warning. Stable still requires signing. Internal candidate receipts cannot qualify either public mode.
 - Qualify provider browser opening and native credential storage on supported OS profiles. Fixture-provider tests and fake encryption are separate evidence.
 - Qualify actual supported OS versions, Linux installation/launcher behavior, X11/Xwayland and Wayland display behavior, plus clean-machine operation without developer Node/Bun in the installed application's runtime path.
 - Exercise fresh installation, upgrade from a previously qualified desktop, failed/interrupted upgrade recovery, uninstall/reinstall, preserved history/configuration and unresolved operation ownership in disposable environments.
 - Verify the declared desktop/operator/Node compatibility and canonical operator source/provenance. Declared or unverified compatibility must not be advertised as tested hardware support.
-- Complete the signed public build/native-qualification producer and provision its signing and release credentials. The implemented publisher consumes that separately trusted evidence and publishes exact bytes without rebuilding; it cannot qualify or promote an unsigned candidate.
+- Run the implemented public build/native-qualification producer with the selected policy and provision the release credentials. The publisher consumes its independently anchored evidence and publishes exact bytes without rebuilding; it cannot qualify or promote an internal candidate.
 
 The first public preview should retain manual updates until installation lifecycle checks pass. Any later in-app updater must use owned feeds, verify the expected publisher, prohibit automatic downgrade, and respect confirmed shutdown/operation ownership. A desktop update must never silently restart a hardware session or upgrade its Node service. This candidate workflow neither enables nor qualifies in-app updates.
 
@@ -113,11 +113,11 @@ The public installer destination is **PhysicalSystems/physicalsystems**, matchin
 
 The website integration is reviewed in [platform PR #287](https://github.com/PhysicalSystems/platform/pull/287). Its controlled `public/desktop-selection.json` starts with `release: null`. The page offers only installers matching that selection and live GitHub metadata, with bounded requests and explicit recovery. It does not claim to check binary bytes or Windows signatures inside the browser. A successful empty selection withdraws downloads.
 
-The [public producer workflow](public-producer.md) freezes the provisioned signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records actual public-mode native observations. Signing credentials are scoped to packaging. Separate Windows/Linux job outputs anchor the exact bytes and receipts for the strict collector, which emits a qualified bundle only when all required checks pass. Actual signing setup and the remaining native/account-backed checks remain prerequisites; partial observations stay unqualified.
+The [public producer workflow](public-producer.md) freezes the explicit Windows signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records actual public-mode native observations. Signing credentials are scoped to packaging. Separate Windows/Linux job outputs anchor the exact bytes and receipts for the strict collector, which emits a qualified bundle only when all required checks pass. Signing setup is required only for the signed policy. Native checks and account sign-in remain prerequisites for both public modes; partial observations stay unqualified.
 
-The [public publisher](public-publisher.md) is implemented, with publication disabled until the signed producer, native evidence and protected credentials are available:
+The [public publisher](public-publisher.md) is implemented, with publication disabled until qualified public installer evidence and protected credentials are available:
 
-1. Consume a successful signed qualification run on the exact reviewed source, verify the anchored bundle, reserve a draft and upload the exact installers.
+1. Consume a successful public qualification run on the exact reviewed source, using signed Windows installers or an explicitly qualified unsigned preview. Verify the anchored bundle, reserve a draft and upload the exact installers.
 2. Obtain **one final protected approval**, then publish without rebuilding or replacing assets.
 3. Anonymously stream the published files and verify their sizes and SHA-256 hashes. Only successful readback produces the website selection.
 4. In that same approved job, create or resume a one-file website integration PR. Website CI validates the selection contract and independently reads the public bytes. Selection-only changes do not repeat dependency installation and the full application build.
@@ -126,7 +126,7 @@ The [public publisher](public-publisher.md) is implemented, with publication dis
 
 There is no release-preparation PR or second human website approval in the normal flow. `.github/workflows/desktop-download-promotion.yml` remains an explicit protected recovery path for a completed publisher run. Rerun the full publisher when publication succeeded but its website step failed. See the publisher guide for credentials, immutable evidence and retry prerequisites.
 
-A JSON field saying approved is insufficient: `PublicDistributionReview` must come from the protected process, with an independently anchored canonical digest. The signed build producer and required native qualification are still prerequisites; adding the workflow or setting an enable variable does not satisfy them.
+A JSON field saying approved is insufficient: `PublicDistributionReview` must come from the protected process, with an independently anchored canonical digest. The public build producer and required native qualification are still prerequisites; adding the workflow or setting an enable variable does not satisfy them.
 
 ```sh
 bun script/desktop-release.ts verify-public \

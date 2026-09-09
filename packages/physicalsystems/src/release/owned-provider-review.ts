@@ -9,6 +9,7 @@ import { startOwnedReviewBrowser } from "./owned-review-browser"
 import { startOwnedWindowsReviewBrowser } from "./owned-windows-review-browser"
 import {
   runProviderBrowserReview,
+  providerReviewCredentialsCleaned,
   validateProviderBrowserReviewContext,
   type ProviderBrowserReviewContext,
 } from "./provider-browser-review"
@@ -71,6 +72,7 @@ export async function runOwnedProviderBrowserReview(
   await Promise.all([mkdir(browserRoot, { mode: 0o700 }), mkdir(challengeRoot, { mode: 0o700 })])
   let browser: Awaited<ReturnType<typeof startOwnedReviewBrowser>> | undefined
   let uploaded: { artifactId: number; archiveSha256: string } | undefined
+  let publishing = false
   let cleanupFailed = false
   let acquiring = false
   let openerUnconfirmed = false
@@ -127,29 +129,39 @@ export async function runOwnedProviderBrowserReview(
             pollMs: io.pollMs,
             async publishChallenge(bytes) {
               if (uploaded || bytes.byteLength < 128 || bytes.byteLength > 65536) throw failure()
-              const file = join(challengeRoot, "provider-review.sealed.json")
-              await writeFile(file, bytes, { mode: 0o600, flag: "wx" })
-              const name = `provider-review-${input.context.runId}-${input.context.runAttempt}-${input.context.platform}-${input.context.artifactSha256}-${nonceSha256}`
-              const upload =
-                io.uploadArtifact ??
-                (async (...args: Parameters<ArtifactUploader>) => {
-                  // Resolve the existing pinned desktop dependency, not an unrelated
-                  // hoisted/transitive copy in another workspace package.
-                  const require = createRequire(new URL("../../../desktop/package.json", import.meta.url))
-                  const { DefaultArtifactClient } = (await import(
-                    pathToFileURL(require.resolve("@actions/artifact")).href
-                  )) as typeof import("@actions/artifact")
-                  return new DefaultArtifactClient().uploadArtifact(...args)
-                })
-              const result = await upload(name, [file], challengeRoot, { retentionDays: 1, compressionLevel: 0 })
-              if (!Number.isSafeInteger(result.id) || result.id! < 1 || !/^[a-f0-9]{64}$/.test(result.digest ?? ""))
-                throw failure()
-              uploaded = { artifactId: result.id!, archiveSha256: result.digest! }
+              publishing = true
+              try {
+                const file = join(challengeRoot, "provider-review.sealed.json")
+                await writeFile(file, bytes, { mode: 0o600, flag: "wx" })
+                const name = `provider-review-${input.context.runId}-${input.context.runAttempt}-${input.context.platform}-${input.context.artifactSha256}-${nonceSha256}`
+                const upload =
+                  io.uploadArtifact ??
+                  (async (...args: Parameters<ArtifactUploader>) => {
+                    // Resolve the existing pinned desktop dependency, not an unrelated
+                    // hoisted/transitive copy in another workspace package.
+                    const require = createRequire(new URL("../../../desktop/package.json", import.meta.url))
+                    const { DefaultArtifactClient } = (await import(
+                      pathToFileURL(require.resolve("@actions/artifact")).href
+                    )) as typeof import("@actions/artifact")
+                    return new DefaultArtifactClient().uploadArtifact(...args)
+                  })
+                const result = await upload(name, [file], challengeRoot, { retentionDays: 1, compressionLevel: 0 })
+                if (!Number.isSafeInteger(result.id) || result.id! < 1 || !/^[a-f0-9]{64}$/.test(result.digest ?? ""))
+                  throw failure()
+                uploaded = { artifactId: result.id!, archiveSha256: result.digest! }
+              } finally {
+                publishing = false
+              }
             },
           })
         } catch (error) {
           observedError = error
           observation.failedReviewPhase ??= observation.reviewPhase
+          // Carry a failed review through the session's normal return path only
+          // after its owned attempt and credentials were removed. withSession
+          // must still resolve after verified native shutdown before acquiring
+          // is cleared; rejection retains all uncertain private paths.
+          if (providerReviewCredentialsCleaned(error)) return
           throw error
         } finally {
           reviewFinished = true
@@ -161,6 +173,7 @@ export async function runOwnedProviderBrowserReview(
       },
     )
     acquiring = false
+    if (!outcome) throw observedError ?? failure()
     const observed = outcome
     if (observed.status !== "OBSERVED" || !uploaded) throw failure()
     return { ...observed, challengeArtifact: uploaded, ownedBrowserProcessAndProfileCleanup: true as const }
@@ -171,7 +184,9 @@ export async function runOwnedProviderBrowserReview(
   } finally {
     // A factory may have spawned before throwing. With no returned owner there
     // is no shutdown proof; preserve paths even if that factory tried cleanup.
-    if (acquiring || openerUnconfirmed) cleanupFailed = true
+    // Publication can outlive its review timeout. Keep its files until the
+    // whole write/upload operation settles; a timeout is no cancellation proof.
+    if (acquiring || openerUnconfirmed || publishing) cleanupFailed = true
     // withSession owns native shutdown. On rejection its cleanup is uncertain;
     // stop the browser, but retain the shared private QA paths.
     try {

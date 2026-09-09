@@ -2,7 +2,11 @@
 import { expect, test } from "bun:test"
 import { constants, createDecipheriv, createHash, generateKeyPairSync, privateDecrypt } from "node:crypto"
 import { PassThrough } from "node:stream"
-import { runProviderBrowserReview, type ProviderBrowserReviewRequest } from "./provider-browser-review"
+import {
+  runProviderBrowserReview,
+  providerReviewCredentialsCleaned,
+  type ProviderBrowserReviewRequest,
+} from "./provider-browser-review"
 import { providerAccountMarker, observeProviderAccount } from "./provider-account"
 import { providerBrowserReviewTransport } from "./provider-browser-transport"
 
@@ -209,6 +213,47 @@ test("missing/wrong/partial native evidence and failed browser opening cannot pr
     await expect(runProviderBrowserReview(f.input)).rejects.toThrow("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
   } finally {
     f.close()
+  }
+})
+
+test("failed-review cleanup proof requires owned attempt cancellation and a final empty credential observation", async () => {
+  for (const outcome of [
+    "clean",
+    "late-credential",
+    "cancel-failed",
+    "no-owned-attempt",
+    "credential-retained",
+  ] as const) {
+    const f = fixture({ pending: true })
+    try {
+      const error = await runProviderBrowserReview({
+        ...f.input,
+        request: async (route, input) => {
+          if (outcome === "no-owned-attempt" && input.method === "POST") return { data: {} }
+          if (input.method === "DELETE" && route === "/api/integration/attempt/con_owned123") {
+            if (outcome === "cancel-failed") throw new Error("PRIVATE CANCELLATION ERROR")
+            if (outcome === "late-credential" || outcome === "credential-retained") f.state.connected = true
+          }
+          if (
+            outcome === "credential-retained" &&
+            input.method === "DELETE" &&
+            route === "/api/credential/cred_owned123"
+          )
+            return
+          return f.input.request(route, input)
+        },
+      }).catch((error) => error)
+      expect(error).toBeInstanceOf(Error)
+      expect(providerReviewCredentialsCleaned(error)).toBe(outcome === "clean" || outcome === "late-credential")
+      expect(providerReviewCredentialsCleaned(Object.assign(new Error(error.message), { cleaned: true }))).toBe(false)
+      expect(providerReviewCredentialsCleaned({ message: error.message, cleaned: true })).toBe(false)
+      if (outcome === "late-credential") {
+        expect(f.state.calls).toContain("DELETE /api/credential/cred_owned123")
+        expect(f.state.connected).toBe(false)
+      }
+    } finally {
+      f.close()
+    }
   }
 })
 

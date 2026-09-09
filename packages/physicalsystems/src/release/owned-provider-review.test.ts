@@ -24,6 +24,7 @@ async function fixture(
     rejectedOpen?: boolean
     targetRead?: "delayed" | "pending"
     credentialRemovalFails?: boolean
+    pending?: boolean
     writeTemporaryFile?: boolean
   } = {},
 ) {
@@ -36,6 +37,7 @@ async function fixture(
     browserStopped: false,
     retained: false,
     removed: false,
+    attemptCancelled: false,
     uploaded: false,
     calls: 0,
     nativeEnv: {} as NodeJS.ProcessEnv,
@@ -211,6 +213,7 @@ async function fixture(
         })
       if (init?.method === "GET" && parsed.pathname === "/api/integration/attempt/con_inert") {
         expect(state.uploaded).toBe(true)
+        if (options.pending) return response({ status: "pending" })
         connected = true
         stderr.write(providerAccountMarker("set", credential, { saved: true }, state.nativeEnv))
         stderr.write(providerAccountMarker("all", {}, { [credential.key]: credential.info }, state.nativeEnv))
@@ -221,6 +224,8 @@ async function fixture(
         connected = false
         state.removed = true
       }
+      if (init?.method === "DELETE" && parsed.pathname === "/api/integration/attempt/con_inert")
+        state.attemptCancelled = true
       if (init?.method === "DELETE") return new Response(null, { status: 204 })
       throw Error("PRIVATE-FIXTURE-FAILURE")
     }) as typeof fetch,
@@ -371,7 +376,7 @@ test("actual-provider wrapper retains private paths when the OS opener outcome i
   }
 })
 
-test("failed handoff/upload/cleanup cannot return observed and do not leak error details", async () => {
+test("failed handoff/upload remains unobserved and failed native/browser cleanup retains private paths", async () => {
   for (const options of [
     { handoff: false },
     { uploadFails: true },
@@ -380,15 +385,17 @@ test("failed handoff/upload/cleanup cannot return observed and do not leak error
   ]) {
     const f = await fixture(options)
     try {
-      await expect(runOwnedProviderBrowserReview(f.input, f.io)).rejects.toThrow("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+      const cleanupFailed = options.nativeCleanupFails || options.browserCleanupFails || false
+      const error = await runOwnedProviderBrowserReview(f.input, f.io).catch((error) => error)
+      expect(error.message).toBe(cleanupFailed ? "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED" : "PROVIDER_REVIEW_UNCONFIRMED")
       expect(f.state.lifecycle).toContain("browser-stop")
-      if (options.nativeCleanupFails)
-        expect(
-          await access(f.input.root).then(
-            () => true,
-            () => false,
-          ),
-        ).toBe(true)
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(cleanupFailed)
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
     } finally {
       await f.cleanup()
     }
@@ -451,7 +458,9 @@ test("provider eligibility timeout drains the exact target task before native cl
       const error = await runOwnedProviderBrowserReview(f.input, { ...f.io, quiescenceTimeoutMs: 100 }).catch(
         (error) => error,
       )
-      expect(error.message).toBe("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
+      expect(error.message).toBe(
+        targetRead === "delayed" ? "PROVIDER_REVIEW_UNCONFIRMED" : "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED",
+      )
       expect(f.state.uploaded).toBe(false)
       expect(readBrowserObservation(error)).toMatchObject({
         handoffQuiescence: targetRead === "delayed" ? "settled" : "unconfirmed",
@@ -466,6 +475,14 @@ test("provider eligibility timeout drains the exact target task before native cl
           "native-stop",
           "browser-stop",
         ])
+        expect(f.state.nativeStopped).toBe(true)
+        expect(f.state.retained).toBe(false)
+        expect(
+          await access(f.input.root).then(
+            () => true,
+            () => false,
+          ),
+        ).toBe(false)
       } else {
         expect(f.state.lifecycle).toEqual(["launch", "target-start", "native-stop", "browser-release"])
         await access(f.input.root)
@@ -496,3 +513,86 @@ test("failed credential removal propagates cleanup uncertainty and preserves pri
     await f.cleanup()
   }
 })
+
+test("expired approval remains unobserved while confirmed credential and native cleanup permits owned path removal", async () => {
+  for (const nativeCleanupFails of [false, true]) {
+    const f = await fixture({ pending: true, nativeCleanupFails })
+    try {
+      const error = await runOwnedProviderBrowserReview(f.input, { ...f.io, timeoutMs: 100 }).catch((error) => error)
+      expect(error.message).toBe(
+        nativeCleanupFails ? "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED" : "PROVIDER_REVIEW_UNCONFIRMED",
+      )
+      expect(f.state.uploaded).toBe(true)
+      expect(f.state.attemptCancelled).toBe(true)
+      expect(f.state.removed).toBe(false)
+      expect(f.state.nativeStopped).toBe(!nativeCleanupFails)
+      expect(f.state.browserStopped).toBe(true)
+      expect(f.state.retained).toBe(nativeCleanupFails)
+      expect(f.state.lifecycle).toEqual(["launch", "native-stop", "browser-stop"])
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(nativeCleanupFails)
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
+test("challenge publication must settle before cleanup can remove its owned files", async () => {
+  for (const outcome of ["rejected", "pending"] as const) {
+    const f = await fixture()
+    const upload = Promise.withResolvers<{ id: number; digest: string }>()
+    const finished = Promise.withResolvers<void>()
+    let settled = false
+    const running = runOwnedProviderBrowserReview(f.input, {
+      ...f.io,
+      async uploadArtifact(_name, files) {
+        try {
+          expect(await readFile(files[0]!, "utf8")).not.toContain("PRIVATE")
+          if (outcome === "rejected") throw new Error("PRIVATE UPLOAD REJECTION")
+          return await upload.promise
+        } finally {
+          settled = true
+          finished.resolve()
+        }
+      },
+    })
+    try {
+      // Exercise the existing 30-second publication boundary with inert I/O;
+      // no native execution, network request, or production timeout override.
+      const error = await running.catch((error) => error)
+      expect(error.message).toBe(
+        outcome === "pending" ? "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED" : "PROVIDER_REVIEW_UNCONFIRMED",
+      )
+      expect(settled).toBe(outcome === "rejected")
+      expect(f.state.attemptCancelled).toBe(true)
+      expect(f.state.nativeStopped).toBe(true)
+      expect(f.state.browserStopped).toBe(true)
+      expect(f.state.retained).toBe(outcome === "pending")
+      expect(
+        await access(join(f.input.root, "challenge", "provider-review.sealed.json")).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(outcome === "pending")
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+      upload.resolve({ id: 456, digest: "c".repeat(64) })
+      await finished.promise
+      expect(
+        await access(f.input.root).then(
+          () => true,
+          () => false,
+        ),
+      ).toBe(outcome === "pending")
+    } finally {
+      upload.resolve({ id: 456, digest: "c".repeat(64) })
+      await running.catch(() => {})
+      await finished.promise
+      await f.cleanup()
+    }
+  }
+}, 40000)
