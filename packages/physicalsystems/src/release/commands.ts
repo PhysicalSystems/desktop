@@ -260,7 +260,24 @@ async function readInputs(file: string) {
 export async function stageCandidateSource(root: string, revision: string, transaction: string, env = process.env) {
   const stage = join(transaction, "source")
   await mkdir(stage)
-  await run("git", ["archive", "--format=tar", "--output", join(transaction, "source.tar"), revision], root, env)
+  // Keep the frozen source bytes even when a Windows host's Git defaults
+  // enable checkout line-ending conversion in the scrubbed build environment.
+  await run(
+    "git",
+    [
+      "-c",
+      "core.autocrlf=false",
+      "-c",
+      "core.eol=lf",
+      "archive",
+      "--format=tar",
+      "--output",
+      join(transaction, "source.tar"),
+      revision,
+    ],
+    root,
+    env,
+  )
   // Git Bash's GNU tar interprets a Windows drive prefix as a remote host.
   // Relative operands also work with Windows' native BSD tar and Linux tar.
   await run("tar", ["-xf", "source.tar", "-C", "source"], transaction, env)

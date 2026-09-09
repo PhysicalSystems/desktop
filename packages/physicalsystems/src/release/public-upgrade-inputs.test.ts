@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
@@ -14,7 +14,7 @@ const directories: string[] = []
 const history = { complete: true as const, versions: [] as string[] }
 const policy = JSON.parse(await readFile(new URL("../../../../release/desktop.json", import.meta.url), "utf8"))
 
-afterEach(async () => {
+afterAll(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
@@ -104,7 +104,7 @@ async function fixture() {
   }
 }
 
-test("freezes two real clean-source input bundles and rejects changed lab source or digest", async () => {
+async function preparedFixture() {
   const data = await fixture()
   const sourceRevision = git(data.root, "rev-parse", "HEAD")
   const producerPolicy = freezePublicProducerPolicy({
@@ -130,8 +130,6 @@ test("freezes two real clean-source input bundles and rejects changed lab source
     expectedPolicySha256: publicReviewDigest(producerPolicy),
     output,
   })
-  expect(result.version).toBe("0.1.0-beta.2")
-  expect(result.baseline_version).toBe("0.1.0-beta.1")
   const env: NodeJS.ProcessEnv = {
     PUBLIC_RELEASE_INPUTS: path.join(output, "release-inputs.json"),
     PUBLIC_BUILD_INPUTS: path.join(output, "public-build-inputs.json"),
@@ -144,27 +142,55 @@ test("freezes two real clean-source input bundles and rejects changed lab source
     EXPECTED_BASELINE_PUBLIC_BUILD_SHA256: result.baseline_public_build_sha256,
     EXPECTED_UPGRADE_PLAN_SHA256: result.upgrade_plan_sha256,
   }
-  const loaded = await loadPublicUpgradeInputs({ root: data.root, env })
+  return { ...data, result, output, env }
+}
+
+let prepared: Awaited<ReturnType<typeof preparedFixture>>
+beforeAll(async () => {
+  // Source preparation is shared; each case exercises a separate real load of
+  // the frozen pair without repeating its Git history and input construction.
+  prepared = await preparedFixture()
+})
+
+test("freezes two real clean-source input bundles with distinct versions and the same policy", async () => {
+  expect(prepared.result.version).toBe("0.1.0-beta.2")
+  expect(prepared.result.baseline_version).toBe("0.1.0-beta.1")
+  const loaded = await loadPublicUpgradeInputs({ root: prepared.root, env: prepared.env })
   expect(loaded.plan.publication).toBe(false)
   expect(loaded.plan.baselinePurpose).toBe("unreleased-lab-only")
   expect(loaded.target.source).toEqual(loaded.baseline.source)
   expect(loaded.target.sha256).not.toBe(loaded.baseline.sha256)
   expect(loaded.targetPublic.windowsSigning).toEqual(loaded.baselinePublic.windowsSigning)
-  expect(JSON.parse(await readFile(path.join(output, "history.json"), "utf8"))).toEqual({
+  expect(JSON.parse(await readFile(path.join(prepared.output, "history.json"), "utf8"))).toEqual({
     complete: true,
     versions: ["0.1.0-beta.1"],
   })
-  expect(JSON.parse(await readFile(path.join(output, "baseline/history.json"), "utf8"))).toEqual(history)
-  expect(await readFile(path.join(output, "models.dev-api.json"), "utf8")).toBe(
-    await readFile(path.join(output, "baseline/models.dev-api.json"), "utf8"),
+  expect(JSON.parse(await readFile(path.join(prepared.output, "baseline/history.json"), "utf8"))).toEqual(history)
+  expect(await readFile(path.join(prepared.output, "models.dev-api.json"), "utf8")).toBe(
+    await readFile(path.join(prepared.output, "baseline/models.dev-api.json"), "utf8"),
   )
-  expect(git(data.root, "status", "--porcelain")).toBe("")
-  await expect(
-    loadPublicUpgradeInputs({ root: data.root, env: { ...env, EXPECTED_UPGRADE_PLAN_SHA256: "0".repeat(64) } }),
-  ).rejects.toThrow()
-  const baseline = JSON.parse(await readFile(env.PUBLIC_BASELINE_BUILD_INPUTS!, "utf8"))
-  baseline.sourceRevision = "b".repeat(40)
-  await writeFile(env.PUBLIC_BASELINE_BUILD_INPUTS!, JSON.stringify(baseline))
-  await expect(loadPublicUpgradeInputs({ root: data.root, env })).rejects.toThrow()
+  expect(git(prepared.root, "status", "--porcelain")).toBe("")
   expect(history).toEqual({ complete: true, versions: [] })
+})
+
+test("loading the frozen pair rejects a changed upgrade-plan digest", async () => {
+  await expect(
+    loadPublicUpgradeInputs({
+      root: prepared.root,
+      env: { ...prepared.env, EXPECTED_UPGRADE_PLAN_SHA256: "0".repeat(64) },
+    }),
+  ).rejects.toThrow()
+})
+
+test("loading the frozen pair rejects a changed lab source", async () => {
+  const file = prepared.env.PUBLIC_BASELINE_BUILD_INPUTS!
+  const original = await readFile(file, "utf8")
+  try {
+    const baseline = JSON.parse(original)
+    baseline.sourceRevision = "b".repeat(40)
+    await writeFile(file, JSON.stringify(baseline))
+    await expect(loadPublicUpgradeInputs({ root: prepared.root, env: prepared.env })).rejects.toThrow()
+  } finally {
+    await writeFile(file, original)
+  }
 })
