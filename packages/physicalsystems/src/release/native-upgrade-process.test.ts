@@ -10,7 +10,6 @@ import {
   observePartialWindowsPayload,
   readNativeUpgradeObservation,
   runNativeUpgradeInstaller,
-  stopOwnedWindowsInstaller,
 } from "./native-upgrade-process"
 import { payloadFingerprint, sha256File } from "./qualification"
 
@@ -252,57 +251,10 @@ test("installer spawn failures and timeout requests never become confirmed shutd
   }
 })
 
-test("Windows interruption selects only the owned live PID tree and waits for native helper close", async () => {
-  const child = new EventEmitter() as ChildProcess
-  Object.assign(child, { pid: 123456789, exitCode: null, signalCode: null })
-  const helper = new EventEmitter() as ChildProcess
-  Object.assign(helper, { kill: () => true, unref: () => helper })
-  let called = false
-  const stop = stopOwnedWindowsInstaller(child, {
-    env: { SystemRoot: "C:\\Windows" },
-    spawn: (file, args, options) => {
-      called = true
-      expect(file).toBe("C:\\Windows\\System32\\taskkill.exe")
-      expect(args).toEqual(["/PID", "123456789", "/T", "/F"])
-      expect(options.shell).toBe(false)
-      expect(options.stdio).toBe("ignore")
-      return helper
-    },
-  })
-  expect(called).toBe(true)
-  let done = false
-  void stop.then(() => {
-    done = true
-  })
-  helper.emit("exit", 0)
-  await new Promise((resolve) => setTimeout(resolve, 5))
-  expect(done).toBe(false)
-  helper.emit("close", 0)
-  await stop
-  const invalidEnvironment = await stopOwnedWindowsInstaller(child, {
-    env: { SystemRoot: "PRIVATE INVALID ROOT" },
-    spawn: () => {
-      throw new Error("must not execute an unconfirmed taskkill path")
-    },
-  }).catch((error) => error)
-  expect(invalidEnvironment.message).toBe("PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED")
-  expect(readNativeUpgradeObservation(invalidEnvironment)).toEqual({
-    phase: "taskkill-environment",
-    nativeCode: "OTHER",
-  })
-  Object.assign(child, { exitCode: 0 })
-  await expect(
-    stopOwnedWindowsInstaller(child, {
-      env: { SystemRoot: "C:\\Windows" },
-      spawn: () => {
-        throw new Error("must not select an exited PID")
-      },
-    }),
-  ).rejects.toThrow("INTERRUPTION_UNCONFIRMED")
-})
-
 for (const scenario of [
   "partial-copy",
+  "owner-job-unconfirmed",
+  "owner-stop-unconfirmed",
   "observer-error",
   "busy-then-partial",
   "busy-then-complete",
@@ -333,23 +285,17 @@ for (const scenario of [
       await writeFile(actual, "INERT BASELINE RESOURCE")
       await writeFile(artifact, "INERT INSTALLER")
       await writeFile(target, targetBytes)
-      const parent = new EventEmitter() as ChildProcess
+      const finished = Promise.withResolvers<{ exitCode: number; stopped: boolean; jobEmpty: true }>()
       let parentClosed = false
       const closeParent = () => {
         if (parentClosed) return
         parentClosed = true
-        parent.emit("close", 1)
+        finished.resolve({
+          exitCode: 1,
+          stopped: stops > 0 && scenario !== "owner-stop-unconfirmed",
+          jobEmpty: (scenario !== "owner-job-unconfirmed") as true,
+        })
       }
-      Object.assign(parent, {
-        pid: 123456789,
-        exitCode: null,
-        signalCode: null,
-        kill: () => {
-          queueMicrotask(closeParent)
-          return true
-        },
-        unref: () => parent,
-      })
       let queries = 0
       let queriesFinished = 0
       let interruptedBeforeQuery = false
@@ -438,51 +384,61 @@ for (const scenario of [
             }
             return observation
           },
-          spawn: (file, args) => {
-            if (file === artifact) {
-              // Baseline verification has finished; remove its resource before
-              // the watcher starts, while the fake installer remains alive.
-              if (
-                !["busy-without-absence", "busy-before-absence-only", "busy-until-exit", "busy-until-timeout"].includes(
-                  scenario,
-                )
+          startOwner: async (input) => {
+            expect(input.artifact).toBe(artifact)
+            expect(input.installation).toBe(installation)
+            // Baseline verification has finished; the actual helper factory
+            // owns process startup. This seam starts no native process.
+            if (
+              !["busy-without-absence", "busy-before-absence-only", "busy-until-exit", "busy-until-timeout"].includes(
+                scenario,
               )
-                unlinkSync(actual)
-              return parent
-            }
-            expect(file).toBe("C:\\Windows\\System32\\taskkill.exe")
-            expect(++stops).toBe(1)
-            expect(args).toEqual(["/PID", "123456789", "/T", "/F"])
-            interruptedBeforeQuery = queries > queriesFinished
-            slowQuery.resolve()
-            const helper = new EventEmitter() as ChildProcess
-            Object.assign(helper, { kill: () => false, unref: () => helper })
-            helperClosed = new Promise((resolve) => helper.once("close", () => resolve()))
-            void (async () => {
-              if (scenario === "busy-then-complete" || scenario === "partial-then-complete")
-                await writeFile(actual, targetBytes)
-              if (scenario === "busy-then-missing") await rm(actual)
-              if (scenario === "busy-then-empty") await writeFile(actual, "")
-              if (scenario === "busy-then-invalid") {
-                await rm(actual)
-                await mkdir(actual)
-              }
-            })().then(
-              () => {
-                closeParent()
-                helper.emit("close", 0)
-              },
-              (error) => {
-                closeParent()
-                helper.emit("error", error)
-                helper.emit("close", 1)
-              },
             )
-            return helper
+              unlinkSync(actual)
+            return {
+              pid: 123456789,
+              completion: finished.promise,
+              async stop() {
+                expect(++stops).toBe(1)
+                interruptedBeforeQuery = queries > queriesFinished
+                slowQuery.resolve()
+                helperClosed = (async () => {
+                  if (scenario === "busy-then-complete" || scenario === "partial-then-complete")
+                    await writeFile(actual, targetBytes)
+                  if (scenario === "busy-then-missing") await rm(actual)
+                  if (scenario === "busy-then-empty") await writeFile(actual, "")
+                  if (scenario === "busy-then-invalid") {
+                    await rm(actual)
+                    await mkdir(actual)
+                  }
+                  closeParent()
+                })()
+                await helperClosed
+              },
+              async abort() {
+                slowQuery.resolve()
+                closeParent()
+              },
+            }
           },
         },
       )
       try {
+        if (scenario === "owner-job-unconfirmed" || scenario === "owner-stop-unconfirmed") {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe(
+            scenario === "owner-job-unconfirmed"
+              ? "PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED"
+              : "PUBLIC_UPGRADE_INTERRUPTION_UNCONFIRMED",
+          )
+          expect(stops).toBe(1)
+          expect(parentClosed).toBe(true)
+          expect(observations).toEqual(["ABSENT", "PARTIAL"])
+          // The final byte proof is never entered on a missing native owner
+          // acknowledgement, even though this fixture leaves partial bytes.
+          expect(readNativeUpgradeObservation(error)?.payloadProgress?.partial).toBe(1)
+          return
+        }
         if (scenario === "busy-before-absence-only") {
           const error = await running.catch((error) => error)
           expect(error.message).toBe("PUBLIC_UPGRADE_INTERRUPTION_UNOBSERVED")

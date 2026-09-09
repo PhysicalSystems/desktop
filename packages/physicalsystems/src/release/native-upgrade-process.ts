@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import type { ChildProcess, SpawnOptions } from "node:child_process"
 import { createHash } from "node:crypto"
 import { lstat, open, readFile } from "node:fs/promises"
-import { basename, join, win32 } from "node:path"
+import { basename, join } from "node:path"
 import { candidateNames } from "./artifacts"
 import { desktopIdentity } from "./identity"
 import { nsisInstallArguments, nsisSpawnOptions } from "./installed-reinstall"
@@ -11,6 +11,8 @@ import { requireDebianUpgradeStatus } from "./installed-upgrade"
 import type { UpgradeInterruption } from "./installed-upgrade"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { payloadFingerprint, sha256File } from "./qualification"
+import { startWindowsInstallerOwner, readWindowsInstallerOwnerObservation } from "./windows-installer-owner"
+import type { WindowsInstallerOwner } from "./windows-installer-owner"
 
 const failure = (name: string) => new Error(`PUBLIC_UPGRADE_${name}`)
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
@@ -26,8 +28,7 @@ type NativeUpgradePhase =
   | "installer-spawn"
   | "installer-pid"
   | "installer-inspection"
-  | "taskkill-environment"
-  | "taskkill-spawn"
+  | "installer-owner"
 const nativeCodes = ["ENOENT", "EACCES", "EPERM", "EBUSY", "EIO", "ENOTDIR", "EBADF", "ESRCH"] as const
 const payloadCheckpoints = ["absent", "busyOpen", "readableOpen", "sampledEndsMatch", "partial"] as const
 type PayloadProgress = Record<(typeof payloadCheckpoints)[number], number>
@@ -37,6 +38,7 @@ const observations = new WeakMap<
   Readonly<{
     phase: NativeUpgradePhase
     nativeCode: string
+    ownerPhase?: NonNullable<ReturnType<typeof readWindowsInstallerOwnerObservation>>["ownerPhase"]
     payloadProgress?: Readonly<
       PayloadProgress & { lastCheckpoint: PayloadCheckpoint; installerExitedAtFailure: boolean }
     >
@@ -69,7 +71,11 @@ function observedFailure(
   })()
   observations.set(
     result,
-    Object.freeze({ phase, nativeCode: nativeCodes.some((value) => value === code) ? code! : "OTHER" }),
+    Object.freeze({
+      phase,
+      nativeCode: nativeCodes.some((value) => value === code) ? code! : "OTHER",
+      ...readWindowsInstallerOwnerObservation(error),
+    }),
   )
   return result
 }
@@ -147,62 +153,6 @@ export async function observePartialWindowsPayload(
   }
 }
 
-/** Terminate only this still-live owned installer's tree. /T selects its
- * descendants; no image-name/global process selection is accepted. The native
- * helper's close is necessary but never substitutes for installer/child proof. */
-export async function stopOwnedWindowsInstaller(
-  child: ChildProcess,
-  input: {
-    env: NodeJS.ProcessEnv
-    spawn?: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess
-  },
-) {
-  if (
-    !Number.isSafeInteger(child.pid) ||
-    !child.pid ||
-    child.pid <= 0 ||
-    child.pid === process.pid ||
-    child.exitCode !== null ||
-    child.signalCode !== null
-  )
-    throw failure("INTERRUPTION_UNCONFIRMED")
-  const system = input.env.SystemRoot || input.env.SYSTEMROOT
-  if (!system || !/^[A-Za-z]:\\/.test(system) || win32.normalize(system) !== system || /["\r\n\0]/.test(system))
-    throw observedFailure("taskkill-environment", failure("INSTALLER_UNCONFIRMED"))
-  const command = win32.join(system, "System32", "taskkill.exe")
-  const killer = (() => {
-    try {
-      return (input.spawn ?? spawn)(command, ["/PID", String(child.pid), "/T", "/F"], {
-        env: input.env,
-        shell: false,
-        stdio: "ignore",
-      })
-    } catch (error) {
-      throw observedFailure("taskkill-spawn", error)
-    }
-  })()
-  await new Promise<void>((resolve, reject) => {
-    let finished = false
-    const finish = (success: boolean) => {
-      if (finished) return
-      finished = true
-      clearTimeout(timer)
-      success ? resolve() : reject(failure("INSTALLER_DESCENDANT_RETAINED"))
-    }
-    const timer = setTimeout(() => {
-      try {
-        killer.kill()
-      } catch {
-        /* Only this owned helper may be stopped. */
-      }
-      killer.unref()
-      finish(false)
-    }, 10000)
-    killer.once("error", () => finish(false))
-    killer.once("close", (code) => finish(code === 0))
-  })
-}
-
 /** Exact public installer mutation only, on an owned disposable runner. The
  * existing controller supplies process-tree inspection; it never supplies PASS.
  * A Windows recovery attempt is deliberately not retried if extraction finishes
@@ -224,6 +174,7 @@ export async function runNativeUpgradeInstaller(
   },
   options: {
     spawn?: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess
+    startOwner?: typeof startWindowsInstallerOwner
     observePayload?: typeof observePartialWindowsPayload
     platform?: NodeJS.Platform
     timeoutMs?: number
@@ -270,9 +221,44 @@ export async function runNativeUpgradeInstaller(
   const args = windows
     ? nsisInstallArguments(input.installation).args
     : ["-n", "/usr/bin/dpkg", interrupted ? "--unpack" : "--install", input.artifact]
-  const child = (() => {
+  const deadline = Date.now() + timeout
+  let child: ChildProcess | undefined
+  let owner: WindowsInstallerOwner | undefined
+  let exited = false
+  let exitCode: number | null = null
+  let nativeStopConfirmed = false
+  let processError = false
+  let processFailure: Error | undefined
+  let closed: Promise<void>
+  if (windows && interrupted) {
+    owner = await (options.startOwner ?? startWindowsInstallerOwner)({
+      env: input.env,
+      root: input.root,
+      artifact: input.artifact,
+      installation: input.installation,
+      timeoutMs: timeout,
+    }).catch((error) => {
+      throw observedFailure("installer-owner", error)
+    })
+    closed = owner.completion.then(
+      (value) => {
+        if (value.jobEmpty !== true || !Number.isInteger(value.exitCode)) {
+          processError = true
+          processFailure = observedFailure("installer-owner", failure("INSTALLER_UNCONFIRMED"))
+          return
+        }
+        nativeStopConfirmed = value.stopped === true
+        exited = true
+        exitCode = value.exitCode
+      },
+      (error) => {
+        processError = true
+        processFailure = observedFailure("installer-owner", error)
+      },
+    )
+  } else {
     try {
-      return (options.spawn ?? spawn)(command, args, {
+      child = (options.spawn ?? spawn)(command, args, {
         cwd: input.root,
         env: input.env,
         shell: false,
@@ -282,34 +268,30 @@ export async function runNativeUpgradeInstaller(
     } catch (error) {
       throw observedFailure("installer-spawn", error)
     }
-  })()
-  let exited = false
-  let exitCode: number | null = null
-  let processError = false
-  let processFailure: Error | undefined
-  const closed = new Promise<void>((resolve) => {
-    child.once("error", (error) => {
-      processError = true
-      processFailure = observedFailure("installer-spawn", error, failure("INSTALLER_UNCONFIRMED"))
-      resolve()
+    closed = new Promise<void>((resolve) => {
+      child!.once("error", (error) => {
+        processError = true
+        processFailure = observedFailure("installer-spawn", error, failure("INSTALLER_UNCONFIRMED"))
+        resolve()
+      })
+      child!.once("close", (code) => {
+        exited = true
+        exitCode = code
+        resolve()
+      })
     })
-    child.once("close", (code) => {
-      exited = true
-      exitCode = code
-      resolve()
-    })
-  })
-  const deadline = Date.now() + timeout
+  }
+  const installerPid = owner?.pid ?? child?.pid
   const owned = new Set<number>()
   let lastInspection = 0
   let inspection: Promise<void> | undefined
   let inspectionError = false
   let inspectionFailure: Error | undefined
   const inspect = () => {
-    if (inspection || !child.pid) return
+    if (inspection || !installerPid) return
     lastInspection = Date.now()
     inspection = input
-      .descendants(child.pid)
+      .descendants(installerPid)
       .then((values) => {
         for (const pid of values) {
           if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw failure("INSTALLER_UNCONFIRMED")
@@ -336,7 +318,7 @@ export async function runNativeUpgradeInstaller(
   }
   try {
     while (!exited && !processError) {
-      if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0)
+      if (!installerPid || !Number.isSafeInteger(installerPid) || installerPid <= 0)
         throw observedFailure("installer-pid", failure("INSTALLER_UNCONFIRMED"))
       if (Date.now() >= deadline) throw failure("INSTALLER_TIMEOUT")
       if (inspectionError) throw inspectionFailure!
@@ -364,7 +346,9 @@ export async function runNativeUpgradeInstaller(
         // installer, but never proves partial bytes or authorizes recovery.
         if (removed && (observation === "PARTIAL" || busyDestination)) {
           if (exited) throw failure("INTERRUPTION_UNCONFIRMED")
-          await stopOwnedWindowsInstaller(child, { env: input.env, spawn: options.spawn })
+          await owner!.stop().catch((error) => {
+            throw observedFailure("installer-owner", error)
+          })
           stoppedInstaller = true
         }
       }
@@ -414,6 +398,7 @@ export async function runNativeUpgradeInstaller(
       } satisfies UpgradeInterruption
     }
     if (!stoppedInstaller) throw failure("INTERRUPTION_UNOBSERVED")
+    if (!nativeStopConfirmed) throw failure("INTERRUPTION_UNCONFIRMED")
     // All native mutation has stopped. Read the real destination again for
     // both trigger paths; neither a prior sample nor a busy event is proof.
     if (
@@ -444,15 +429,21 @@ export async function runNativeUpgradeInstaller(
     const installerExitedAtFailure = exited
     // A timeout/error grants no recovery authority. Stop only this owned child,
     // bound the wait, and let the caller retain uncertain package/system state.
-    if (!exited && child.pid) {
-      try {
-        child.kill()
-      } catch {
-        /* No exit proof follows from a failed kill request. */
+    if (owner) {
+      // The owner already bounds its own helper-close wait. A failed abort
+      // retains uncertainty; it cannot grant recovery or extend that wait.
+      await owner.abort().catch(() => {})
+    } else {
+      if (!exited && child?.pid) {
+        try {
+          child.kill()
+        } catch {
+          /* No exit proof follows from a failed kill request. */
+        }
       }
+      await Promise.race([closed, pause(10000)])
+      if (!exited) child?.unref()
     }
-    await Promise.race([closed, pause(10000)])
-    if (!exited) child.unref()
     const result =
       error instanceof Error && /^PUBLIC_UPGRADE_[A-Z_]+$/.test(error.message)
         ? error
