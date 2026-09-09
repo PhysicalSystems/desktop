@@ -49,6 +49,20 @@ export function waitForProcessExit(exit: Promise<unknown>, timeoutMs: number): P
   return waitForShutdownStep(exit, timeoutMs, "PROCESS_EXIT_UNCONFIRMED")
 }
 
+/** Terminate only after owned service and credential cleanup has completed.
+ * A stop result, including false during an exit race, never replaces exit proof. */
+export async function closeOwnedProcess(options: {
+  cleanup(): Promise<unknown>
+  exited(): boolean
+  requestStop(): boolean
+  exit: Promise<unknown>
+  timeoutMs: number
+}): Promise<void> {
+  await options.cleanup()
+  if (!options.exited()) options.requestStop()
+  await waitForProcessExit(options.exit, options.timeoutMs)
+}
+
 /** Available from fork time, even if the model server never becomes ready. */
 export function createProcessStopper(options: {
   exit: Promise<unknown>

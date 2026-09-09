@@ -60,7 +60,12 @@ export type PublicDistributionReview = {
     name: string
     bytes: number
     sha256: string
-    qualification: { reportSha256: string; checks: Record<(typeof requiredChecks)[number], "PASS"> }
+    qualification: {
+      reportSha256: string
+      checks: Record<Exclude<(typeof requiredChecks)[number], "provider-browser-sign-in">, "PASS"> & {
+        "provider-browser-sign-in": "PASS" | "NOT_TESTED"
+      }
+    }
   }[]
 }
 
@@ -242,7 +247,13 @@ export function validateDistributionFacts(input: unknown): PublicDistributionFac
     if (!digest(qualification.reportSha256))
       throw new Error("Each public artifact needs a qualification receipt digest")
     const checks = object(qualification.checks, [...requiredChecks])
-    if (requiredChecks.some((key) => checks[key] !== "PASS"))
+    if (
+      requiredChecks.some(
+        (key) =>
+          checks[key] !== "PASS" &&
+          !(review.channel === "preview" && key === "provider-browser-sign-in" && checks[key] === "NOT_TESTED"),
+      )
+    )
       throw new Error("Public distribution qualification is incomplete")
     if (asset.name.endsWith(".exe") && signing.installerSha256 !== asset.sha256)
       throw new Error("Windows signing evidence belongs to a different installer")

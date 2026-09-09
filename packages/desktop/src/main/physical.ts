@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import { BrowserWindow, safeStorage, utilityProcess } from "electron"
 import type { PhysicalCommand, PhysicalSnapshot } from "@opencode-ai/app/physicalsystems-types"
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
-import { waitForProcessExit, waitForShutdownStep } from "../../../physicalsystems/src/lifecycle"
+import { closeOwnedProcess, waitForShutdownStep } from "../../../physicalsystems/src/lifecycle"
 import { credentialTrace } from "./credential-trace"
 import { providerAccountTrace } from "./provider-account-trace"
 import { shutdownTrace } from "./shutdown-trace"
@@ -139,27 +139,40 @@ export async function createPhysicalHost(dataDir: string) {
       if (closed) return Promise.resolve()
       if (closing) return closing
       closing = (async () => {
-        if (!operatorStopped) {
-          shutdownTrace("WORKER_CLOSE_BEFORE")
-          await request("close", {}, true)
-          shutdownTrace("WORKER_CLOSE_AFTER")
-          operatorStopped = true
-        }
-        shutdownTrace("ATTACHMENT_CLEANUP_BEFORE")
-        attachment = undefined
-        // Finish queued writes before removing the attachment credential, so a
-        // delayed write cannot recreate it after shutdown reports completion.
-        attachmentCleanup ??= attachmentQueue.catch(() => {}).then(() => unlink(attachmentPath))
-          .catch((error: NodeJS.ErrnoException) => {
-            if (error.code === "ENOENT") return
-            attachmentCleanup = undefined
-            throw error
-          })
-        await waitForShutdownStep(attachmentCleanup, 6500, "ATTACHMENT_CLEANUP_UNCONFIRMED")
-        shutdownTrace("ATTACHMENT_CLEANUP_AFTER")
-        shutdownTrace("WORKER_EXIT_BEFORE")
-        if (!exited) child.postMessage({ id: randomUUID(), method: "exit" })
-        await waitForProcessExit(workerExit, 6500)
+        await closeOwnedProcess({
+          async cleanup() {
+            if (!operatorStopped) {
+              shutdownTrace("WORKER_CLOSE_BEFORE")
+              await request("close", {}, true)
+              shutdownTrace("WORKER_CLOSE_AFTER")
+              operatorStopped = true
+            }
+            shutdownTrace("ATTACHMENT_CLEANUP_BEFORE")
+            attachment = undefined
+            // Finish queued writes before removing the attachment credential, so a
+            // delayed write cannot recreate it after shutdown reports completion.
+            attachmentCleanup ??= attachmentQueue.catch(() => {}).then(() => unlink(attachmentPath))
+              .catch((error: NodeJS.ErrnoException) => {
+                if (error.code === "ENOENT") return
+                attachmentCleanup = undefined
+                throw error
+              })
+            await waitForShutdownStep(attachmentCleanup, 6500, "ATTACHMENT_CLEANUP_UNCONFIRMED")
+            shutdownTrace("ATTACHMENT_CLEANUP_AFTER")
+            shutdownTrace("WORKER_EXIT_BEFORE")
+          },
+          exited: () => exited,
+          requestStop() {
+            // Service/gateway close and attachment removal already succeeded.
+            // Release the owned utility through Electron instead of another worker
+            // IPC handler; Electron's POSIX termination includes Chromium's reaper.
+            const requested = child.kill()
+            shutdownTrace("WORKER_EXIT_REQUESTED")
+            return requested
+          },
+          exit: workerExit,
+          timeoutMs: 6500,
+        })
         shutdownTrace("WORKER_EXIT_AFTER")
         closed = true
       })().finally(() => { closing = undefined })

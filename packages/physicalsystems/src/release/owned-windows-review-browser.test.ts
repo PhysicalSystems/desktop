@@ -741,6 +741,95 @@ test("ambient browser, unknown startup identity, PID reuse and failed launcher r
   }
 })
 
+test("retained identity conflicts expose only fixed comparisons and still forbid signaling or restoration", async () => {
+  const cases = [
+    {
+      change: { birth: "134000000000000999" },
+      observerPid: 4100,
+      reason: "newer-birth",
+      observer: "self",
+      sid: true,
+      session: true,
+      executable: true,
+    },
+    {
+      change: { birth: "134000000000000000" },
+      observerPid: 9999,
+      reason: "older-birth",
+      observer: "other",
+      sid: true,
+      session: true,
+      executable: true,
+    },
+    {
+      change: { sid: "S-1-5-21-999-222-333-1001" },
+      observerPid: "PRIVATE",
+      reason: "same-birth-metadata",
+      observer: "unknown",
+      sid: false,
+      session: true,
+      executable: true,
+    },
+    {
+      change: { session: 3 },
+      observerPid: 0,
+      reason: "same-birth-metadata",
+      observer: "unknown",
+      sid: true,
+      session: false,
+      executable: true,
+    },
+    {
+      change: { executable: "C:\\PRIVATE\\replacement.exe" },
+      observerPid: 0x100000000,
+      reason: "same-birth-metadata",
+      observer: "unknown",
+      sid: true,
+      session: true,
+      executable: false,
+    },
+  ] as const
+  for (const scenario of cases) {
+    const f = await fixture()
+    let changed = false
+    try {
+      const browser = await startOwnedWindowsReviewBrowser(f.input, {
+        ...f.io,
+        async native(request) {
+          const result = await f.io.native(request)
+          if (request.operation !== "observe" || !changed) return result
+          const value = result as { processes: WindowsReviewProcess[] }
+          return {
+            ...value,
+            observerPid: scenario.observerPid,
+            windowsRetainedIdentityReason: "PRIVATE UNTRUSTED CLAIM",
+            processes: value.processes.map((item, index) => (index ? item : { ...item, ...scenario.change })),
+          }
+        },
+      })
+      changed = true
+      const error = await browser.stop().catch((error) => error)
+      expect(error.message).toBe("PROVIDER_REVIEW_BROWSER_CLEANUP_UNCONFIRMED")
+      expect(readBrowserObservation(error)).toMatchObject({
+        browserPhase: "cleanup-observe",
+        windowsObservePhase: "retained-identity",
+        windowsRetainedIdentityReason: scenario.reason,
+        windowsRetainedObserver: scenario.observer,
+        windowsRetainedSidMatched: scenario.sid,
+        windowsRetainedSessionMatched: scenario.session,
+        windowsRetainedExecutableMatched: scenario.executable,
+      })
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("PRIVATE")
+      expect(JSON.stringify(readBrowserObservation(error))).not.toContain("4100")
+      expect(f.state.calls).not.toContain("stop")
+      expect(f.state.calls).not.toContain("restore")
+      await access(join(f.input.root, "profile"))
+    } finally {
+      await f.cleanup()
+    }
+  }
+})
+
 test("lost launcher-write response reconciles exact prior state; retained profiles still require restoration", async () => {
   const lost = await fixture({ policySetLost: true })
   try {

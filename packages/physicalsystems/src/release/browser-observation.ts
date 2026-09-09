@@ -111,6 +111,11 @@ export type BrowserObservation = {
   windowsNativeOutcome?: "timeout" | "signal" | "exit" | "start" | "output-limit" | "invalid-json" | "unknown"
   windowsObservePhase?: (typeof windowsObservePhases)[number]
   failedWindowsObservePhase?: (typeof windowsObservePhases)[number]
+  windowsRetainedIdentityReason?: "newer-birth" | "older-birth" | "same-birth-metadata" | "history-limit"
+  windowsRetainedObserver?: "self" | "other" | "unknown"
+  windowsRetainedSidMatched?: boolean
+  windowsRetainedSessionMatched?: boolean
+  windowsRetainedExecutableMatched?: boolean
   machineRemoteDebugging?: "absent" | "allow" | "deny" | "invalid"
   userRemoteDebugging?: "absent" | "allow" | "deny" | "invalid"
   machineDeveloperTools?: "absent" | "restricted" | "allow" | "deny" | "invalid"
@@ -243,6 +248,9 @@ const codes = [
   "BROWSER_HANDOFF_CLEANUP_UNCONFIRMED",
 ] as const
 const bools = [
+  "windowsRetainedSidMatched",
+  "windowsRetainedSessionMatched",
+  "windowsRetainedExecutableMatched",
   "directoryProbeReadonlyAttribute",
   "directoryProbeRootReadonlyAttribute",
   "handoffDeadlineExpired",
@@ -395,11 +403,16 @@ const directoryEnums = new Map<string, readonly string[]>([
   ["directoryErrorPath", ["root", "parent", "descendant", "other", "absent"]],
   ["directoryInventory", ["complete", "bounded", "identity-unconfirmed", "read-failed"]],
 ])
+const retainedEnums = new Map<string, readonly string[]>([
+  ["windowsRetainedIdentityReason", ["newer-birth", "older-birth", "same-birth-metadata", "history-limit"]],
+  ["windowsRetainedObserver", ["self", "other", "unknown"]],
+])
 function validate(value: unknown): BrowserObservation | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return
   const result: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
     const allowed =
+      retainedEnums.get(key) ??
       directoryEnums.get(key) ??
       (key === "handoffPhase"
         ? ["context", "native", "ownership", "targets", "complete"]

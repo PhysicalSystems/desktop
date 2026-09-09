@@ -100,6 +100,26 @@ function fixture() {
 }
 
 describe("anonymous public desktop download readback", () => {
+  test("preview download readback preserves untested account sign-in without relaxing stable checks", async () => {
+    const data = fixture()
+    for (const asset of data.review.assets) asset.qualification.checks["provider-browser-sign-in"] = "NOT_TESTED"
+    const selection = await verifyPublicDownloads({
+      review: data.review,
+      expectedReviewSha256: publicReviewDigest(data.review),
+      fetch: data.request,
+    })
+    expect(selection.release.channel).toBe("preview")
+    expect(data.calls).toHaveLength(4)
+    const { schemaVersion, kind, releaseId, approval, ...facts } = structuredClone(data.review)
+    facts.version = "0.1.0"
+    facts.tag = "desktop-v0.1.0"
+    facts.channel = "stable"
+    for (const asset of facts.assets) asset.name = asset.name.replace("0.1.0-beta.1", "0.1.0")
+    expect(() => validateDistributionFacts(facts)).toThrow("Public distribution qualification is incomplete")
+    for (const asset of facts.assets) asset.qualification.checks["provider-browser-sign-in"] = "PASS"
+    expect(validateDistributionFacts(facts).channel).toBe("stable")
+  })
+
   test("emits exactly the website selection after all reviewed installer bytes match", async () => {
     const data = fixture()
     const result = await verifyPublicDownloads({

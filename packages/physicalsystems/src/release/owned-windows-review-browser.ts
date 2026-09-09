@@ -514,9 +514,34 @@ async function acquireWindowsReviewBrowser(
     observation.windowsObservePhase = "retained-identity"
     for (const item of processes) {
       const prior = observed.get(item.pid)
-      if (prior && !windowsReviewSameProcess(prior, item)) throw failure()
+      if (prior && !windowsReviewSameProcess(prior, item)) {
+        // Diagnose the unchanged rejection without exposing either identity.
+        // A newer birth can explain PID reuse, but grants no replacement kill
+        // authority or policy/profile cleanup permission.
+        observation.windowsRetainedIdentityReason =
+          BigInt(item.birth) > BigInt(prior.birth)
+            ? "newer-birth"
+            : BigInt(item.birth) < BigInt(prior.birth)
+              ? "older-birth"
+              : "same-birth-metadata"
+        observation.windowsRetainedSidMatched = prior.sid === item.sid
+        observation.windowsRetainedSessionMatched = prior.session === item.session
+        observation.windowsRetainedExecutableMatched = pathEqual(prior.executable, item.executable)
+        observation.windowsRetainedObserver =
+          Number.isSafeInteger(value.observerPid) &&
+          Number(value.observerPid) > 0 &&
+          Number(value.observerPid) <= 0xffffffff
+            ? item.pid === value.observerPid
+              ? "self"
+              : "other"
+            : "unknown"
+        throw failure()
+      }
       observed.set(item.pid, item)
-      if (observed.size > 256) throw failure()
+      if (observed.size > 256) {
+        observation.windowsRetainedIdentityReason = "history-limit"
+        throw failure()
+      }
     }
     observation.windowsObservePhase = "listener-shape"
     if (

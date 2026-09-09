@@ -28,7 +28,7 @@ const serialize = (value: unknown) => JSON.stringify(value, null, 2) + "\n"
 const fields = (value: unknown) => value as Record<string, unknown>
 const checks = (record: Record<string, unknown>) => record.checks as Record<string, unknown>[]
 
-async function fixture(unsigned = false) {
+async function fixture(unsigned = false, channel: "preview" | "stable" = "preview") {
   // All payloads, signatures and native PASS records below are explicit simulated
   // collector test fixtures. These tests never sign, install or launch an app.
   const root = await realpath(await mkdtemp(join(tmpdir(), "ps-collector-fixture-")))
@@ -40,8 +40,8 @@ async function fixture(unsigned = false) {
     kind: "public-desktop-build",
     sourceRevision: "a".repeat(40),
     releaseInputsSha256: "b".repeat(64),
-    version: "0.1.0-beta.1",
-    channel: "preview",
+    version: channel === "preview" ? "0.1.0-beta.1" : "0.1.0",
+    channel,
     identity: desktopIdentity("public"),
     publication: false,
     windowsSigning: unsigned
@@ -360,7 +360,7 @@ test("passing auxiliary smoke probes cannot replace any of the eight separate pu
   await expect(collectPublicDistribution(substituted.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
 })
 
-test("optional browser-only handoff is accepted as auxiliary evidence but never replaces provider qualification", async () => {
+test("optional browser-only handoff preserves an untested preview provider status", async () => {
   for (const status of ["PASS", "NOT_TESTED", "FAIL", "BLOCKED"] as const) {
     const f = await fixture()
     await f.edit("smokeSha256", (record) => {
@@ -380,8 +380,48 @@ test("optional browser-only handoff is accepted as auxiliary evidence but never 
   await substituted.edit("nativeSha256", (record) => {
     checks(record).find((check) => check.id === "provider-browser-sign-in")!.status = "NOT_TESTED"
   })
-  await expect(collectPublicDistribution(substituted.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
-  expect(await readdir(substituted.root)).not.toContain("collected")
+  const result = await collectPublicDistribution(substituted.input())
+  expect(result.record.facts.assets[0].qualification.checks["provider-browser-sign-in"]).toBe("NOT_TESTED")
+})
+
+test("preview can omit account testing while stable and failed provider checks remain blocked", async () => {
+  for (const unsigned of [false, true]) {
+    const f = await fixture(unsigned)
+    for (let index = 0; index < f.plan.artifacts.length; index++) {
+      await f.edit(
+        "nativeSha256",
+        (record) => {
+          checks(record).find((check) => check.id === "provider-browser-sign-in")!.status = "NOT_TESTED"
+        },
+        index,
+      )
+    }
+    const result = await collectPublicDistribution(f.input())
+    expect(
+      result.record.facts.assets.every(
+        (asset) => asset.qualification.checks["provider-browser-sign-in"] === "NOT_TESTED",
+      ),
+    ).toBe(true)
+    await expect(
+      verifyQualifiedBundle({
+        directory: f.input().output,
+        expectedSha256: result.sha256,
+        sourceRevision: f.build.sourceRevision,
+      }),
+    ).resolves.toBeDefined()
+  }
+  for (const [channel, status] of [
+    ["stable", "NOT_TESTED"],
+    ["preview", "FAIL"],
+    ["preview", "BLOCKED"],
+  ] as const) {
+    const f = await fixture(false, channel)
+    await f.edit("nativeSha256", (record) => {
+      checks(record).find((check) => check.id === "provider-browser-sign-in")!.status = status
+    })
+    await expect(collectPublicDistribution(f.input())).rejects.toThrow("PUBLIC_COLLECTION_EVIDENCE_INVALID")
+    expect(await readdir(f.root)).not.toContain("collected")
+  }
 })
 
 test("independent anchors, all formats and native run/source/input/identity bindings are mandatory", async () => {

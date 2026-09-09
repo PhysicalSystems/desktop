@@ -47,6 +47,11 @@ jobs:
       - name: Validate the actual Windows owner with an inert process tree
         working-directory: packages/physicalsystems
         run: bun ./src/release/windows-installer-owner.hosted.ts
+      - name: Validate Windows browser process selection with inert records
+        working-directory: packages/physicalsystems
+        env:
+          PHYSICALSYSTEMS_WINDOWS_REVIEW_SELECTION_FIXTURE: "1"
+        run: bun ./src/release/windows-review-process-selection.hosted.ts
 
   source:
     name: Source and authority checks
