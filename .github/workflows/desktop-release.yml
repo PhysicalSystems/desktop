@@ -277,6 +277,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-desktop-build
+        id: setup
       - name: Verify native source archive staging
         working-directory: packages/physicalsystems
         run: bun test ./src/release/commands.test.ts ./src/release/packaged-archive.test.ts ./src/release/native-upgrade-process.test.ts ./src/release/owned-browser-directory.test.ts ./src/release/windows-app-shutdown-native.test.ts ./src/release/windows-app-shutdown-observation.test.ts ./src/release/windows-directory-observation.test.ts ./src/release/windows-junction-prune-native.test.ts ./src/release/windows-junction-prune.test.ts
@@ -297,6 +298,13 @@ jobs:
       - name: Build candidate formats with publication disabled
         id: build
         run: bun script/desktop-release.ts build --inputs "$RUNNER_TEMP/desktop-release/inputs/release-inputs.json" --platform '${{ matrix.platform }}' --output "$RUNNER_TEMP/desktop-release/artifacts"
+
+      - name: Save packaging-tool downloads after a successful build
+        if: success() && steps.build.outcome == 'success' && steps.setup.outputs.packaging-cache-key != '' && steps.setup.outputs.packaging-cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/desktop-downloads/electron-builder
+          key: ${{ steps.setup.outputs.packaging-cache-key }}
 
       - name: Qualify the actual packaged applications
         id: qualify

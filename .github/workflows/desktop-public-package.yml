@@ -106,6 +106,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-desktop-build
+        id: setup
       - name: Define isolated native paths after the runner is available
         run: |
           node --input-type=module <<'NODE'
@@ -133,6 +134,7 @@ jobs:
       - name: Verify both frozen versions and their owned lab plan before builds
         run: bun script/desktop-public-producer.ts verify-upgrade
       - name: Build Windows installers using the frozen signing policy
+        id: windows-signed
         if: runner.os == 'Windows' && inputs.windows_signing == 'signed'
         env:
           # Only this actual build step receives signing secrets. The wrapper
@@ -144,16 +146,28 @@ jobs:
           AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_AZURE_CLIENT_SECRET }}
         run: bun script/desktop-public-producer.ts build-windows
       - name: Build explicitly unsigned Windows PREVIEW installers
+        id: windows-unsigned
         if: runner.os == 'Windows' && inputs.windows_signing == 'unsigned-preview'
         # This branch has no signing secrets. The driver rechecks the frozen
         # preview policy and disables certificate discovery before packaging.
         run: bun script/desktop-public-producer.ts build-windows
       - name: Build Linux installers under the same frozen public identity
+        id: linux-target
         if: runner.os == 'Linux'
         run: bun script/desktop-build-public.ts --inputs "$PUBLIC_RELEASE_INPUTS" --public-inputs "$PUBLIC_BUILD_INPUTS" --expected-inputs-sha256 "$EXPECTED_RELEASE_INPUTS_SHA256" --expected-public-build-sha256 "$EXPECTED_PUBLIC_BUILD_SHA256" --platform linux-x64 --output "$PUBLIC_BUILD_DIRECTORY"
       - name: Build the separate unreleased Linux lab baseline
+        id: linux-baseline
         if: runner.os == 'Linux'
         run: bun script/desktop-build-public.ts --inputs "$PUBLIC_BASELINE_RELEASE_INPUTS" --public-inputs "$PUBLIC_BASELINE_BUILD_INPUTS" --expected-inputs-sha256 "$EXPECTED_BASELINE_RELEASE_INPUTS_SHA256" --expected-public-build-sha256 "$EXPECTED_BASELINE_PUBLIC_BUILD_SHA256" --platform linux-x64 --output "$PUBLIC_BASELINE_BUILD_DIRECTORY"
+      - name: Save packaging-tool downloads after both successful builds
+        if: >-
+          success() && steps.setup.outputs.packaging-cache-key != '' && steps.setup.outputs.packaging-cache-hit != 'true' &&
+          ((runner.os == 'Windows' && (steps.windows-signed.outcome == 'success' || steps.windows-unsigned.outcome == 'success')) ||
+          (runner.os == 'Linux' && steps.linux-target.outcome == 'success' && steps.linux-baseline.outcome == 'success'))
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/desktop-downloads/electron-builder
+          key: ${{ steps.setup.outputs.packaging-cache-key }}
       - name: Install display dependencies on the disposable Linux runner
         if: runner.os == 'Linux'
         run: |

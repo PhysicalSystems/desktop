@@ -5,6 +5,13 @@ inputs:
     description: Install the frozen workspace and prepare Electron
     required: false
     default: "true"
+outputs:
+  packaging-cache-key:
+    description: Exact packaging-tool cache key resolved during restore
+    value: ${{ steps.packaging.outputs.cache-primary-key }}
+  packaging-cache-hit:
+    description: Whether the exact packaging-tool cache already exists
+    value: ${{ steps.packaging.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -53,8 +60,9 @@ runs:
         key: desktop-downloads-${{ runner.os }}-${{ runner.arch }}-node${{ steps.pins.outputs.node }}-bun${{ steps.pins.outputs.bun }}-${{ hashFiles('bun.lock', '.github/actions/setup-desktop-build/action.yml') }}
 
     - name: Restore packaging-tool downloads
+      id: packaging
       if: inputs.install-dependencies == 'true'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/desktop-downloads/electron-builder
         key: desktop-packaging-${{ runner.os }}-${{ runner.arch }}-node${{ steps.pins.outputs.node }}-bun${{ steps.pins.outputs.bun }}-${{ hashFiles('bun.lock', '.github/actions/setup-desktop-build/action.yml') }}
