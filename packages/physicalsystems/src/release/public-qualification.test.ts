@@ -147,7 +147,7 @@ test("public identity verifies final main bytes, both independent input digests 
 
 test("both public Windows signatures must validate the pinned publisher and PFX certificate", () => {
   const f = fixture()
-  const good = { Status: "Valid", Publisher: f.mode.build.windowsSigning.publisher, Thumbprint: "C".repeat(40) }
+  const good = { Status: "Valid", Publisher: "Synthetic Fixture Publisher", Thumbprint: "C".repeat(40) }
   const pair = {
     mode: f.mode,
     installer: good,
@@ -190,6 +190,44 @@ test("both public Windows signatures must validate the pinned publisher and PFX 
   const pe = { ProductName: "Physical Systems", FileVersion: "0.1.0-beta.1", ProductVersion: "0.1.0.0" }
   expect(verifyWindowsVersionInfo(pe, f.mode.build.version, "public").productName).toBe("Physical Systems")
   expect(() => verifyWindowsVersionInfo(pe, f.mode.build.version)).toThrow()
+})
+
+test("unsigned preview observes both unsigned files without claiming verified publisher trust", () => {
+  const f = fixture()
+  f.mode.build.windowsSigning = { provider: "unsigned-preview" }
+  f.mode.publicBuildInputsSha256 = publicReviewDigest(f.mode.build)
+  const observation = { Status: "NotSigned", Publisher: null, Thumbprint: null }
+  const pair = {
+    mode: f.mode,
+    installer: observation,
+    executable: observation,
+    installerSha256: "d".repeat(64),
+    executableSha256: "e".repeat(64),
+  }
+  expect(verifyPublicAuthenticode(observation, f.mode.build.windowsSigning)).toEqual({ status: "UNSIGNED" })
+  expect(verifyPublicSignaturePair(pair)).toEqual({
+    status: "UNSIGNED_PREVIEW",
+    policy: { provider: "unsigned-preview" },
+    installer: { status: "UNSIGNED", sha256: pair.installerSha256 },
+    executable: { status: "UNSIGNED", sha256: pair.executableSha256 },
+  })
+  for (const observation of [
+    { Status: "HashMismatch", Publisher: null, Thumbprint: null },
+    { Status: "UnknownError", Publisher: null, Thumbprint: null },
+    { Status: "Valid", Publisher: "Some publisher", Thumbprint: "C".repeat(40) },
+    { Status: "NotSigned", Publisher: "Some publisher", Thumbprint: null },
+    { Status: "NotSigned", Publisher: null, Thumbprint: "C".repeat(40) },
+    { Status: "NotSigned" },
+    null,
+  ]) {
+    expect(() => verifyPublicSignaturePair({ ...pair, installer: observation })).toThrow()
+    expect(() => verifyPublicSignaturePair({ ...pair, executable: observation })).toThrow()
+  }
+  expect(() => verifyPublicSignaturePair({ ...pair, executableSha256: "unknown" })).toThrow()
+  f.mode.build.version = "0.1.0"
+  f.mode.build.channel = "stable"
+  f.mode.publicBuildInputsSha256 = publicReviewDigest(f.mode.build)
+  expect(() => verifyPublicSignaturePair(pair)).toThrow()
 })
 
 test("public smoke cannot fabricate native qualification or be consumed as a public distribution", () => {

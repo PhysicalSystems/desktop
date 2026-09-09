@@ -7,7 +7,7 @@ import {
 await buildPublicDesktop(process.argv.slice(2))
   .then((record) => {
     console.log(
-      `Built public-identity ${record.version} ${record.platform} installers. Native qualification and signing verification remain unconfirmed; publication disabled.`,
+      `Built public-identity ${record.version} ${record.platform} installers. Native qualification and signing-policy verification remain unconfirmed; publication disabled.`,
     )
   })
   .catch((error: unknown) => {

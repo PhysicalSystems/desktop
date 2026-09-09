@@ -14,8 +14,8 @@ verifyCompiledPublicIdentity(
   process.env.PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256 ?? "",
   readFileSync("out/main/index.js"),
 )
-// Building remains separate from publishing. Missing Windows signing setup fails
-// before electron-builder can emit an unsigned file under the public identity.
+// Only an anchored preview policy may disable signing. Signed builds still fail
+// on missing credentials; executable icon and version resource editing stay enabled.
 const config: Configuration = {
   appId: identity.appId,
   productName: identity.productName,
@@ -34,11 +34,11 @@ const config: Configuration = {
   },
   asar: true,
   publish: null,
-  forceCodeSigning: true,
+  forceCodeSigning: inputs.windowsSigning.provider !== "unsigned-preview",
   win: {
     target: [{ target: "nsis", arch: ["x64"] }],
     artifactName: "physical-systems-desktop-${version}-windows-${arch}.${ext}",
-    signExecutable: true,
+    signExecutable: inputs.windowsSigning.provider !== "unsigned-preview",
     verifyUpdateCodeSignature: true,
     ...publicSigningConfiguration(inputs, process.env, process.platform),
   },

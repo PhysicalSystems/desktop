@@ -1,6 +1,6 @@
 # Protected public desktop publication
 
-`desktop-public-release.yml` adds the publication half of the release process. It consumes signed, publicly identified, natively qualified installers from the owned producer. It does **not** make today's unsigned internal candidates publicly eligible, implement signing, or claim that native checks have passed.
+`desktop-public-release.yml` adds the publication half of the release process. It consumes publicly identified, natively qualified installers from the owned producer, with either verified Windows signing or an explicitly qualified unsigned Windows preview. Internal candidate builds remain ineligible. Publishing does not establish that native checks ran; the owned producer supplies their independently anchored evidence.
 
 The producer prerequisite is `.github/workflows/desktop-public-build.yml`, successful on the exact reviewed `main` commit used by the publisher. Its [implemented build and smoke stages](public-producer.md) run a strict final collector that emits a publisher bundle only after every required native observation passes. The existing `.github/workflows/desktop-release.yml` is deliberately rejected. Until complete native evidence and credentials exist, preflight fails closed. Do not change candidate or unqualified booleans to `PASS`.
 
@@ -29,15 +29,19 @@ The record is:
 }
 ```
 
-This illustration is not a valid qualification record. `facts` must be an object containing the exact public destination, version, channel, tag, immutable desktop source and release-input digests, public app identity, verified Windows publisher/certificate/installer/executable evidence and all three installer inventories with their exact qualification receipt digests. It shares the existing strict public-distribution validator. Each existing native/authentication/install/recovery/display check must pass with evidence; skipped or unsupported checks cannot become `PASS`.
+This illustration is not a valid qualification record. `facts` must be an object containing the exact public destination, version, channel, tag, immutable desktop source and release-input digests, public app identity, Windows signing evidence and all three installer inventories with their exact qualification receipt digests. It shares the existing strict public-distribution validator. Each existing native/authentication/install/recovery/display check must pass with evidence; skipped or unsupported checks cannot become `PASS`.
+
+Verified Windows evidence retains `status: "verified"`, publisher, certificate thumbprint, installer and executable SHA-256 hashes, and verification-report SHA-256. Explicit unsigned previews use `status: "unsigned-preview"` with the same three hashes and no publisher/certificate fields. This exception requires a preview channel and `-beta.N` version, and the native observations described in the [collector contract](public-collector.md#explicit-unsigned-windows-preview-evidence). Stable releases require verified signing; removing signing configuration never creates an unsigned preview.
+
+Unsigned release notes and the website selection carry the exact warning: **Unsigned Windows preview: Windows may warn or block installation.** New website selections use `schemaVersion: 2` and require `release.windowsSigning`: either `{ "status": "verified" }` or `{ "status": "unsigned-preview", "warning": "Unsigned Windows preview: Windows may warn or block installation." }`. Legacy schema-version-1 signed selections remain readable. A version-2 selection missing its signing status or unsigned warning is invalid. The website displays the warning before Windows downloads; Linux still offers both qualified formats.
 
 The producer exports the **canonical** qualified-distribution digest (`publicReviewDigest(record)`) through its trusted job output and summary. The publisher must never derive its expected digest from the downloaded record itself. Receipt and binary digests use their raw bytes. The final website selection output digest also uses raw file bytes; the public review digest uses canonical JSON.
 
-The producer must pin and test the public application identity before signing. Sign the Windows installed executable and final installer **before** qualification. Do not rename, relabel, re-sign or rebuild after qualification. Sanitized receipts must retain source/artifact/signature bindings. The hash checker proves receipt identity, not its factual truth; the owned producer is responsible for actual checks and must remain protected as reviewed source.
+The producer must pin and test the public application identity. For signed distributions, sign the Windows installed executable and final installer **before** qualification; explicit unsigned previews must verify both files are unsigned. Do not rename, relabel, re-sign or rebuild after qualification. Sanitized receipts must retain source/artifact/signature bindings. The hash checker proves receipt identity, not its factual truth; the owned producer is responsible for actual checks and must remain protected as reviewed source.
 
 ## Infrastructure prerequisites
 
-- Set `DESKTOP_PUBLIC_RELEASE_ENABLED=true` only after the real producer, qualification and signing setup exist.
+- Set `DESKTOP_PUBLIC_RELEASE_ENABLED=true` only after the real producer, qualification and explicitly selected Windows signing policy are ready.
 - Precreate `desktop-public-release` with required reviewers. The workflow checks this and will not silently create an unprotected approval environment.
 - `DESKTOP_DRAFT_TOKEN`: repository secret scoped to public download destination `PhysicalSystems/physicalsystems`, for draft preparation. GitHub does not offer a draft-only contents permission; protect reviewed workflow source and restrict who can dispatch it.
 - `DESKTOP_RELEASE_TOKEN`: secret only in the protected publication environment, scoped to that same public release destination.
@@ -60,7 +64,7 @@ Tests use synthetic byte payloads and fake GitHub responses. They verify orderin
 
 ## Public build identity and signing configuration
 
-The [public build driver](public-build.md), `packages/desktop/physical-public.config.ts` and the pure `public-build.ts` helpers are implemented separately from the candidate packager. The [public producer workflow](public-producer.md) freezes inputs, reuses source checks, invokes native packaging and records actual public native observations. The driver scopes signing credentials to packaging. Its strict collector now consumes independently anchored Windows/Linux job evidence and emits the existing qualified bundle only after every required check passes. Real signing provisioning and remaining native/account-backed checks are still required; partial observations cannot produce a publishable bundle.
+The [public build driver](public-build.md), `packages/desktop/physical-public.config.ts` and the pure `public-build.ts` helpers are implemented separately from the candidate packager. The [public producer workflow](public-producer.md) freezes inputs, reuses source checks, invokes native packaging and records actual public native observations. The driver scopes signing credentials to signed packaging. Its strict collector consumes independently anchored Windows/Linux job evidence and emits the qualified bundle only after every required check passes. Signed releases require real signing provisioning; every policy still requires complete native/account-backed qualification. Partial observations cannot produce a publishable bundle.
 
 Public preview and stable use one fixed installation identity: `systems.physical.desktop`, product `Physical Systems`, package/executable `physical-systems-desktop`, and the default `physicalsystems-desktop` data directory. A preview-to-stable change must pass the same upgrade/configuration-preservation checks. Candidate/development identity and default data remain unchanged. This policy does not automatically migrate existing candidate data.
 
@@ -68,9 +72,10 @@ Before compiling, a producer must create a separate `PublicBuildInputs` record c
 
 The build uses publication disabled and the producer invokes packaging with `--publish never`. All packaged modes preserve the existing `PHYSICALSYSTEMS_ALLOW_DEVICES=0` boundary. Public Linux uses the owned `AppRun.public` launcher and never disables Chromium sandboxing.
 
-Windows configuration enables executable signing, requires code signing and retains update signature verification. Signing policy is explicitly either:
+Signed Windows configuration enables executable signing, requires code signing and retains update signature verification. Signing policy is explicitly one of:
 
 - `pfx`: pin publisher and expected certificate thumbprint. Supply the private PFX at `PHYSICALSYSTEMS_PFX_FILE` and its password through electron-builder's `WIN_CSC_KEY_PASSWORD`, outside the input record. Passwords are not serialized into packaging configuration. The producer must still verify the actual executable and installer signer/thumbprint after signing.
 - `azure-trusted-signing`: pin publisher, Azure signing endpoint, account and certificate profile. The current adapter requires an explicitly provisioned Azure service identity (`AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`); federated/OIDC credentials need separate integration. Credentials never enter the public input record or configuration.
+- `unsigned-preview`: an explicit preview-beta-only policy with no publisher, certificate or signing credentials. Both executable and installer must actually be unsigned, and the resulting publication retains the warning above. All existing native and approval requirements remain in place.
 
-Missing credentials or an unsupported signing mode fail before a Windows public package can be produced. Linux construction does not require Windows private credentials. These unit/configuration checks do not exercise a real PFX, Azure signing service, native provider login or Windows certificate verification. No signing account has been selected or provisioned by this implementation.
+Missing credentials for a signed policy, absent signing policy or an unsupported mode fail before a Windows public package can be produced. Linux construction does not require Windows private credentials. These unit/configuration checks do not exercise a real PFX, Azure signing service, native provider login or Windows certificate verification. No signing account has been selected or provisioned by this implementation.

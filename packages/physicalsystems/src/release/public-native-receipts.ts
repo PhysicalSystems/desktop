@@ -8,7 +8,11 @@ import type { PublicBuildInputs } from "./public-build"
 import type { PublicCollectionPlan, PublicNativeReceipt } from "./public-collector"
 import { publicReviewDigest } from "./public-downloads"
 import { publicSmokeCanContinue, PublicProducerError } from "./public-producer"
-import { unimplementedPublicChecks, verifyPublicSignaturePair } from "./public-qualification"
+import {
+  publicAuthenticodeObservation,
+  unimplementedPublicChecks,
+  verifyPublicSignaturePair,
+} from "./public-qualification"
 import type { QualificationStatus } from "./qualification"
 
 const invalid = () => new PublicProducerError("PUBLIC_NATIVE_RECEIPT_BINDING_INVALID")
@@ -56,15 +60,12 @@ export function publicNativeReceipt(input: {
     identity: unknown
     compiledIdentity?: { identity: string; publicBuildInputsSha256: string; mainSha256: string }
     checks: { id: string; status: QualificationStatus }[]
-    signing?: {
-      status: string
-      policy: unknown
-      installer: { status: string; publisher: string; certificateThumbprint: string; sha256: string }
-      executable: { status: string; publisher: string; certificateThumbprint: string; sha256: string }
-    }
+    signing?: ReturnType<typeof verifyPublicSignaturePair>
+    signature: unknown
     payload?: { executableSha256: string }
   }
   const windows = input.artifact.format === "nsis"
+  const unsigned = input.build.windowsSigning.provider === "unsigned-preview"
   const platform = windows ? "windows-x64" : "linux-x64"
   if (
     report.schemaVersion !== 1 ||
@@ -80,28 +81,22 @@ export function publicNativeReceipt(input: {
   )
     throw invalid()
   if (windows) {
+    if (report.checks.some((check) => check.id === (unsigned ? "public-signing" : "public-unsigned-preview")))
+      throw invalid()
     const signing = report.signing
     if (
       !signing ||
-      signing.status !== "PASS" ||
-      signing.installer?.status !== "PASS" ||
-      signing.executable?.status !== "PASS" ||
+      signing.status !== (unsigned ? "UNSIGNED_PREVIEW" : "PASS") ||
+      signing.installer?.status !== (unsigned ? "UNSIGNED" : "PASS") ||
+      signing.executable?.status !== (unsigned ? "UNSIGNED" : "PASS") ||
       signing.installer.sha256 !== input.artifact.sha256 ||
       signing.executable.sha256 !== report.payload?.executableSha256 ||
       publicReviewDigest(signing.policy) !== publicReviewDigest(input.build.windowsSigning)
     )
       throw invalid()
-    verifyPublicSignaturePair({
-      installer: {
-        Status: "Valid",
-        Publisher: signing.installer.publisher,
-        Thumbprint: signing.installer.certificateThumbprint,
-      },
-      executable: {
-        Status: "Valid",
-        Publisher: signing.executable.publisher,
-        Thumbprint: signing.executable.certificateThumbprint,
-      },
+    const observed = verifyPublicSignaturePair({
+      installer: publicAuthenticodeObservation(signing.installer),
+      executable: publicAuthenticodeObservation(signing.executable),
       installerSha256: input.artifact.sha256,
       executableSha256: signing.executable.sha256,
       mode: {
@@ -110,6 +105,16 @@ export function publicNativeReceipt(input: {
         releaseInputsSha256: input.build.releaseInputsSha256,
       },
     })
+    if (publicReviewDigest(observed) !== publicReviewDigest(signing)) throw invalid()
+    const signature =
+      observed.status === "UNSIGNED_PREVIEW"
+        ? { status: "UNSIGNED", trust: "WINDOWS_AUTHENTICODE_UNSIGNED" }
+        : {
+            status: "PASS",
+            trust: "WINDOWS_AUTHENTICODE_VALID",
+            signerThumbprint: observed.installer.certificateThumbprint,
+          }
+    if (publicReviewDigest(report.signature) !== publicReviewDigest(signature)) throw invalid()
   }
   const checks = new Map(report.checks.map((check) => [check.id, check.status]))
   const status = (ids: readonly string[]): QualificationStatus => {
@@ -120,7 +125,9 @@ export function publicNativeReceipt(input: {
   }
   const cleanup = [
     "cleanup",
-    ...(windows ? ["public-signing"] : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
+    ...(windows
+      ? [unsigned ? "public-unsigned-preview" : "public-signing"]
+      : ["native-secret-service-cleanup", "linux-temporary-cleanup"]),
   ]
   const installed = input.artifact.format !== "AppImage"
   const handoff = checks.get("native-browser-handoff-probe")

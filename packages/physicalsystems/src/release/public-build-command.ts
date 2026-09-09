@@ -21,9 +21,11 @@ function signingPreflight(build: PublicBuildInputs, env: NodeJS.ProcessEnv, plat
     publicSigningConfiguration(build, env, platform)
   } catch {
     throw new PublicBuildProvisioningError(
-      build.windowsSigning.provider === "pfx"
-        ? "Windows public signing requires a provisioned PFX file and password matching the pinned signing policy"
-        : "Azure public signing requires the provisioned service identity matching the pinned signing policy",
+      build.windowsSigning.provider === "unsigned-preview"
+        ? "Unsigned Windows packaging requires an explicit validated preview policy"
+        : build.windowsSigning.provider === "pfx"
+          ? "Windows public signing requires a provisioned PFX file and password matching the pinned signing policy"
+          : "Azure public signing requires the provisioned service identity matching the pinned signing policy",
     )
   }
 }
@@ -91,7 +93,7 @@ export function publicBuildEnvironments(input: {
     PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256: input.publicDigest,
   }
   const packaging: NodeJS.ProcessEnv = { ...build }
-  if (input.platform === "windows-x64") {
+  if (input.platform === "windows-x64" && input.build.windowsSigning.provider !== "unsigned-preview") {
     const keys =
       input.build.windowsSigning.provider === "pfx"
         ? ["PHYSICALSYSTEMS_PFX_FILE", "WIN_CSC_KEY_PASSWORD"]

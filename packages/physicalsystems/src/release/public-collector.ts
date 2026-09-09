@@ -8,7 +8,11 @@ import { desktopIdentity } from "./identity"
 import { validatePublicBuildInputs } from "./public-build"
 import { publicReviewDigest, validateDistributionFacts } from "./public-downloads"
 import { validateQualifiedDistribution, verifyQualifiedBundle } from "./public-publisher"
-import { unimplementedPublicChecks, verifyPublicSignaturePair } from "./public-qualification"
+import {
+  publicAuthenticodeObservation,
+  unimplementedPublicChecks,
+  verifyPublicSignaturePair,
+} from "./public-qualification"
 import { requiredQualificationChecks, sha256File } from "./qualification"
 import { publicNativeProbeIds } from "./public-native-receipts"
 
@@ -67,6 +71,7 @@ export async function collectPublicDistribution(input: {
 }) {
   if (!digest(input.expectedPlanSha256) || publicReviewDigest(input.plan) !== input.expectedPlanSha256) throw invalid()
   const build = validatePublicBuildInputs(input.publicBuild, input.expectedPublicBuildSha256)
+  const unsigned = build.windowsSigning.provider === "unsigned-preview"
   const plan = object(input.plan, [
     "schemaVersion",
     "kind",
@@ -227,8 +232,11 @@ export async function collectPublicDistribution(input: {
     const distribution = object(smoke.publicDistribution, ["status", "reason"])
     if (distribution.status !== "BLOCKED" || typeof distribution.reason !== "string") throw invalid()
     const signature = object(smoke.signature, ["status", "trust"], ["signerThumbprint"])
-    if (platform === "windows-x64" && (signature.status !== "PASS" || signature.trust !== "WINDOWS_AUTHENTICODE_VALID"))
-      throw invalid()
+    if (platform === "windows-x64") {
+      if (unsigned) equal(signature, { status: "UNSIGNED", trust: "WINDOWS_AUTHENTICODE_UNSIGNED" })
+      if (!unsigned && (signature.status !== "PASS" || signature.trust !== "WINDOWS_AUTHENTICODE_VALID"))
+        throw invalid()
+    }
     if (platform === "linux-x64") {
       equal(smoke.signing, { status: "NOT_TESTED" })
       equal(signature, { status: "NOT_TESTED", trust: "NOT_APPLICABLE_TO_LINUX_PACKAGE" })
@@ -241,7 +249,7 @@ export async function collectPublicDistribution(input: {
       "native-v2-credential-probe",
       ...(artifact.name.endsWith(".exe") || artifact.name.endsWith(".deb") ? ["native-reinstall-probe"] : []),
       ...(platform === "windows-x64"
-        ? ["public-signing", "uninstall"]
+        ? [unsigned ? "public-unsigned-preview" : "public-signing", "uninstall"]
         : [
             "linux-sandbox-setup",
             "linux-renderer-sandbox",
@@ -251,6 +259,7 @@ export async function collectPublicDistribution(input: {
           ]),
     ]
     if (required.some((id) => smokeChecks.get(id) !== "PASS")) throw invalid()
+    if (smokeChecks.has(unsigned ? "public-signing" : "public-unsigned-preview")) throw invalid()
     const native = object(await readReceipt(artifact.nativeSha256), [
       "schemaVersion",
       "kind",
@@ -277,21 +286,22 @@ export async function collectPublicDistribution(input: {
       throw invalid()
     if (platform === "windows-x64") {
       const observed = object(smoke.signing, ["status", "policy", "installer", "executable"])
-      if (observed.status !== "PASS") throw invalid()
+      if (observed.status !== (unsigned ? "UNSIGNED_PREVIEW" : "PASS")) throw invalid()
       equal(observed.policy, build.windowsSigning)
-      const installer = object(observed.installer, ["status", "publisher", "certificateThumbprint", "sha256"])
-      const executable = object(observed.executable, ["status", "publisher", "certificateThumbprint", "sha256"])
+      const fields = ["status", "sha256", ...(unsigned ? [] : ["publisher", "certificateThumbprint"])]
+      const installer = object(observed.installer, fields)
+      const executable = object(observed.executable, fields)
       if (
-        installer.status !== "PASS" ||
-        executable.status !== "PASS" ||
+        installer.status !== (unsigned ? "UNSIGNED" : "PASS") ||
+        executable.status !== (unsigned ? "UNSIGNED" : "PASS") ||
         installer.sha256 !== artifact.sha256 ||
         executable.sha256 !== payload.executableSha256
       )
         throw invalid()
-      if (signature.signerThumbprint !== installer.certificateThumbprint) throw invalid()
+      if (!unsigned && signature.signerThumbprint !== installer.certificateThumbprint) throw invalid()
       signing = verifyPublicSignaturePair({
-        installer: { Status: "Valid", Publisher: installer.publisher, Thumbprint: installer.certificateThumbprint },
-        executable: { Status: "Valid", Publisher: executable.publisher, Thumbprint: executable.certificateThumbprint },
+        installer: publicAuthenticodeObservation(installer),
+        executable: publicAuthenticodeObservation(executable),
         mode: {
           build,
           publicBuildInputsSha256: input.expectedPublicBuildSha256,
@@ -300,6 +310,7 @@ export async function collectPublicDistribution(input: {
         installerSha256: artifact.sha256,
         executableSha256: payload.executableSha256,
       })
+      equal(signing, observed)
     }
     const checks = Object.fromEntries([
       ...requiredQualificationChecks
@@ -353,9 +364,13 @@ export async function collectPublicDistribution(input: {
     inputsSha256: input.expectedInputsSha256,
     identity: { appId: build.identity.appId, productName: build.identity.productName },
     windowsSigning: {
-      status: "verified",
-      publisher: signing.installer.publisher,
-      certificateThumbprint: signing.installer.certificateThumbprint,
+      ...(signing.status === "UNSIGNED_PREVIEW"
+        ? { status: "unsigned-preview" }
+        : {
+            status: "verified",
+            publisher: signing.installer.publisher,
+            certificateThumbprint: signing.installer.certificateThumbprint,
+          }),
       installerSha256: signing.installer.sha256,
       executableSha256: signing.executable.sha256,
       verificationReportSha256: signatureSha256,
@@ -406,6 +421,7 @@ function checkMap(value: unknown, native: boolean) {
           ...requiredQualificationChecks,
           "public-compiled-identity",
           "public-signing",
+          "public-unsigned-preview",
           "native-credential-probe",
           "native-secret-service",
           "native-secret-service-cleanup",

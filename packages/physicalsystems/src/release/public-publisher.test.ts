@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { publicReviewDigest } from "./public-downloads"
+import { publicReviewDigest, unsignedWindowsPreviewWarning } from "./public-downloads"
 import {
   preparePublicPublication,
   publishPreparedPublication,
@@ -20,7 +20,7 @@ afterEach(async () => {
 })
 const sha = (value: string) => createHash("sha256").update(value).digest("hex")
 const api = "https://api.github.com/repos/PhysicalSystems/physicalsystems/"
-async function fixture() {
+async function fixture(unsigned = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "physical-public-publisher-"))
   roots.push(directory)
   const version = "0.1.0-beta.1"
@@ -79,6 +79,13 @@ async function fixture() {
       })),
     },
   }
+  if (unsigned)
+    data.facts.windowsSigning = {
+      status: "unsigned-preview",
+      installerSha256: data.facts.windowsSigning.installerSha256,
+      executableSha256: data.facts.windowsSigning.executableSha256,
+      verificationReportSha256: data.facts.windowsSigning.verificationReportSha256,
+    }
   await writeFile(path.join(directory, "qualified-distribution.json"), JSON.stringify(data))
   await writeFile(path.join(directory, `${receiptSha}.json`), receipt)
   for (let index = 0; index < names.length; index++)
@@ -195,6 +202,43 @@ async function fixture() {
 }
 
 describe("protected exact-byte public desktop publisher", () => {
+  test("explicit unsigned preview keeps all formats, protected approval and exact warning through publication", async () => {
+    const data = await fixture(true)
+    const prepared = await preparePublicPublication(data.common)
+    expect(data.state.releases[0].body).toContain(unsignedWindowsPreviewWarning)
+    expect(data.state.releases[0].body).toContain("downloaded unsigned preview `.exe`")
+    expect(data.state.releases[0].body).not.toContain("downloaded signed")
+    expect(data.state.releases[0].prerelease).toBe(true)
+    expect(data.state.releases[0].draft).toBe(true)
+    expect(prepared.prepared.assets).toHaveLength(3)
+    const published = await data.publish(prepared)
+    expect(published.review.windowsSigning.status).toBe("unsigned-preview")
+    expect(published.review.approval.decision).toBe("approved")
+    expect(published.selection.schemaVersion).toBe(2)
+    expect(published.selection.release.windowsSigning).toEqual({
+      status: "unsigned-preview",
+      warning: unsignedWindowsPreviewWarning,
+    })
+  })
+
+  test("unsigned preview cannot be republished as stable or lose its unsigned release warning", async () => {
+    const relabeled = await fixture(true)
+    relabeled.data.facts.channel = "stable"
+    relabeled.data.facts.version = "0.1.0"
+    relabeled.data.facts.tag = "desktop-v0.1.0"
+    await writeFile(path.join(relabeled.directory, "qualified-distribution.json"), JSON.stringify(relabeled.data))
+    await expect(
+      preparePublicPublication({ ...relabeled.common, expectedSha256: publicReviewDigest(relabeled.data) }),
+    ).rejects.toThrow("stable must be signed")
+    expect(relabeled.state.calls).toHaveLength(0)
+
+    const warning = await fixture(true)
+    const prepared = await preparePublicPublication(warning.common)
+    warning.state.releases[0].body = warning.state.releases[0].body.replace(unsignedWindowsPreviewWarning, "")
+    await expect(warning.publish(prepared)).rejects.toThrow("reservation conflicts")
+    expect(warning.state.releases[0].draft).toBe(true)
+  })
+
   test("completes one draft, publishes once and returns complete anonymous selection", async () => {
     const data = await fixture()
     const prepared = await preparePublicPublication(data.common)
@@ -385,7 +429,7 @@ describe("protected exact-byte public desktop publisher", () => {
       { head_repository: { full_name: "SomeoneElse/desktop" } },
       { event: "pull_request" },
     ])
-      expect(() => validatePublisherPrerequisites({ ...input, run: { ...run, ...changed } })).toThrow("trusted signed")
+      expect(() => validatePublisherPrerequisites({ ...input, run: { ...run, ...changed } })).toThrow("trusted public")
     expect(() =>
       validatePublisherPrerequisites({ ...input, environment: { name: environment.name, protection_rules: [] } }),
     ).toThrow("required reviewers")

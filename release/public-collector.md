@@ -43,6 +43,29 @@ its separately trusted raw digest. The collector validates bindings and outcomes
 it does not infer an operating-system test from booleans or fixture activity.
 Native reports contain no arbitrary observations, profiles, credentials or logs.
 
+## Explicit unsigned Windows preview evidence
+
+The collector accepts `windowsSigning: { "provider": "unsigned-preview" }` only
+from independently anchored public-build inputs with channel `preview` and a
+`-beta.N` version. Stable releases retain verified Windows signing. A missing
+signing policy or failed signature verification never selects this exception.
+
+The native producer must actually observe `NotSigned` with no publisher or
+certificate for both the final installer and installed executable. The smoke
+receipt records `signing.status: "UNSIGNED_PREVIEW"`, the explicit policy and
+`{ "status": "UNSIGNED", "sha256": "..." }` for both files. Its generic signature
+is `{ "status": "UNSIGNED", "trust": "WINDOWS_AUTHENTICODE_UNSIGNED" }`.
+The required Windows observation check is `public-unsigned-preview: PASS`;
+`public-signing` is forbidden in this mode. It proves that the unsigned state
+was observed, not certificate trust. Verified signing receipts keep their
+existing shape.
+
+Collected facts preserve `windowsSigning.status: "unsigned-preview"` plus the
+installer, executable and verification-report hashes, with no publisher or
+certificate fields. All three formats, smoke checks, eight independent native
+checks, cleanup checks, source bindings and protected publication approval
+remain mandatory. Unsigned preview bytes cannot be relabeled as stable.
+
 ## Directory and output contract
 
 The evidence directory must contain **only** the three installers and their smoke
@@ -58,8 +81,9 @@ Only after every input validates does the collector copy installers and create:
   `PublicDistributionFacts` validators.
 - Three synthesized artifact reports containing fixed check IDs, statuses and
   input-evidence digests; raw smoke detail strings are omitted.
-- One synthesized Windows signature report, preserving the verified installer
-  and executable identities, and one aggregate qualification summary.
+- One synthesized Windows signature report, preserving verified signer identities
+  or the explicit unsigned installer/executable observations, and one aggregate
+  qualification summary.
 
 The five reports use their raw SHA-256 filenames. The completed bundle is checked
 again by `verifyQualifiedBundle`; its canonical qualified-distribution digest is

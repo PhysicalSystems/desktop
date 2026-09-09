@@ -71,7 +71,7 @@ try {
   console.log(`Public installer evidence collected. Qualification SHA-256: ${result.sha256}`)
 } catch {
   console.error(
-    "PUBLIC_COLLECTION_FAILED: exact signed public artifacts and complete independently anchored native evidence are required; no publication occurred",
+    "PUBLIC_COLLECTION_FAILED: exact public artifacts, declared signing policy and complete independently anchored native evidence are required; no publication occurred",
   )
   process.exitCode = 1
 }

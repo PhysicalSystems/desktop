@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 import { desktopIdentity } from "./identity"
 import type { ReinstallObservation } from "./installed-reinstall"
-import { requireDisposablePublicRunner, verifyPublicSignaturePair } from "./public-qualification"
+import {
+  publicAuthenticodeObservation,
+  requireDisposablePublicRunner,
+  verifyPublicSignaturePair,
+} from "./public-qualification"
 import { publicReviewDigest } from "./public-downloads"
 import { sha256File } from "./qualification"
 import { validatePublicUpgradePlan } from "./public-upgrade"
@@ -104,22 +108,14 @@ export async function qualifyInstalledUpgrade(
       const signed = signatures?.[key]
       if (
         !signed ||
-        signed.status !== "PASS" ||
+        signed.status !== (builds[key].windowsSigning.provider === "unsigned-preview" ? "UNSIGNED_PREVIEW" : "PASS") ||
         signed.installer.sha256 !== digest ||
         publicReviewDigest(signed.policy) !== publicReviewDigest(builds[key].windowsSigning)
       )
         throw failure("SIGNATURE_UNCONFIRMED")
       verifyPublicSignaturePair({
-        installer: {
-          Status: signed.installer.status === "PASS" ? "Valid" : "Invalid",
-          Publisher: signed.installer.publisher,
-          Thumbprint: signed.installer.certificateThumbprint,
-        },
-        executable: {
-          Status: signed.executable.status === "PASS" ? "Valid" : "Invalid",
-          Publisher: signed.executable.publisher,
-          Thumbprint: signed.executable.certificateThumbprint,
-        },
+        installer: publicAuthenticodeObservation(signed.installer),
+        executable: publicAuthenticodeObservation(signed.executable),
         installerSha256: digest,
         executableSha256: signed.executable.sha256,
         mode: {

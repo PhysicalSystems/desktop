@@ -7,6 +7,7 @@ import { qualifyInstalledUpgrade, requireDebianUpgradeStatus } from "./installed
 import { publicReviewDigest } from "./public-downloads"
 import { simulatedPublicNativeFixture } from "./public-native-fixture"
 import { publicUpgradePlan } from "./public-upgrade"
+import { verifyPublicSignaturePair } from "./public-qualification"
 import { sha256File } from "./qualification"
 
 const roots: string[] = []
@@ -192,6 +193,72 @@ test("Windows baseline and target both require observed signatures before any up
   await expect(qualifyInstalledUpgrade(f.input, "win32")).rejects.toThrow("PUBLIC_UPGRADE_SIGNATURE_UNCONFIRMED")
   expect(f.events).toEqual([])
   expect(f.input.installationState.unconfirmed).toBe(false)
+})
+
+test("unsigned Windows upgrade and recovery require both exact unsigned observations and preserve all state gates", async () => {
+  for (const scenario of [
+    "upgrade",
+    "recovery",
+    "missing",
+    "signed-status",
+    "signer",
+    "changed-bytes",
+    "state",
+  ] as const) {
+    const f = await fixture(scenario === "recovery" ? "recovery" : "upgrade")
+    f.input.format = "nsis"
+    f.input.env.RUNNER_OS = "Windows"
+    for (const key of ["baseline", "target"] as const)
+      f.input.builds[key].windowsSigning = { provider: "unsigned-preview" }
+    f.input.builds.expectedBaselineSha256 = publicReviewDigest(f.input.builds.baseline)
+    f.input.builds.expectedTargetSha256 = publicReviewDigest(f.input.builds.target)
+    f.input.plan = publicUpgradePlan(f.input.builds)
+    f.input.expectedPlanSha256 = publicReviewDigest(f.input.plan)
+    const observed = { Status: "NotSigned", Publisher: null, Thumbprint: null }
+    const pair = (key: "baseline" | "target") =>
+      verifyPublicSignaturePair({
+        installer: observed,
+        executable: observed,
+        installerSha256: key === "baseline" ? f.input.baselineArtifactSha256 : f.input.targetArtifactSha256,
+        executableSha256: "c".repeat(64),
+        mode: {
+          build: f.input.builds[key],
+          publicBuildInputsSha256:
+            key === "baseline" ? f.input.builds.expectedBaselineSha256 : f.input.builds.expectedTargetSha256,
+          releaseInputsSha256: f.input.builds[key].releaseInputsSha256,
+        },
+      })
+    f.input.signatures = { baseline: pair("baseline"), target: pair("target") }
+    if (scenario === "missing") f.input.signatures = undefined
+    if (scenario === "signed-status") f.input.signatures!.target.status = "PASS"
+    if (scenario === "signer")
+      f.input.signatures!.target.installer = {
+        ...f.input.signatures!.target.installer,
+        publisher: "Invented Publisher",
+      } as never
+    if (scenario === "changed-bytes") f.input.signatures!.target.installer.sha256 = "0".repeat(64)
+    if (scenario === "state") {
+      const relaunch = f.input.relaunchTarget
+      f.input.relaunchTarget = async () => ({ ...(await relaunch()), vaultSha256: "0".repeat(64) })
+    }
+    f.input.interruptTarget = async () => ({
+      kind: "windows-partial-payload-copy",
+      installerExited: true,
+      descendantsExited: true,
+      baselinePayloadChanged: true,
+      targetInstallationComplete: false,
+    })
+    if (scenario === "upgrade" || scenario === "recovery") {
+      const result = await qualifyInstalledUpgrade(f.input, "win32")
+      expect(result.preservedEncryptedVault).toBe(true)
+      expect(result.preservedConversation).toBe(true)
+      expect(result.sameInstallerBytes).toBe(true)
+      if (scenario === "recovery") expect(result.interruption).toBe("windows-partial-payload-copy")
+      continue
+    }
+    await expect(qualifyInstalledUpgrade(f.input, "win32")).rejects.toThrow()
+    if (scenario !== "state") expect(f.events).toEqual([])
+  }
 })
 
 test("Debian phase interruption requires the exact public package/version unpacked state", () => {

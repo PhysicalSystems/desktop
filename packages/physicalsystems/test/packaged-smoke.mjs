@@ -303,15 +303,20 @@ try {
           installerSha256: artifactSha256,
           executableSha256: payload.executableSha256,
         })
-        signature = {
-          status: "PASS",
-          trust: "WINDOWS_AUTHENTICODE_VALID",
-          signerThumbprint: publicSigning.installer.certificateThumbprint,
-        }
+        signature =
+          publicSigning.status === "UNSIGNED_PREVIEW"
+            ? { status: "UNSIGNED", trust: "WINDOWS_AUTHENTICODE_UNSIGNED" }
+            : {
+                status: "PASS",
+                trust: "WINDOWS_AUTHENTICODE_VALID",
+                signerThumbprint: publicSigning.installer.certificateThumbprint,
+              }
         check(
-          "public-signing",
+          publicSigning.status === "UNSIGNED_PREVIEW" ? "public-unsigned-preview" : "public-signing",
           "PASS",
-          "The exact installer and extracted executable have valid Authenticode signatures matching the anchored publisher and signing policy; both certificate identities and byte hashes are recorded.",
+          publicSigning.status === "UNSIGNED_PREVIEW"
+            ? "The exact installer and extracted executable are observed NotSigned with no signer certificate under the explicit unsigned PREVIEW policy; both byte hashes are recorded."
+            : "The exact installer and extracted executable have valid Authenticode signatures matching the anchored publisher and signing policy; both certificate identities and byte hashes are recorded.",
         )
       }
     }

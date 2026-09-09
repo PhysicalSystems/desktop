@@ -4,7 +4,7 @@ import { isAbsolute, sep } from "node:path"
 import { desktopIdentity } from "./identity"
 import { releaseInputDigest } from "./inputs"
 import { publicReviewDigest } from "./public-downloads"
-import { validatePublicBuildInputs, verifyCompiledPublicIdentity } from "./public-build"
+import { validatePublicBuildInputs, validatePublicSigningPolicy, verifyCompiledPublicIdentity } from "./public-build"
 import type { PublicBuildInputs } from "./public-build"
 import type { qualificationReport } from "./qualification"
 
@@ -158,6 +158,12 @@ export async function requireDisposablePublicRunner(env: NodeJS.ProcessEnv, root
 }
 
 export function verifyPublicAuthenticode(input: unknown, policy: PublicBuildInputs["windowsSigning"]) {
+  validatePublicSigningPolicy(policy)
+  if (policy.provider === "unsigned-preview") {
+    if (!record(input) || input.Status !== "NotSigned" || input.Publisher !== null || input.Thumbprint !== null)
+      throw new Error("PACKAGED_PUBLIC_SIGNATURE_INVALID")
+    return { status: "UNSIGNED" as const }
+  }
   if (
     !record(input) ||
     input.Status !== "Valid" ||
@@ -179,10 +185,26 @@ export function verifyPublicSignaturePair(input: {
   installerSha256: string
   executableSha256: string
 }) {
+  // The unsigned exception is bound to the exact preview inputs. It cannot
+  // establish signed trust, or authorize a stable release from caller labels.
+  if (input.mode.build.windowsSigning.provider === "unsigned-preview") {
+    validatePublicBuildInputs(input.mode.build, input.mode.publicBuildInputsSha256)
+    if (input.mode.build.releaseInputsSha256 !== input.mode.releaseInputsSha256)
+      throw new Error("PACKAGED_PUBLIC_SIGNATURE_INVALID")
+  }
   const installer = verifyPublicAuthenticode(input.installer, input.mode.build.windowsSigning)
   const executable = verifyPublicAuthenticode(input.executable, input.mode.build.windowsSigning)
   if (![input.installerSha256, input.executableSha256].every((digest) => /^[a-f0-9]{64}$/.test(digest)))
     throw new Error("PACKAGED_PUBLIC_SIGNATURE_INVALID")
+  if (installer.status === "UNSIGNED" && executable.status === "UNSIGNED") {
+    return {
+      status: "UNSIGNED_PREVIEW" as const,
+      policy: input.mode.build.windowsSigning,
+      installer: { ...installer, sha256: input.installerSha256 },
+      executable: { ...executable, sha256: input.executableSha256 },
+    }
+  }
+  if (installer.status !== "PASS" || executable.status !== "PASS") throw new Error("PACKAGED_PUBLIC_SIGNATURE_INVALID")
   // Both certificates are recorded. Azure certificates can rotate; the pinned
   // service configuration comes from the independently anchored build inputs.
   return {
@@ -191,6 +213,21 @@ export function verifyPublicSignaturePair(input: {
     installer: { ...installer, sha256: input.installerSha256 },
     executable: { ...executable, sha256: input.executableSha256 },
   }
+}
+
+/** Reconstruct only the fixed native observation fields from an already bound
+ * receipt. Callers still verify the policy and the receipt's trusted digest. */
+export function publicAuthenticodeObservation(input: unknown) {
+  if (!record(input) || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256))
+    throw new Error("PACKAGED_PUBLIC_SIGNATURE_INVALID")
+  if (input.status === "UNSIGNED" && Object.keys(input).sort().join(",") === "sha256,status")
+    return { Status: "NotSigned", Publisher: null, Thumbprint: null }
+  if (
+    input.status !== "PASS" ||
+    Object.keys(input).sort().join(",") !== "certificateThumbprint,publisher,sha256,status"
+  )
+    throw new Error("PACKAGED_PUBLIC_SIGNATURE_INVALID")
+  return { Status: "Valid", Publisher: input.publisher, Thumbprint: input.certificateThumbprint }
 }
 
 export const unimplementedPublicChecks = [
@@ -214,10 +251,11 @@ export function unqualifiedPublicSmokeReport(input: {
   if (input.base.checks.some((check) => unimplementedPublicChecks.some((id) => id === check.id)))
     throw new Error("PUBLIC_QUALIFICATION_UNIMPLEMENTED_CHECK_OVERRIDE")
   const name = input.base.artifact.name.toLowerCase()
+  const unsigned = input.mode.build.windowsSigning.provider === "unsigned-preview"
   const required = [
     "public-compiled-identity",
     ...(name.endsWith(".exe")
-      ? ["public-signing", "uninstall"]
+      ? [unsigned ? "public-unsigned-preview" : "public-signing", "uninstall"]
       : [
           "linux-sandbox-setup",
           "linux-renderer-sandbox",
@@ -226,7 +264,7 @@ export function unqualifiedPublicSmokeReport(input: {
   ]
   const completed =
     !!input.compiledIdentity &&
-    (!name.endsWith(".exe") || !!input.signing) &&
+    (!name.endsWith(".exe") || input.signing?.status === (unsigned ? "UNSIGNED_PREVIEW" : "PASS")) &&
     required.every((id) => input.base.checks.some((check) => check.id === id && check.status === "PASS"))
   return {
     ...input.base,

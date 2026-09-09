@@ -129,7 +129,7 @@ export async function runOwnedProviderBrowserReview(
               if (uploaded || bytes.byteLength < 128 || bytes.byteLength > 65536) throw failure()
               const file = join(challengeRoot, "provider-review.sealed.json")
               await writeFile(file, bytes, { mode: 0o600, flag: "wx" })
-              const name = `provider-review-${input.context.runId}-${input.context.runAttempt}-${input.context.platform}-${input.context.artifactSha256.slice(0, 12)}-${nonceSha256.slice(0, 12)}`
+              const name = `provider-review-${input.context.runId}-${input.context.runAttempt}-${input.context.platform}-${input.context.artifactSha256}-${nonceSha256}`
               const upload =
                 io.uploadArtifact ??
                 (async (...args: Parameters<ArtifactUploader>) => {

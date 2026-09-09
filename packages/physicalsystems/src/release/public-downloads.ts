@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { candidateNames } from "./artifacts"
 
 const repository = "PhysicalSystems/physicalsystems"
+export const unsignedWindowsPreviewWarning = "Unsigned Windows preview: Windows may warn or block installation."
 const requiredChecks = [
   "artifact-integrity",
   "bundled-runtime",
@@ -40,14 +41,21 @@ export type PublicDistributionReview = {
   inputsSha256: string
   identity: { appId: string; productName: "Physical Systems" }
   approval: { decision: "approved"; protectedRunUrl: string; qualificationBundleSha256: string }
-  windowsSigning: {
-    status: "verified"
-    publisher: string
-    certificateThumbprint: string
-    installerSha256: string
-    executableSha256: string
-    verificationReportSha256: string
-  }
+  windowsSigning:
+    | {
+        status: "verified"
+        publisher: string
+        certificateThumbprint: string
+        installerSha256: string
+        executableSha256: string
+        verificationReportSha256: string
+      }
+    | {
+        status: "unsigned-preview"
+        installerSha256: string
+        executableSha256: string
+        verificationReportSha256: string
+      }
   assets: {
     name: string
     bytes: number
@@ -189,24 +197,30 @@ export function validateDistributionFacts(input: unknown): PublicDistributionFac
     identity.productName !== "Physical Systems"
   )
     throw new Error("Development and candidate build identities cannot be publicly selected")
+  const unsigned =
+    review.windowsSigning !== null &&
+    typeof review.windowsSigning === "object" &&
+    "status" in review.windowsSigning &&
+    review.windowsSigning.status === "unsigned-preview"
   const signing = object(review.windowsSigning, [
     "status",
-    "publisher",
-    "certificateThumbprint",
+    ...(unsigned ? [] : ["publisher", "certificateThumbprint"]),
     "installerSha256",
     "executableSha256",
     "verificationReportSha256",
   ])
   if (
-    signing.status !== "verified" ||
-    !safeText(signing.publisher, 200) ||
-    typeof signing.certificateThumbprint !== "string" ||
-    !/^(?:[A-F0-9]{40}|[A-F0-9]{64})$/.test(signing.certificateThumbprint) ||
+    (unsigned
+      ? review.channel !== "preview" || !review.version.includes("-beta.")
+      : signing.status !== "verified" ||
+        !safeText(signing.publisher, 200) ||
+        typeof signing.certificateThumbprint !== "string" ||
+        !/^(?:[A-F0-9]{40}|[A-F0-9]{64})$/.test(signing.certificateThumbprint)) ||
     !digest(signing.installerSha256) ||
     !digest(signing.executableSha256) ||
     !digest(signing.verificationReportSha256)
   )
-    throw new Error("Verified Windows installer and executable signing evidence is required")
+    throw new Error("Verified Windows signing or explicit unsigned preview evidence is required; stable must be signed")
   const expected = [...candidateNames(review.version, "windows-x64"), ...candidateNames(review.version, "linux-x64")]
   if (!Array.isArray(review.assets) || review.assets.length !== expected.length)
     throw new Error("Every reviewed public installer format is required")
@@ -303,7 +317,7 @@ export async function verifyPublicDownloads(input: { review: unknown; expectedRe
   // Bounded, sequential streams avoid retaining installer bytes in memory.
   for (const asset of assets) await verifyDownload(request, asset)
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     repository,
     release: {
       tag: review.tag,
@@ -313,6 +327,10 @@ export async function verifyPublicDownloads(input: { review: unknown; expectedRe
       publishedAt: record.published_at,
       sourceRevision: review.sourceRevision,
       inputsSha256: review.inputsSha256,
+      windowsSigning:
+        review.windowsSigning.status === "unsigned-preview"
+          ? { status: "unsigned-preview" as const, warning: unsignedWindowsPreviewWarning }
+          : { status: "verified" as const },
       assets: assets.map(({ url: _url, ...asset }) => asset),
     },
   }

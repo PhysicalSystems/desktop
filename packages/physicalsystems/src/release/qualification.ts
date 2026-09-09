@@ -14,7 +14,7 @@ export type QualificationCheck = {
   detail: string
   failureCode?: QualificationFailureCode
 }
-export type SignatureResult = { status: QualificationStatus; trust: string; signerThumbprint?: string }
+export type SignatureResult = { status: QualificationStatus | "UNSIGNED"; trust: string; signerThumbprint?: string }
 // Only authored diagnostic literals may leave a disposable runner. Native error
 // messages and stacks can contain private paths, provider output or credentials.
 export const qualificationFailureCodes = [

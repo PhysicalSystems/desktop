@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash } from "node:crypto"
 import { candidateNames } from "./artifacts"
+import { unsignedWindowsPreviewWarning } from "./public-downloads"
 
 const repository = "PhysicalSystems/platform"
 const path = "public/desktop-selection.json"
@@ -14,10 +15,10 @@ function version(value: unknown) {
   return [BigInt(match[1]), BigInt(match[2]), BigInt(match[3]), match[4] ? BigInt(match[4]) : null]
 }
 
-function record(value: unknown, keys: string[]) {
+function record(value: unknown, keys: string[], optional: string[] = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid website selection")
   const result = value as Record<string, unknown>
-  if (Object.keys(result).length !== keys.length || Object.keys(result).some((key) => !keys.includes(key)))
+  if (keys.some((key) => !(key in result)) || Object.keys(result).some((key) => ![...keys, ...optional].includes(key)))
     throw new Error("Unexpected website selection fields")
   return result
 }
@@ -36,7 +37,7 @@ export function selectionTransition(previous: unknown, next: unknown) {
   const read = (value: unknown) => {
     const data = record(value, ["schemaVersion", "repository", "release"])
     if (
-      data.schemaVersion !== 1 ||
+      (data.schemaVersion !== 1 && data.schemaVersion !== 2) ||
       data.repository !== "PhysicalSystems/physicalsystems" ||
       !Object.hasOwn(data, "release")
     )
@@ -51,6 +52,7 @@ export function selectionTransition(previous: unknown, next: unknown) {
       "sourceRevision",
       "inputsSha256",
       "assets",
+      ...(data.schemaVersion === 2 ? ["windowsSigning"] : []),
     ])
     const parts = version(release.version)
     if (
@@ -70,6 +72,15 @@ export function selectionTransition(previous: unknown, next: unknown) {
       !Number.isFinite(Date.parse(release.publishedAt))
     )
       throw new Error("Incomplete website release identity")
+    if ("windowsSigning" in release) {
+      const signing = record(release.windowsSigning, ["status"], ["warning"])
+      if (
+        signing.status === "unsigned-preview"
+          ? release.channel !== "preview" || signing.warning !== unsignedWindowsPreviewWarning
+          : signing.status !== "verified" || "warning" in signing
+      )
+        throw new Error("Website Windows signing status must match its preview warning and release channel")
+    }
     const names = [
       ...candidateNames(String(release.version), "windows-x64"),
       ...candidateNames(String(release.version), "linux-x64"),
@@ -91,11 +102,12 @@ export function selectionTransition(previous: unknown, next: unknown) {
       )
     )
       throw new Error("Incomplete website installer inventory")
-    return { release, parts }
+    return { release, parts, schemaVersion: data.schemaVersion }
   }
   const old = read(previous)
   const current = read(next)
   if (!current) throw new Error("An empty selection cannot be promoted")
+  if (current.schemaVersion !== 2) throw new Error("New website selections require explicit Windows signing status")
   if (!old) return "advance"
   if (JSON.stringify(previous) === JSON.stringify(next)) return "unchanged"
   if (old.release.channel === "stable" && current.release.channel !== "stable")
