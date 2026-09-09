@@ -8,6 +8,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
   observePartialWindowsPayload,
+  readNativeUpgradeObservation,
   runNativeUpgradeInstaller,
   stopOwnedWindowsInstaller,
 } from "./native-upgrade-process"
@@ -37,6 +38,24 @@ test("partial-copy observation distinguishes absent, incomplete, preallocated an
   expect(await observePartialWindowsPayload(actual, target, bytes.length)).toBe("UNCONFIRMED")
   await writeFile(actual, Buffer.alloc(bytes.length, 33))
   expect(await observePartialWindowsPayload(actual, target, bytes.length)).toBe("UNCONFIRMED")
+})
+
+test("partial-copy diagnostics retain only an authored operation and allowlisted native code", async () => {
+  const root = await mkdtemp(join(tmpdir(), "upgrade-observation-fixture-"))
+  roots.push(root)
+  const actual = join(root, "actual")
+  await writeFile(actual, Buffer.alloc(256 * 1024, 19))
+  const error = await observePartialWindowsPayload(actual, join(root, "PRIVATE-MISSING-REFERENCE"), 256 * 1024).catch(
+    (error) => error,
+  )
+  const observation = readNativeUpgradeObservation(error)
+  expect(observation).toEqual({ phase: "reference-open", nativeCode: "ENOENT" })
+  expect(Object.isFrozen(observation)).toBe(true)
+  expect(JSON.stringify(observation)).not.toContain("PRIVATE")
+  expect(JSON.stringify(observation)).not.toContain(root)
+  expect(
+    readNativeUpgradeObservation(Object.assign(new Error("PRIVATE"), { nativeUpgradeObservation: observation })),
+  ).toBeUndefined()
 })
 
 test("the owned installer runner uses exact bounded native command arguments and waits for close", async () => {
@@ -131,7 +150,7 @@ test("installer spawn failures and timeout requests never become confirmed shutd
     targetPayloadSha256: "b".repeat(64),
     descendants: async () => [],
   }
-  for (const mode of ["error", "timeout"] as const) {
+  for (const mode of ["error", "unknown-code", "inspection", "timeout"] as const) {
     let kills = 0
     const child = new EventEmitter() as ChildProcess
     Object.assign(child, {
@@ -143,16 +162,46 @@ test("installer spawn failures and timeout requests never become confirmed shutd
       },
       unref: () => child,
     })
-    await expect(
-      runNativeUpgradeInstaller(input, {
+    const result = await runNativeUpgradeInstaller(
+      {
+        ...input,
+        descendants: async () => {
+          if (mode === "inspection")
+            throw Object.assign(new Error("PRIVATE INSPECTION TRAP"), { code: "EPERM", path: "PRIVATE PATH" })
+          return []
+        },
+      },
+      {
         platform: "linux",
-        timeoutMs: 5,
+        timeoutMs: mode === "timeout" ? 5 : 1000,
         spawn: () => {
-          if (mode === "error") queueMicrotask(() => child.emit("error", new Error("PRIVATE SIGNED URL TRAP")))
+          if (mode === "error" || mode === "unknown-code")
+            queueMicrotask(() =>
+              child.emit(
+                "error",
+                Object.assign(new Error("PRIVATE SIGNED URL TRAP"), {
+                  code: mode === "error" ? "EACCES" : "PRIVATE CODE",
+                  path: "PRIVATE PATH",
+                }),
+              ),
+            )
           return child
         },
-      }),
-    ).rejects.toThrow(mode === "error" ? "PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED" : "PUBLIC_UPGRADE_INSTALLER_TIMEOUT")
+      },
+    ).catch((error) => error)
+    expect(result).toBeInstanceOf(Error)
+    expect(result.message).toBe(
+      mode === "timeout" ? "PUBLIC_UPGRADE_INSTALLER_TIMEOUT" : "PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED",
+    )
+    expect(readNativeUpgradeObservation(result)).toEqual(
+      mode === "timeout"
+        ? undefined
+        : {
+            phase: mode === "inspection" ? "installer-inspection" : "installer-spawn",
+            nativeCode: mode === "inspection" ? "EPERM" : mode === "error" ? "EACCES" : "OTHER",
+          },
+    )
+    expect(JSON.stringify(readNativeUpgradeObservation(result) ?? {})).not.toContain("PRIVATE")
     expect(kills).toBe(1)
   }
 })
@@ -184,6 +233,17 @@ test("Windows interruption selects only the owned live PID tree and waits for na
   expect(done).toBe(false)
   helper.emit("close", 0)
   await stop
+  const invalidEnvironment = await stopOwnedWindowsInstaller(child, {
+    env: { SystemRoot: "PRIVATE INVALID ROOT" },
+    spawn: () => {
+      throw new Error("must not execute an unconfirmed taskkill path")
+    },
+  }).catch((error) => error)
+  expect(invalidEnvironment.message).toBe("PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED")
+  expect(readNativeUpgradeObservation(invalidEnvironment)).toEqual({
+    phase: "taskkill-environment",
+    nativeCode: "OTHER",
+  })
   Object.assign(child, { exitCode: 0 })
   await expect(
     stopOwnedWindowsInstaller(child, {
@@ -195,139 +255,152 @@ test("Windows interruption selects only the owned live PID tree and waits for na
   ).rejects.toThrow("INTERRUPTION_UNCONFIRMED")
 })
 
-test.skipIf(process.platform !== "win32")(
-  "slow native descendant inspection cannot block the Windows partial-copy watcher",
-  async () => {
-    // Run by the Windows source regression step with inert files/fake processes.
-    const temporary = await mkdtemp(join(tmpdir(), "upgrade-watch-fixture-"))
-    roots.push(temporary)
-    const root = join(temporary, "owned")
-    const installation = join(root, "payload")
-    await mkdir(join(installation, "resources"), { recursive: true })
-    const executable = join(installation, "Physical Systems.exe")
-    const actual = join(installation, "resources", "app.asar")
-    const artifact = join(root, "physical-systems-desktop-0.1.0-beta.2-windows-x64.exe")
-    const target = join(root, "target-reference.asar")
-    const targetBytes = Buffer.alloc(256 * 1024, 22)
-    await writeFile(executable, "INERT EXECUTABLE")
-    await writeFile(actual, "INERT BASELINE RESOURCE")
-    await writeFile(artifact, "INERT INSTALLER")
-    await writeFile(target, targetBytes)
-    const parent = new EventEmitter() as ChildProcess
-    let parentClosed = false
-    const closeParent = () => {
-      if (parentClosed) return
-      parentClosed = true
-      parent.emit("close", 1)
-    }
-    Object.assign(parent, {
-      pid: 123456789,
-      exitCode: null,
-      signalCode: null,
-      kill: () => {
-        queueMicrotask(closeParent)
-        return true
-      },
-      unref: () => parent,
-    })
-    let queries = 0
-    let queriesFinished = 0
-    let interruptedBeforeQuery = false
-    const slowQuery = Promise.withResolvers<void>()
-    let queryDeadline: ReturnType<typeof setTimeout> | undefined
-    const observations: string[] = []
-    let partialWritten = false
-    let helperClosed: Promise<void> | undefined
-    const running = runNativeUpgradeInstaller(
-      {
-        env: {
-          CI: "true",
-          GITHUB_ACTIONS: "true",
-          RUNNER_ENVIRONMENT: "github-hosted",
-          RUNNER_OS: "Windows",
-          GITHUB_RUN_ID: "12345",
-          RUNNER_TEMP: temporary,
-          SystemRoot: "C:\\Windows",
+for (const scenario of ["partial-copy", "observer-error"] as const)
+  test.skipIf(process.platform !== "win32")(
+    `slow native descendant inspection cannot block the Windows partial-copy watcher: ${scenario}`,
+    async () => {
+      // Run by the Windows source regression step with inert files/fake processes.
+      const temporary = await mkdtemp(join(tmpdir(), "upgrade-watch-fixture-"))
+      roots.push(temporary)
+      const root = join(temporary, "owned")
+      const installation = join(root, "payload")
+      await mkdir(join(installation, "resources"), { recursive: true })
+      const executable = join(installation, "Physical Systems.exe")
+      const actual = join(installation, "resources", "app.asar")
+      const artifact = join(root, "physical-systems-desktop-0.1.0-beta.2-windows-x64.exe")
+      const target = join(root, "target-reference.asar")
+      const targetBytes = Buffer.alloc(256 * 1024, 22)
+      await writeFile(executable, "INERT EXECUTABLE")
+      await writeFile(actual, "INERT BASELINE RESOURCE")
+      await writeFile(artifact, "INERT INSTALLER")
+      await writeFile(target, targetBytes)
+      const parent = new EventEmitter() as ChildProcess
+      let parentClosed = false
+      const closeParent = () => {
+        if (parentClosed) return
+        parentClosed = true
+        parent.emit("close", 1)
+      }
+      Object.assign(parent, {
+        pid: 123456789,
+        exitCode: null,
+        signalCode: null,
+        kill: () => {
+          queueMicrotask(closeParent)
+          return true
         },
-        root,
-        format: "nsis",
-        action: "interrupt",
-        artifact,
-        artifactSha256: await sha256File(artifact),
-        version: "0.1.0-beta.2",
-        installation,
-        baselinePayloadSha256: (await payloadFingerprint(executable)).sha256,
-        targetPayloadSha256: "e".repeat(64),
-        targetAsarReference: { file: target, bytes: targetBytes.length, sha256: await sha256File(target) },
-        descendants: async () => {
-          queries++
-          if (queries === 1) {
-            // A broken watcher must fail inside the fixture's normal test
-            // budget and release its fake process, rather than hang forever.
-            queryDeadline = setTimeout(() => slowQuery.reject(new Error("INERT_WATCHER_DID_NOT_INTERRUPT")), 2000)
-            try {
-              await slowQuery.promise
-            } finally {
-              clearTimeout(queryDeadline)
-            }
-          }
-          queriesFinished++
-          return []
-        },
-      },
-      {
-        timeoutMs: 3000,
-        observePayload: async (...args) => {
-          // The first real ABSENT result returns to the watcher before the
-          // next call writes partial bytes. No timer or background I/O can
-          // hide the removal transition from a slow hosted Windows runner.
-          if (observations.at(-1) === "ABSENT" && !partialWritten) {
-            await writeFile(actual, targetBytes.subarray(0, 64 * 1024))
-            partialWritten = true
-          }
-          const observation = await observePartialWindowsPayload(...args)
-          observations.push(observation)
-          return observation
-        },
-        spawn: (file, args) => {
-          if (file === artifact) {
-            // Baseline verification has finished; remove its resource before
-            // the watcher starts, while the fake installer remains alive.
-            unlinkSync(actual)
-            return parent
-          }
-          expect(file).toBe("C:\\Windows\\System32\\taskkill.exe")
-          expect(args).toEqual(["/PID", "123456789", "/T", "/F"])
-          interruptedBeforeQuery = queries > queriesFinished
-          slowQuery.resolve()
-          const helper = new EventEmitter() as ChildProcess
-          Object.assign(helper, { kill: () => false, unref: () => helper })
-          helperClosed = new Promise((resolve) => helper.once("close", () => resolve()))
-          queueMicrotask(() => {
-            closeParent()
-            helper.emit("close", 0)
-          })
-          return helper
-        },
-      },
-    )
-    try {
-      const result = await running
-      expect(observations).toEqual(["ABSENT", "PARTIAL"])
-      expect(interruptedBeforeQuery).toBe(true)
-      expect(queriesFinished).toBe(2)
-      expect(result).toMatchObject({
-        kind: "windows-partial-payload-copy",
-        installerExited: true,
-        descendantsExited: true,
-        targetInstallationComplete: false,
+        unref: () => parent,
       })
-    } finally {
-      clearTimeout(queryDeadline)
-      slowQuery.resolve()
-      closeParent()
-      await running.catch(() => {})
-      await helperClosed
-    }
-  },
-)
+      let queries = 0
+      let queriesFinished = 0
+      let interruptedBeforeQuery = false
+      const slowQuery = Promise.withResolvers<void>()
+      let queryDeadline: ReturnType<typeof setTimeout> | undefined
+      const observations: string[] = []
+      let partialWritten = false
+      let helperClosed: Promise<void> | undefined
+      const running = runNativeUpgradeInstaller(
+        {
+          env: {
+            CI: "true",
+            GITHUB_ACTIONS: "true",
+            RUNNER_ENVIRONMENT: "github-hosted",
+            RUNNER_OS: "Windows",
+            GITHUB_RUN_ID: "12345",
+            RUNNER_TEMP: temporary,
+            SystemRoot: "C:\\Windows",
+          },
+          root,
+          format: "nsis",
+          action: "interrupt",
+          artifact,
+          artifactSha256: await sha256File(artifact),
+          version: "0.1.0-beta.2",
+          installation,
+          baselinePayloadSha256: (await payloadFingerprint(executable)).sha256,
+          targetPayloadSha256: "e".repeat(64),
+          targetAsarReference: { file: target, bytes: targetBytes.length, sha256: await sha256File(target) },
+          descendants: async () => {
+            queries++
+            if (queries === 1) {
+              // A broken watcher must fail inside the fixture's normal test
+              // budget and release its fake process, rather than hang forever.
+              queryDeadline = setTimeout(() => slowQuery.reject(new Error("INERT_WATCHER_DID_NOT_INTERRUPT")), 2000)
+              try {
+                await slowQuery.promise
+              } finally {
+                clearTimeout(queryDeadline)
+              }
+            }
+            queriesFinished++
+            return []
+          },
+        },
+        {
+          timeoutMs: 3000,
+          observePayload: async (...args) => {
+            if (scenario === "observer-error")
+              throw Object.assign(new Error("PRIVATE OBSERVER PATH"), { code: "EBUSY", path: "PRIVATE PATH" })
+            // The first real ABSENT result returns to the watcher before the
+            // next call writes partial bytes. No timer or background I/O can
+            // hide the removal transition from a slow hosted Windows runner.
+            if (observations.at(-1) === "ABSENT" && !partialWritten) {
+              await writeFile(actual, targetBytes.subarray(0, 64 * 1024))
+              partialWritten = true
+            }
+            const observation = await observePartialWindowsPayload(...args)
+            observations.push(observation)
+            return observation
+          },
+          spawn: (file, args) => {
+            if (file === artifact) {
+              // Baseline verification has finished; remove its resource before
+              // the watcher starts, while the fake installer remains alive.
+              unlinkSync(actual)
+              return parent
+            }
+            expect(file).toBe("C:\\Windows\\System32\\taskkill.exe")
+            expect(args).toEqual(["/PID", "123456789", "/T", "/F"])
+            interruptedBeforeQuery = queries > queriesFinished
+            slowQuery.resolve()
+            const helper = new EventEmitter() as ChildProcess
+            Object.assign(helper, { kill: () => false, unref: () => helper })
+            helperClosed = new Promise((resolve) => helper.once("close", () => resolve()))
+            queueMicrotask(() => {
+              closeParent()
+              helper.emit("close", 0)
+            })
+            return helper
+          },
+        },
+      )
+      try {
+        if (scenario === "observer-error") {
+          const error = await running.catch((error) => error)
+          expect(error.message).toBe("PUBLIC_UPGRADE_INSTALLER_UNCONFIRMED")
+          expect(readNativeUpgradeObservation(error)).toEqual({ phase: "payload-observation", nativeCode: "EBUSY" })
+          expect(JSON.stringify(readNativeUpgradeObservation(error))).not.toContain("PRIVATE")
+          expect(observations).toEqual([])
+          expect(interruptedBeforeQuery).toBe(false)
+          expect(parentClosed).toBe(true)
+          return
+        }
+        const result = await running
+        expect(observations).toEqual(["ABSENT", "PARTIAL"])
+        expect(interruptedBeforeQuery).toBe(true)
+        expect(queriesFinished).toBe(2)
+        expect(result).toMatchObject({
+          kind: "windows-partial-payload-copy",
+          installerExited: true,
+          descendantsExited: true,
+          targetInstallationComplete: false,
+        })
+      } finally {
+        clearTimeout(queryDeadline)
+        slowQuery.resolve()
+        closeParent()
+        await running.catch(() => {})
+        await helperClosed
+      }
+    },
+  )

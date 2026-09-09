@@ -14,28 +14,79 @@ import { payloadFingerprint, sha256File } from "./qualification"
 
 const failure = (name: string) => new Error(`PUBLIC_UPGRADE_${name}`)
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+type NativeUpgradePhase =
+  | "payload-stat"
+  | "payload-open"
+  | "reference-open"
+  | "payload-read"
+  | "reference-read"
+  | "payload-close"
+  | "reference-close"
+  | "payload-observation"
+  | "installer-spawn"
+  | "installer-pid"
+  | "installer-inspection"
+  | "taskkill-environment"
+  | "taskkill-spawn"
+const nativeCodes = ["ENOENT", "EACCES", "EPERM", "EBUSY", "EIO", "ENOTDIR", "EBADF", "ESRCH"] as const
+const observations = new WeakMap<Error, Readonly<{ phase: NativeUpgradePhase; nativeCode: string }>>()
+
+/** Only authored phases and allowlisted native codes leave the runner. Keeping
+ * observations private to this module prevents arbitrary error fields becoming
+ * public diagnostics; neither messages, paths nor stacks are copied. */
+export function readNativeUpgradeObservation(error: unknown) {
+  return error instanceof Error ? observations.get(error) : undefined
+}
+
+function observedFailure(
+  phase: NativeUpgradePhase,
+  error: unknown,
+  result = error instanceof Error ? error : failure("INSTALLER_UNCONFIRMED"),
+) {
+  const existing = readNativeUpgradeObservation(error)
+  if (existing) {
+    observations.set(result, existing)
+    return result
+  }
+  const code = (() => {
+    try {
+      return (error as NodeJS.ErrnoException)?.code
+    } catch {
+      return undefined
+    }
+  })()
+  observations.set(
+    result,
+    Object.freeze({ phase, nativeCode: nativeCodes.some((value) => value === code) ? code! : "OTHER" }),
+  )
+  return result
+}
 
 /** Observe actual in-place bytes, not a download/preflight failure. A same-size
  * preallocated CopyFile destination counts only after its leading target bytes
  * arrived while its trailing target bytes are still incomplete. */
 export async function observePartialWindowsPayload(file: string, targetReference: string, targetBytes: number) {
   const stat = await lstat(file).catch((error: NodeJS.ErrnoException) =>
-    error.code === "ENOENT" ? undefined : Promise.reject(error),
+    error.code === "ENOENT" ? undefined : Promise.reject(observedFailure("payload-stat", error)),
   )
   if (!stat) return "ABSENT" as const
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > targetBytes)
     return "UNCONFIRMED" as const
   const count = Math.min(64 * 1024, stat.size, targetBytes)
   const actual = await open(file, "r").catch((error: NodeJS.ErrnoException) =>
-    error.code === "ENOENT" ? undefined : Promise.reject(error),
+    error.code === "ENOENT" ? undefined : Promise.reject(observedFailure("payload-open", error)),
   )
   if (!actual) return "ABSENT" as const
   let target: Awaited<ReturnType<typeof open>> | undefined
   try {
-    target = await open(targetReference, "r")
+    target = await open(targetReference, "r").catch((error) => {
+      throw observedFailure("reference-open", error)
+    })
     const sample = async (handle: typeof actual, position: number, bytes: number) => {
       const buffer = Buffer.alloc(bytes)
-      const read = await handle.read(buffer, 0, bytes, position)
+      const read = await handle.read(buffer, 0, bytes, position).catch((error) => {
+        throw observedFailure(handle === actual ? "payload-read" : "reference-read", error)
+      })
       return read.bytesRead === bytes ? createHash("sha256").update(buffer).digest("hex") : undefined
     }
     const [prefix, expectedPrefix] = await Promise.all([sample(actual, 0, count), sample(target, 0, count)])
@@ -47,8 +98,12 @@ export async function observePartialWindowsPayload(file: string, targetReference
     ])
     return suffix && expectedSuffix && suffix !== expectedSuffix ? ("PARTIAL" as const) : ("UNCONFIRMED" as const)
   } finally {
-    await actual.close()
-    await target?.close()
+    await actual.close().catch((error) => {
+      throw observedFailure("payload-close", error)
+    })
+    await target?.close().catch((error) => {
+      throw observedFailure("reference-close", error)
+    })
   }
 }
 
@@ -73,13 +128,19 @@ export async function stopOwnedWindowsInstaller(
     throw failure("INTERRUPTION_UNCONFIRMED")
   const system = input.env.SystemRoot || input.env.SYSTEMROOT
   if (!system || !/^[A-Za-z]:\\/.test(system) || win32.normalize(system) !== system || /["\r\n\0]/.test(system))
-    throw failure("INSTALLER_UNCONFIRMED")
+    throw observedFailure("taskkill-environment", failure("INSTALLER_UNCONFIRMED"))
   const command = win32.join(system, "System32", "taskkill.exe")
-  const killer = (input.spawn ?? spawn)(command, ["/PID", String(child.pid), "/T", "/F"], {
-    env: input.env,
-    shell: false,
-    stdio: "ignore",
-  })
+  const killer = (() => {
+    try {
+      return (input.spawn ?? spawn)(command, ["/PID", String(child.pid), "/T", "/F"], {
+        env: input.env,
+        shell: false,
+        stdio: "ignore",
+      })
+    } catch (error) {
+      throw observedFailure("taskkill-spawn", error)
+    }
+  })()
   await new Promise<void>((resolve, reject) => {
     let finished = false
     const finish = (success: boolean) => {
@@ -169,19 +230,27 @@ export async function runNativeUpgradeInstaller(
   const args = windows
     ? nsisInstallArguments(input.installation).args
     : ["-n", "/usr/bin/dpkg", interrupted ? "--unpack" : "--install", input.artifact]
-  const child = (options.spawn ?? spawn)(command, args, {
-    cwd: input.root,
-    env: input.env,
-    shell: false,
-    stdio: "ignore",
-    ...(windows ? nsisSpawnOptions(command) : {}),
-  })
+  const child = (() => {
+    try {
+      return (options.spawn ?? spawn)(command, args, {
+        cwd: input.root,
+        env: input.env,
+        shell: false,
+        stdio: "ignore",
+        ...(windows ? nsisSpawnOptions(command) : {}),
+      })
+    } catch (error) {
+      throw observedFailure("installer-spawn", error)
+    }
+  })()
   let exited = false
   let exitCode: number | null = null
   let processError = false
+  let processFailure: Error | undefined
   const closed = new Promise<void>((resolve) => {
-    child.once("error", () => {
+    child.once("error", (error) => {
       processError = true
+      processFailure = observedFailure("installer-spawn", error, failure("INSTALLER_UNCONFIRMED"))
       resolve()
     })
     child.once("close", (code) => {
@@ -195,6 +264,7 @@ export async function runNativeUpgradeInstaller(
   let lastInspection = 0
   let inspection: Promise<void> | undefined
   let inspectionError = false
+  let inspectionFailure: Error | undefined
   const inspect = () => {
     if (inspection || !child.pid) return
     lastInspection = Date.now()
@@ -206,8 +276,9 @@ export async function runNativeUpgradeInstaller(
           owned.add(pid)
         }
       })
-      .catch(() => {
+      .catch((error) => {
         inspectionError = true
+        inspectionFailure = observedFailure("installer-inspection", error, failure("INSTALLER_UNCONFIRMED"))
       })
       .finally(() => {
         inspection = undefined
@@ -217,9 +288,10 @@ export async function runNativeUpgradeInstaller(
   let stoppedPartial = false
   try {
     while (!exited && !processError) {
-      if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0) throw failure("INSTALLER_UNCONFIRMED")
+      if (!child.pid || !Number.isSafeInteger(child.pid) || child.pid <= 0)
+        throw observedFailure("installer-pid", failure("INSTALLER_UNCONFIRMED"))
       if (Date.now() >= deadline) throw failure("INSTALLER_TIMEOUT")
-      if (inspectionError) throw failure("INSTALLER_UNCONFIRMED")
+      if (inspectionError) throw inspectionFailure!
       // CIM/PowerShell can take seconds. Never await that query on the actual
       // partial-copy watcher; allow only one owned bounded snapshot in flight.
       if (Date.now() - lastInspection >= 150) inspect()
@@ -229,7 +301,9 @@ export async function runNativeUpgradeInstaller(
           join(input.installation, "resources", "app.asar"),
           reference.file,
           reference.bytes,
-        )
+        ).catch((error) => {
+          throw observedFailure("payload-observation", error)
+        })
         if (observation === "ABSENT") removed = true
         if (removed && observation === "PARTIAL") {
           if (exited) throw failure("INTERRUPTION_UNCONFIRMED")
@@ -239,15 +313,17 @@ export async function runNativeUpgradeInstaller(
       }
       await Promise.race([closed, pause(windows && interrupted ? 5 : 50)])
     }
-    if (processError || !exited) throw failure("INSTALLER_UNCONFIRMED")
+    if (processError || !exited) throw processFailure ?? failure("INSTALLER_UNCONFIRMED")
     if (inspection) await Promise.race([inspection, pause(10000)])
-    if (inspection || inspectionError) throw failure("INSTALLER_DESCENDANT_RETAINED")
+    if (inspection || inspectionError)
+      throw observedFailure("installer-inspection", inspectionFailure, failure("INSTALLER_DESCENDANT_RETAINED"))
     // Windows retains ParentProcessId after parent exit. One final bounded
     // snapshot catches children born after the last background observation.
     if (windows) {
       inspect()
       await Promise.race([inspection, pause(10000)])
-      if (inspection || inspectionError) throw failure("INSTALLER_DESCENDANT_RETAINED")
+      if (inspection || inspectionError)
+        throw observedFailure("installer-inspection", inspectionFailure, failure("INSTALLER_DESCENDANT_RETAINED"))
     }
     const cleanupDeadline = Date.now() + 10000
     while (
@@ -308,8 +384,12 @@ export async function runNativeUpgradeInstaller(
     }
     await Promise.race([closed, pause(10000)])
     if (!exited) child.unref()
-    throw error instanceof Error && /^PUBLIC_UPGRADE_[A-Z_]+$/.test(error.message)
-      ? error
-      : failure("INSTALLER_UNCONFIRMED")
+    const result =
+      error instanceof Error && /^PUBLIC_UPGRADE_[A-Z_]+$/.test(error.message)
+        ? error
+        : failure("INSTALLER_UNCONFIRMED")
+    const observation = readNativeUpgradeObservation(error)
+    if (observation) observations.set(result, observation)
+    throw result
   }
 }

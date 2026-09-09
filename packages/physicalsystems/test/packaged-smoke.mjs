@@ -50,7 +50,7 @@ import { startLinuxSecretService } from "../src/release/linux-secret-service.ts"
 import { qualifyPlatformDisplay } from "../src/release/platform-display.ts"
 import { prepareAppImageRuntime, bindAppImageElectron } from "../src/release/appimage-runtime.ts"
 import { qualifyInstalledUpgrade, requireDebianUpgradeStatus } from "../src/release/installed-upgrade.ts"
-import { runNativeUpgradeInstaller } from "../src/release/native-upgrade-process.ts"
+import { readNativeUpgradeObservation, runNativeUpgradeInstaller } from "../src/release/native-upgrade-process.ts"
 import {
   upgradeQualificationArguments,
   loadPublicUpgradeQualification,
@@ -569,6 +569,8 @@ try {
   }
 } catch (error) {
   failed = error
+  const nativeUpgradeObservation = readNativeUpgradeObservation(error)
+  if (nativeUpgradeObservation) console.log(JSON.stringify({ nativeUpgradeObservation }))
   const browserObservation = readBrowserObservation(error)
   if (browserObservation) check("native-browser-observation", "NOT_TESTED", JSON.stringify(browserObservation))
   // Fixed diagnostic codes only; raw app output and provider credentials never enter receipts.
