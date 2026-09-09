@@ -122,6 +122,28 @@ test("shutdown elapsed observations stay bounded and never provide exit authorit
   stderr.destroy()
 })
 
+test("a returned worker stop request is distinguishable from confirmed worker exit", () => {
+  const stderr = new PassThrough()
+  let now = 0
+  const trace = observeShutdownTrace({ stdout: null, stderr }, () => now)
+  stderr.write("PHYSICALSYSTEMS_SHUTDOWN_WORKER_EXIT_BEFORE elapsed=5 reason=NONE\n")
+  stderr.write("PHYSICALSYSTEMS_SHUTDOWN_WORKER_EXIT_REQUESTED elapsed=6 reason=NONE\n")
+  now = 6500
+  expect(trace.snapshot()).toEqual({
+    phase: "WORKER_EXIT_REQUESTED",
+    elapsedMs: 6,
+    sincePhaseMs: 6500,
+    blockedReason: "NONE",
+    blockedAtPhase: null,
+  })
+  stderr.write("PHYSICALSYSTEMS_SHUTDOWN_BLOCKED elapsed=6506 reason=PROCESS_EXIT_UNCONFIRMED\n")
+  expect(trace.snapshot().blockedAtPhase).toBe("WORKER_EXIT_REQUESTED")
+  expect(trace.snapshot().blockedReason).toBe("PROCESS_EXIT_UNCONFIRMED")
+  expect(trace.snapshot().phase).not.toBe("WORKER_EXIT_AFTER")
+  trace.close()
+  stderr.destroy()
+})
+
 test("blocked traces preserve the pending phase, while unavailable clocks cannot break stream delivery", () => {
   const stderr = new PassThrough()
   let mode = "normal"

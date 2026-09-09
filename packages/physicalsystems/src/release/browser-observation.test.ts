@@ -8,6 +8,37 @@ import {
   createWindowsBrowserStderrObservation,
 } from "./browser-observation"
 
+test("retained Windows identity diagnostics accept only fixed reasons and booleans", () => {
+  for (const reason of ["newer-birth", "older-birth", "same-birth-metadata", "history-limit"] as const) {
+    const fields = {
+      browserPhase: "cleanup-observe",
+      windowsObservePhase: "retained-identity",
+      windowsRetainedIdentityReason: reason,
+      windowsRetainedObserver: "self",
+      windowsRetainedSidMatched: true,
+      windowsRetainedSessionMatched: false,
+      windowsRetainedExecutableMatched: true,
+    } as const
+    expect(readBrowserObservation({ browserObservation: fields })).toEqual(fields)
+    for (const change of [
+      { windowsRetainedIdentityReason: "PRIVATE" },
+      { windowsRetainedObserver: 4100 },
+      { windowsRetainedSidMatched: "PRIVATE SID" },
+      { windowsRetainedSessionMatched: 3 },
+      { windowsRetainedExecutableMatched: "PRIVATE PATH" },
+      { observerPid: 4100 },
+      { birth: "134000000000000999" },
+    ])
+      expect(readBrowserObservation({ browserObservation: { ...fields, ...change } })).toBeUndefined()
+    const wrapped = browserObservationError(
+      "PROVIDER_REVIEW_CLEANUP_UNCONFIRMED",
+      { browserObservation: fields },
+      { reviewPhase: "browser-cleanup" },
+    )
+    expect(readBrowserObservation(wrapped)).toEqual({ ...fields, reviewPhase: "browser-cleanup" })
+  }
+})
+
 test("directory access diagnostics preserve fixed fields and reject paths, arbitrary errors and unbounded counters", () => {
   const fields = {
     browserPhase: "cleanup-profile",

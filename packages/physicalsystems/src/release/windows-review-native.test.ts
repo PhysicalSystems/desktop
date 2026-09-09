@@ -14,6 +14,7 @@ import {
   windowsReviewNativeArguments,
   windowsReviewNativeEnvironment,
   windowsReviewNativeScript,
+  windowsReviewProcessSelectionScript,
 } from "./windows-review-native"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { readBrowserObservation } from "./browser-observation"
@@ -31,6 +32,12 @@ test("the actual encoded native script contains the tested reconciliation helper
   expect(source.split(windowsReviewListenerReadScript)).toHaveLength(2)
   expect(source.split(windowsReviewLauncherCommandScript)).toHaveLength(2)
   expect(source.split(windowsReviewIdentityHelperScript)).toHaveLength(2)
+  expect(source.split(windowsReviewProcessSelectionScript)).toHaveLength(2)
+  expect(source).toContain(
+    "Select-ReviewProcesses -tree $tree -rootPid $request.rootPid -observedPids @(Observed-Pids)",
+  )
+  expect(source).toContain("Require-ObservedProcessesAbsent -observedPids @(Observed-Pids)")
+  expect(source).toContain("observerPid=[int]$PID")
   expect(args).not.toContain("-ExecutionPolicy")
   expect(args).not.toContain("-File")
   const units = executable.length * 2 + 3 + args.reduce((total, arg) => total + arg.length + 3, 0)

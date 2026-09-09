@@ -173,7 +173,13 @@ changes prevent a cleanup claim. Ambient process command lines are not collected
 only PID/parent metadata is used to find the owned descendants.
 Every observed descendant remains a query root after its parent exits, including
 unknown helpers. Reused identities block cleanup, and registration restoration requires
-all retained process IDs to be absent.
+all retained process IDs to be absent, except the current fixed native observation
+helper itself. That newly started helper cannot be the historical browser instance
+with the same numeric PID. Historical IDs still seed orphan discovery, and the
+helper's actual closure remains required before profile cleanup. Other identity
+conflicts continue to fail; fixed diagnostics distinguish creation-time direction,
+SID/session/executable matches and observer self/other without exposing their
+values. No identity conflict grants permission to stop the replacement process.
 
 Windows packaged reviews retain the application's qualified `TEMP` and `TMP`
 under `application/tmp`, separately from the browser's temporary files. Both

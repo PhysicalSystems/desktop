@@ -422,6 +422,37 @@ function Read-EdgeIdentityHelper([string]$exe) {
 }
 `
 
+/** Historical IDs remain discovery seeds for orphan descendants. The current
+ * fixed observation helper cannot be a prior browser process with a reused ID;
+ * its separately verified close still precedes policy/profile cleanup. */
+export const windowsReviewProcessSelectionScript = String.raw`
+function Select-ReviewProcesses($tree,$rootPid,$observedPids) {
+  $selected=[Collections.Generic.HashSet[int]]::new()
+  if($rootPid) {$null=$selected.Add([int]$rootPid)}
+  foreach($pidValue in $observedPids) {$null=$selected.Add([int]$pidValue)}
+  $changed=$true
+  while($changed) {
+    $changed=$false
+    foreach($item in $tree) {
+      if($item.Name -in @('msedge.exe','msedge_crashpad_handler.exe') -or $selected.Contains([int]$item.ParentProcessId)) {
+        if($selected.Add([int]$item.ProcessId)) {$changed=$true}
+      }
+    }
+  }
+  @($tree | Where-Object {$_.ProcessId -ne $PID -and $selected.Contains([int]$_.ProcessId)})
+}
+function Require-ObservedProcessesAbsent($observedPids) {
+  foreach($pidValue in $observedPids) {
+    if($pidValue -eq $PID){continue}
+    Set-ReviewPhase 'retained-query'
+    if(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE ProcessId=$pidValue" -ErrorAction Stop){
+      Set-ReviewPhase 'retained-other'
+      throw 'observed-process-alive'
+    }
+  }
+}
+`
+
 // ASSOCF_IS_PROTOCOL=0x1000 maps the current user default; never FIXED_PROGID.
 // The five-key HKCU Classes snapshot is restored only after exact comparison;
 // only newly created empty keys are removed. UserChoice and its Hash are read-only.
@@ -432,7 +463,8 @@ function Read-EdgeIdentityHelper([string]$exe) {
 // observed descendants as roots even after their parents exit. Full identity is
 // read only for selected processes. A failed read reconciles one fresh exact-PID
 // absence; identity comparisons remain outside that catch. Restoration requires
-// every observed PID to be absent, including unknown descendants and reused PIDs.
+// every observed PID except this current fixed native helper to be absent,
+// including unknown descendants and all other reused PIDs.
 // Reassert the OS-only module path before first-use discovery: Windows
 // PowerShell can insert AllUsers paths at startup.
 export const windowsReviewNativeScript = String.raw`
@@ -541,23 +573,12 @@ function Association {
   if($allowed -inotcontains $exe -or ($request.operation -ne 'preflight' -and (!$request.executable -or $exe -ine $request.executable))) {throw 'executable'}
   return $exe
 }
+${windowsReviewProcessSelectionScript}
 function Processes {
   Set-ReviewPhase 'process-tree'
   $tree=@(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,Name FROM Win32_Process')
   if($tree.Count -gt 32768){throw 'excessive'}
-  $selected=[Collections.Generic.HashSet[int]]::new()
-  if($request.rootPid) {$null=$selected.Add([int]$request.rootPid)}
-  foreach($pidValue in (Observed-Pids)) {$null=$selected.Add($pidValue)}
-  $changed=$true
-  while($changed) {
-    $changed=$false
-    foreach($item in $tree) {
-      if($item.Name -in @('msedge.exe','msedge_crashpad_handler.exe') -or $selected.Contains([int]$item.ParentProcessId)) {
-        if($selected.Add([int]$item.ProcessId)) {$changed=$true}
-      }
-    }
-  }
-  $items=@($tree | Where-Object {$selected.Contains([int]$_.ProcessId)} | ForEach-Object {Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$_.ProcessId)"})
+  $items=@(Select-ReviewProcesses -tree $tree -rootPid $request.rootPid -observedPids @(Observed-Pids) | ForEach-Object {Get-CimInstance Win32_Process -Filter "ProcessId=$([int]$_.ProcessId)"})
   if($items.Count -gt 256) { throw 'excessive' }
   @($items | ForEach-Object {
     Set-ReviewPhase 'process-identity'
@@ -637,14 +658,7 @@ $result=@{executable=$exe;edgeVersion=$helper.edgeVersion;identityHelper=$helper
     $effective=[ReviewNative]::Association(1,[string]$request.scheme)
     if($effective -cne $command -and $effective -cne $request.beforeCommand){throw 'changed'}
     Set-ReviewPhase 'retained-input'
-    $retainedPids=@(Observed-Pids)
-    foreach($pidValue in $retainedPids) {
-      Set-ReviewPhase 'retained-query'
-      if(Get-CimInstance -Query "SELECT ProcessId FROM Win32_Process WHERE ProcessId=$pidValue" -ErrorAction Stop){
-        if($pidValue -eq $PID){Set-ReviewPhase 'retained-self'}else{Set-ReviewPhase 'retained-other'}
-        throw 'observed-process-alive'
-      }
-    }
+    Require-ObservedProcessesAbsent -observedPids @(Observed-Pids)
     $current=Read-Policy
     Set-ReviewPhase 'policy-compare'
     if(!(Same-Value $current.value @{kind='String';data=$command}) -and !(Same-Value $current.value $request.before.value)) { throw 'changed' }
@@ -679,7 +693,9 @@ $result=@{executable=$exe;edgeVersion=$helper.edgeVersion;identityHelper=$helper
     Set-ReviewPhase 'listener'
 ${windowsReviewListenerReadScript}
   }
-  $result=@{processes=@(Processes);listening=$listening;policyOwned=((Same-Value (Read-Policy).value @{kind='String';data=$command}) -and [ReviewNative]::Association(1,[string]$request.scheme) -ceq $command)}
+  # Private self identity only, for the controller's fixed retained-PID conflict
+  # diagnostic. It does not change selection, kill or restoration authority.
+  $result=@{processes=@(Processes);observerPid=[int]$PID;listening=$listening;policyOwned=((Same-Value (Read-Policy).value @{kind='String';data=$command}) -and [ReviewNative]::Association(1,[string]$request.scheme) -ceq $command)}
 }
   'stop' {
     if(@($request.processes).Count -gt 256){throw 'excessive'}

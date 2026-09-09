@@ -49,7 +49,7 @@ test("actual shutdown producer and observer preserve ordered fixed phases withou
   expect(observed.snapshot().blockedReason).toBe("UNKNOWN")
   trace("OPERATOR_BEFORE")
   expect(observed.snapshot().blockedReason).toBe("NONE")
-  expect(observed.snapshot().elapsedMs).toBe(141)
+  expect(observed.snapshot().elapsedMs).toBe(Math.trunc(shutdownPhases.length * 11.75))
   expect(JSON.stringify(writes)).not.toContain("private-token")
   expect(JSON.stringify(writes)).not.toContain("/private/profile")
   observed.close()
