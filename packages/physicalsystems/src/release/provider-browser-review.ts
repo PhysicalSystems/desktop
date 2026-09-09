@@ -22,6 +22,13 @@ export type ProviderBrowserReviewRequest = (
 
 const digest = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex")
 const fail = () => new Error("PROVIDER_REVIEW_UNCONFIRMED")
+const cleanedFailures = new WeakSet<Error>()
+
+/** A failed review can still cancel its owned attempt and confirm that no
+ * credential remains. This proof never substitutes for native app shutdown. */
+export function providerReviewCredentialsCleaned(error: unknown) {
+  return error instanceof Error && cleanedFailures.has(error)
+}
 const record = (input: unknown): Record<string, unknown> => {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw fail()
   return input as Record<string, unknown>
@@ -88,6 +95,7 @@ export async function runProviderBrowserReview(input: {
     throw fail()
   const deadline = Date.now() + timeoutMs
   const observed = watchProviderAccount(input.child, input.nonce)
+  let reviewFailure: Error | undefined
   const state: {
     attemptID?: string
     credentialID?: string
@@ -212,7 +220,8 @@ export async function runProviderBrowserReview(input: {
     }
     if (!state.authorized) throw fail()
   } catch {
-    throw fail()
+    reviewFailure = fail()
+    throw reviewFailure
   } finally {
     try {
       if (state.attemptID) {
@@ -222,6 +231,7 @@ export async function runProviderBrowserReview(input: {
         if (ids.length && (await request(`/api/credential/${ids[0]}`, "DELETE")) !== undefined) throw fail()
         if (connections(await integration()).length) throw fail()
         state.clean = true
+        if (reviewFailure) cleanedFailures.add(reviewFailure)
       }
     } catch {
       throw new Error("PROVIDER_REVIEW_CLEANUP_UNCONFIRMED")
