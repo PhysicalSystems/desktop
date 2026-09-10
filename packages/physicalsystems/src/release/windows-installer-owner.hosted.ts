@@ -13,8 +13,8 @@ function requireFixture(condition: unknown, code: string): asserts condition {
 
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
-async function until(ready: () => boolean | Promise<boolean>, code: string) {
-  const deadline = Date.now() + 10000
+async function until(ready: () => boolean | Promise<boolean>, code: string, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs
   while (!(await ready())) {
     requireFixture(Date.now() < deadline, code)
     await pause(20)
@@ -114,7 +114,9 @@ async function compile(root: string, onClosed: () => void) {
     onClosed()
   })
   try {
-    await until(() => closed, "COMPILE_TIMEOUT")
+    // Cold PowerShell/C# startup on hosted Windows can exceed the process-tree
+    // assertion budget. Compilation has no running installer or motion authority.
+    await until(() => closed, "COMPILE_TIMEOUT", 60000)
     requireFixture(!failed && code === 0, "COMPILE_FAILED")
   } finally {
     if (!closed) compiler.kill()
