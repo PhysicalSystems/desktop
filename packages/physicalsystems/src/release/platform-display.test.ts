@@ -8,6 +8,7 @@ import {
   displayPixelEvidence,
   displayPixelsExpression,
   platformDisplayClip,
+  platformDisplayState,
   qualifyPlatformDisplay,
   requireDefaultDisplayArguments,
 } from "./platform-display"
@@ -107,6 +108,41 @@ test("serialized renderer pixel decoder retains authored failures across the CDP
   expect(result.observation).toEqual(displayPixelEvidence(pixels(), pixels(250)))
 })
 
+test("serialized display observation hit-tests the current composer point rather than accepting an overlay", () => {
+  const child = {}
+  const rect = { x: 500, y: 600, width: 700, height: 48 }
+  const element = {
+    getBoundingClientRect: () => rect,
+    isContentEditable: true,
+    textContent: "",
+    contains: (value: unknown) => value === child,
+  }
+  for (const hit of [element, child, {}, null]) {
+    const observed = runInNewContext(`(${platformDisplayState.toString()})()`, {
+      document: {
+        querySelectorAll: () => [element],
+        visibilityState: "visible",
+        hasFocus: () => true,
+        activeElement: element,
+        elementFromPoint(x: number, y: number) {
+          expect({ x, y }).toEqual({ x: 620, y: 624 })
+          return hit
+        },
+      },
+      getComputedStyle: () => ({ visibility: "visible", display: "block", opacity: "1" }),
+      innerWidth: 1280,
+      innerHeight: 800,
+      outerWidth: 1280,
+      outerHeight: 840,
+      screenX: 0,
+      screenY: 0,
+      scrollX: 0,
+      scrollY: 0,
+    })
+    expect(observed.pointerHitsComposer).toBe(hit === element || hit === child)
+  }
+})
+
 async function fixture(
   variation: {
     blank?: boolean
@@ -116,6 +152,13 @@ async function fixture(
     wrongZoomCapture?: boolean
     captureFailure?: boolean
     geometryDrift?: boolean
+    moveOnForeground?: boolean
+    nativeFocusDelay?: boolean
+    nativeFocusMissing?: boolean
+    documentFocusMissing?: boolean
+    composerFocusMissing?: boolean
+    pointerBlocked?: boolean
+    pointerMoving?: boolean
   } = {},
 ) {
   // All protocol calls are in-memory fakes. There is no Electron, display
@@ -131,13 +174,24 @@ async function fixture(
   let paintedText = ""
   let animationFrames = 0
   let focused = true
+  let foreground = false
+  let nativeFocusReads = 0
   let composerFocused = false
   let selected = false
   const calls: { method: string; params?: Record<string, unknown> }[] = []
+  const left = () =>
+    variation.pointerMoving
+      ? 300 + Math.sin(animationFrames) * 10
+      : variation.moveOnForeground && foreground && animationFrames >= 2
+        ? animationFrames < 4
+          ? 520
+          : 600
+        : 300
   const state = () => ({
     visible: true,
     focused,
     composerFocused,
+    pointerHitsComposer: !variation.pointerBlocked,
     editable: true,
     text,
     width: Math.floor(bounds.width / zoom),
@@ -149,9 +203,9 @@ async function fixture(
     scrollX: 0,
     scrollY: 0,
     rect: {
-      x: 300,
+      x: left(),
       y: Math.floor((bounds.height - 160) / zoom),
-      width: Math.min(700, bounds.width / zoom - 350),
+      width: Math.min(700, bounds.width / zoom - left() - 50),
       height: variation.geometryDrift && text ? 52 : 48,
     },
   })
@@ -175,8 +229,19 @@ async function fixture(
         composerFocused = false
         return { result: { value: true } }
       }
-      if (method === "Page.bringToFront") focused = true
-      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") composerFocused = true
+      if (method === "Page.bringToFront") {
+        foreground = true
+        focused = !variation.documentFocusMissing
+      }
+      if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") {
+        const rect = state().rect
+        composerFocused =
+          !variation.composerFocusMissing &&
+          Number(params.x) >= rect.x &&
+          Number(params.x) < rect.x + rect.width &&
+          Number(params.y) >= rect.y &&
+          Number(params.y) < rect.y + rect.height
+      }
       if (method === "Input.insertText") text = String(params?.text)
       if (method === "Input.dispatchKeyEvent" && params?.type === "keyDown") {
         if (params.key === "a" && params.modifiers === 2) selected = true
@@ -198,7 +263,14 @@ async function fixture(
     },
     async evaluate(expression: string): Promise<unknown> {
       calls.push({ method: "evaluate", params: { expression } })
-      if (expression.includes("getWindowFocused")) return { focused, fullscreen: false, zoom }
+      if (expression.includes("getWindowFocused")) {
+        if (composerFocused) nativeFocusReads++
+        return {
+          focused: !variation.nativeFocusMissing && focused && (!variation.nativeFocusDelay || nativeFocusReads >= 3),
+          fullscreen: false,
+          zoom,
+        }
+      }
       if (expression.startsWith("window.api.setZoomFactor(")) {
         const next = Number(expression.slice("window.api.setZoomFactor(".length, -1))
         if (variation.failZoom && next !== 1) throw new Error("PRIVATE_PROTOCOL_TRAP")
@@ -265,12 +337,46 @@ test("fake orchestration exercises real-control protocol paths then restores dra
   expect(f.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(2)
   expect(f.calls.some((call) => call.params?.key === "Enter")).toBe(false)
   expect(f.zoom()).toBe(1)
-  expect(f.animationFrames()).toBe(8)
+  expect(f.animationFrames()).toBe(12)
   expect(f.calls.some((call) => call.method.startsWith("Browser."))).toBe(false)
   expect(f.calls.at(-1)?.method).toBe("Runtime.releaseObject")
   expect(JSON.stringify(result)).not.toContain("FAKE-")
   expect(JSON.stringify(result)).not.toContain("PASS")
 })
+
+test("foreground layout movement and delayed native focus use one current-position click before typing", async () => {
+  const f = await fixture({ moveOnForeground: true, nativeFocusDelay: true })
+  const before = f.state().rect
+  await qualifyPlatformDisplay(f.input, "linux")
+  const pointer = f.calls.filter((call) => call.method === "Input.dispatchMouseEvent")
+  expect(pointer).toHaveLength(2)
+  expect(pointer.map((call) => call.params?.type)).toEqual(["mousePressed", "mouseReleased"])
+  expect(pointer[0]!.params?.x).toBe(720)
+  expect(pointer[0]!.params?.x).not.toBe(before.x + 120)
+  expect(f.calls.filter((call) => call.method === "Page.bringToFront")).toHaveLength(1)
+  const released = f.calls.indexOf(pointer[1]!)
+  const typed = f.calls.findIndex((call) => call.method === "Input.insertText")
+  expect(
+    f.calls.slice(released + 1, typed).filter((call) => String(call.params?.expression).includes("getWindowFocused"))
+      .length,
+  ).toBeGreaterThanOrEqual(3)
+})
+
+test("blocked pointer and missing focus remain distinct failures without retrying input", async () => {
+  for (const [variation, code, clicks] of [
+    [{ pointerBlocked: true }, "PLATFORM_DISPLAY_POINTER_UNCONFIRMED", 0],
+    [{ pointerMoving: true }, "PLATFORM_DISPLAY_POINTER_UNCONFIRMED", 0],
+    [{ documentFocusMissing: true }, "PLATFORM_DISPLAY_DOCUMENT_FOCUS_UNCONFIRMED", 2],
+    [{ composerFocusMissing: true }, "PLATFORM_DISPLAY_COMPOSER_FOCUS_UNCONFIRMED", 2],
+    [{ nativeFocusMissing: true }, "PLATFORM_DISPLAY_NATIVE_FOCUS_UNCONFIRMED", 2],
+  ] as const) {
+    const f = await fixture(variation)
+    await expect(qualifyPlatformDisplay(f.input, "linux")).rejects.toThrow(code)
+    expect(f.calls.filter((call) => call.method === "Input.dispatchMouseEvent")).toHaveLength(clicks)
+    expect(f.calls.filter((call) => call.method === "Page.bringToFront")).toHaveLength(1)
+    expect(f.calls.filter((call) => call.method === "Input.insertText")).toHaveLength(0)
+  }
+}, 25000)
 
 test("blank rendering and protocol failure remain failures even after successful state restoration", async () => {
   for (const variation of [{ blank: true }, { failZoom: true }]) {

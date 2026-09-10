@@ -158,7 +158,14 @@ test("failure diagnostics preserve only exact authored codes and never private e
   expect(qualificationFailureCode(new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED"))).toBe(
     "PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED",
   )
-  for (const code of ["PACKAGED_DEVICE_CONNECTIONS_ENABLED", "PACKAGED_HARDWARE_OPERATIONS_ACTIVE"] as const)
+  for (const code of [
+    "PACKAGED_DEVICE_CONNECTIONS_ENABLED",
+    "PACKAGED_HARDWARE_OPERATIONS_ACTIVE",
+    "PLATFORM_DISPLAY_DOCUMENT_FOCUS_UNCONFIRMED",
+    "PLATFORM_DISPLAY_COMPOSER_FOCUS_UNCONFIRMED",
+    "PLATFORM_DISPLAY_NATIVE_FOCUS_UNCONFIRMED",
+    "PLATFORM_DISPLAY_POINTER_UNCONFIRMED",
+  ] as const)
     expect(qualificationFailureCode(new Error(code))).toBe(code)
   for (const unknown of [
     new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED private-native-output"),

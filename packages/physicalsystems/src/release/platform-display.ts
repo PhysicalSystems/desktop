@@ -7,6 +7,7 @@ type State = {
   visible: boolean
   focused: boolean
   composerFocused: boolean
+  pointerHitsComposer: boolean
   editable: boolean
   text: string
   width: number
@@ -120,10 +121,12 @@ export function platformDisplayState() {
   const element = elements.length === 1 ? elements[0] : undefined
   const rect = element?.getBoundingClientRect()
   const style = element && getComputedStyle(element)
+  const hit = rect && document.elementFromPoint(rect.x + Math.min(rect.width / 2, 120), rect.y + rect.height / 2)
   return {
     visible: document.visibilityState === "visible",
     focused: document.hasFocus(),
     composerFocused: document.activeElement === element,
+    pointerHitsComposer: Boolean(element && hit && (hit === element || element.contains(hit))),
     editable: Boolean(
       element?.isContentEditable &&
         style?.visibility === "visible" &&
@@ -208,9 +211,9 @@ export async function qualifyPlatformDisplay(
     }
   }
   const evaluate = <T>(expression: string, expires = deadline) => run<T>(input.evaluate(expression), expires)
-  const state = async () => {
+  const state = async (expires = deadline) => {
     try {
-      return await evaluate<State>(`(${platformDisplayState.toString()})()`)
+      return await evaluate<State>(`(${platformDisplayState.toString()})()`, expires)
     } catch (error) {
       throw authored(error, "PLATFORM_DISPLAY_COMPOSER_UNAVAILABLE")
     }
@@ -224,28 +227,37 @@ export async function qualifyPlatformDisplay(
     value.rect.y >= 0 &&
     value.rect.x + value.rect.width <= value.width + 1 &&
     value.rect.y + value.rect.height <= value.height + 1
-  const until = async <T>(read: () => Promise<T>, accepts: (value: T) => boolean, code: string, limit = deadline) => {
+  const until = async <T>(
+    read: (expires: number) => Promise<T>,
+    accepts: (value: T) => boolean,
+    code: string,
+    limit = deadline,
+  ) => {
     const expires = Math.min(limit, Date.now() + 4000)
     while (Date.now() < expires) {
-      const value = await read()
+      const value = await read(expires)
       if (accepts(value)) return value
       await new Promise((resolve) => setTimeout(resolve, 50))
     }
     throw new Error(code)
   }
-  const screenshot = async (value: State, zoom: number, clip = platformDisplayClip(value, zoom)) => {
-    // DOM input admission precedes painting. Synchronize once; do not retry a
-    // captured blank frame until it passes. The existing deadline bounds rAF.
+  const frame = async (expires = deadline) => {
     try {
       if (
         (await evaluate(
           "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))",
+          expires,
         )) !== true
       )
         throw new Error("PLATFORM_DISPLAY_FRAME_UNCONFIRMED")
     } catch (error) {
       throw authored(error, "PLATFORM_DISPLAY_FRAME_UNCONFIRMED")
     }
+  }
+  const screenshot = async (value: State, zoom: number, clip = platformDisplayClip(value, zoom)) => {
+    // DOM input admission precedes painting. Synchronize once; do not retry a
+    // captured blank frame until it passes. The existing deadline bounds rAF.
+    await frame()
     const current = await state()
     if (
       !ready(current) ||
@@ -333,24 +345,65 @@ export async function qualifyPlatformDisplay(
   let entered = false
   let zoomed = false
   let pressed = false
-  const position = {
-    x: initial.rect.x + Math.min(initial.rect.width / 2, 120),
-    y: initial.rect.y + initial.rect.height / 2,
-  }
+  let position: { x: number; y: number } | undefined
   let paint: Awaited<ReturnType<typeof pixels>> | undefined
   let failed: Error | undefined
   try {
     await call("Page.bringToFront")
+    // First-launch navigation can move the composer after its initial DOM is
+    // ready. Sample its current painted, unobstructed position before one click.
+    let previous: State | undefined
+    const pointer = await until(
+      async (expires) => {
+        await frame(expires)
+        return state(expires)
+      },
+      (value) => {
+        const prior = previous
+        previous = ready(value) && value.pointerHitsComposer && value.text === "" ? value : undefined
+        return Boolean(
+          previous &&
+            prior &&
+            value.width === prior.width &&
+            value.height === prior.height &&
+            value.scrollX === prior.scrollX &&
+            value.scrollY === prior.scrollY &&
+            JSON.stringify(value.rect) === JSON.stringify(prior.rect),
+        )
+      },
+      "PLATFORM_DISPLAY_POINTER_UNCONFIRMED",
+    )
+    position = {
+      x: pointer.rect.x + Math.min(pointer.rect.width / 2, 120),
+      y: pointer.rect.y + pointer.rect.height / 2,
+    }
     pressed = true
     await call("Input.dispatchMouseEvent", { type: "mousePressed", button: "left", clickCount: 1, ...position })
     await call("Input.dispatchMouseEvent", { type: "mouseReleased", button: "left", clickCount: 1, ...position })
     pressed = false
+    let focusFailure = "PLATFORM_DISPLAY_FOCUS_UNCONFIRMED"
     const focused = await until(
-      state,
-      (value) => ready(value) && value.focused && value.composerFocused && value.text === "",
+      async (expires) => {
+        const value = await state(expires)
+        const window = await nativeState(expires)
+        focusFailure =
+          !ready(value) || value.text !== ""
+            ? "PLATFORM_DISPLAY_COMPOSER_UNAVAILABLE"
+            : !value.focused
+              ? "PLATFORM_DISPLAY_DOCUMENT_FOCUS_UNCONFIRMED"
+              : !value.composerFocused
+                ? "PLATFORM_DISPLAY_COMPOSER_FOCUS_UNCONFIRMED"
+                : !window.focused
+                  ? "PLATFORM_DISPLAY_NATIVE_FOCUS_UNCONFIRMED"
+                  : "READY"
+        return value
+      },
+      () => focusFailure === "READY",
       "PLATFORM_DISPLAY_FOCUS_UNCONFIRMED",
-    )
-    if (!(await nativeState()).focused) throw new Error("PLATFORM_DISPLAY_FOCUS_UNCONFIRMED")
+    ).catch((error) => {
+      if (error.message === "PLATFORM_DISPLAY_FOCUS_UNCONFIRMED") throw new Error(focusFailure)
+      throw error
+    })
     const clip = platformDisplayClip(focused, native.zoom)
     const empty = await screenshot(focused, native.zoom, clip)
     entered = true
