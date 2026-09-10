@@ -58,7 +58,9 @@ const config: Configuration = {
     uninstallDisplayName: identity.productName,
   },
   linux: {
-    icon: "icons/physicalsystems/icon.png",
+    // A PNG is installed at its native size. Ubuntu's hicolor theme indexes
+    // 512x512/apps but not 1024x1024/apps (the size of our window icon.png).
+    icon: "icons/physicalsystems/512x512.png",
     extraFiles: [{ from: `resources/${identity.launcherSource}`, to: "AppRun" }],
     target: [
       { target: "deb", arch: ["x64"] },

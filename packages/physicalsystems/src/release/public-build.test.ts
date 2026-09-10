@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, describe, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { desktopIdentity } from "./identity"
@@ -219,6 +219,12 @@ describe("public desktop compile-time identity and signing policy", () => {
     expect(result.win.signExecutable).toBe(true)
     expect(result.win.verifyUpdateCodeSignature).toBe(true)
     expect(result.linux.extraFiles).toEqual([{ from: "resources/AppRun.public", to: "AppRun" }])
+    // LinuxTargetHelper preserves a PNG's native size. Standard hicolor themes
+    // do not index 1024x1024/apps, so such an icon is invisible in Ubuntu's menu.
+    const icon = await readFile(new URL(`../../../desktop/${result.linux.icon}`, import.meta.url))
+    expect(icon.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a")
+    expect([16, 24, 32, 48, 64, 128, 256, 512]).toContain(icon.readUInt32BE(16))
+    expect(icon.readUInt32BE(20)).toBe(icon.readUInt32BE(16))
     expect(result.deb.packageName).toBe("physical-systems-desktop")
     data.data.windowsSigning = { provider: "unsigned-preview" }
     data.env.PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256 = publicReviewDigest(data.data)
