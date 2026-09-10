@@ -7,18 +7,19 @@ import { useLocation } from "@solidjs/router"
 import { useLanguage } from "../context/language"
 import { useSettingsCommand } from "../components/settings-dialog"
 import { ServerConnection, useServer } from "../context/server"
-import { useTabs } from "../context/tabs"
+import { tabKey, useTabs } from "../context/tabs"
 import { useGlobal } from "../context/global"
 import { normalizeSessionInfo } from "../utils/session"
 import { createConversationStarter } from "./conversation"
 import { Persist, persisted } from "../utils/persist"
 import { requireServerKey } from "../utils/session-route"
+import { pathKey } from "../utils/path-key"
 import { usePhysicalSystems } from "./context"
 import { PhysicalPanel } from "./panel"
 import { MigrationHistory } from "./migration"
 import { ProjectCredentials } from "./credentials"
 import { physicalTimestamp } from "./state"
-import type { PhysicalConversation, PhysicalProject } from "./types"
+import type { PhysicalCommand, PhysicalConversation, PhysicalProject } from "./types"
 import "./physicalsystems.css"
 
 function ConnectionStatus(props: { project: PhysicalProject }) {
@@ -42,7 +43,11 @@ function ConnectionStatus(props: { project: PhysicalProject }) {
   )
 }
 
-function ProjectCreate(props: { close: () => void }) {
+function ProjectCreate(props: {
+  close: () => void
+  create: (request: Extract<PhysicalCommand, { type: "project.create" }>) => Promise<void>
+  pending: boolean
+}) {
   const physical = usePhysicalSystems()!
   const language = useLanguage()
   const [state, setState] = createStore({
@@ -70,18 +75,18 @@ function ProjectCreate(props: { close: () => void }) {
               port: state.port,
               remotePort: state.remotePort,
             }
-    const result = await physical.send({
+    await props.create({
       type: "project.create",
       name: state.name.trim(),
       cwd: state.cwd.trim() || undefined,
       connection,
     })
-    if (result) props.close()
   }
   return (
     <Portal>
       <dialog
         class="ps-dialog"
+        data-ps-project-create
         ref={(element) => (dialog.element = element)}
         onCancel={props.close}
         onKeyDown={(event) => {
@@ -105,71 +110,75 @@ function ProjectCreate(props: { close: () => void }) {
               onInput={(event) => setState("name", event.currentTarget.value)}
             />
           </label>
-          <label>
-            {language.t("physicalsystems.project.directory")}
-            <input value={state.cwd} onInput={(event) => setState("cwd", event.currentTarget.value)} />
-          </label>
-          <label>
-            {language.t("physicalsystems.project.connection")}
-            <select
-              value={state.kind}
-              onChange={(event) => setState("kind", event.currentTarget.value as typeof state.kind)}
-            >
-              <option value="simulation">{language.t("physicalsystems.project.simulation")}</option>
-              <option value="local">{language.t("physicalsystems.project.local")}</option>
-              <option value="ssh">{language.t("physicalsystems.project.ssh")}</option>
-            </select>
-          </label>
-          <Show when={state.kind !== "simulation"}>
+          <details>
+            <summary>{language.t("physicalsystems.project.options")}</summary>
             <label>
-              {language.t("physicalsystems.project.endpoint")}
-              <input
-                required
-                value={state.endpoint}
-                onInput={(event) => setState("endpoint", event.currentTarget.value)}
-              />
-            </label>
-          </Show>
-          <Show when={state.kind === "ssh"}>
-            <label>
-              {language.t("physicalsystems.project.username")}
-              <input
-                required
-                value={state.username}
-                onInput={(event) => setState("username", event.currentTarget.value)}
-              />
+              {language.t("physicalsystems.project.directory")}
+              <input value={state.cwd} onInput={(event) => setState("cwd", event.currentTarget.value)} />
+              <span class="ps-muted">{language.t("physicalsystems.project.managedDirectory")}</span>
             </label>
             <label>
-              {language.t("physicalsystems.project.port")}
-              <input
-                type="number"
-                min="1"
-                max="65535"
-                value={state.port}
-                onInput={(event) => setState("port", Number(event.currentTarget.value))}
-              />
+              {language.t("physicalsystems.project.connection")}
+              <select
+                value={state.kind}
+                onChange={(event) => setState("kind", event.currentTarget.value as typeof state.kind)}
+              >
+                <option value="simulation">{language.t("physicalsystems.project.simulation")}</option>
+                <option value="local">{language.t("physicalsystems.project.local")}</option>
+                <option value="ssh">{language.t("physicalsystems.project.ssh")}</option>
+              </select>
             </label>
-            <label>
-              {language.t("physicalsystems.project.remotePort")}
-              <input
-                type="number"
-                min="1"
-                max="65535"
-                value={state.remotePort}
-                onInput={(event) => setState("remotePort", Number(event.currentTarget.value))}
-              />
-            </label>
-          </Show>
+            <Show when={state.kind !== "simulation"}>
+              <label>
+                {language.t("physicalsystems.project.endpoint")}
+                <input
+                  required
+                  value={state.endpoint}
+                  onInput={(event) => setState("endpoint", event.currentTarget.value)}
+                />
+              </label>
+            </Show>
+            <Show when={state.kind === "ssh"}>
+              <label>
+                {language.t("physicalsystems.project.username")}
+                <input
+                  required
+                  value={state.username}
+                  onInput={(event) => setState("username", event.currentTarget.value)}
+                />
+              </label>
+              <label>
+                {language.t("physicalsystems.project.port")}
+                <input
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={state.port}
+                  onInput={(event) => setState("port", Number(event.currentTarget.value))}
+                />
+              </label>
+              <label>
+                {language.t("physicalsystems.project.remotePort")}
+                <input
+                  type="number"
+                  min="1"
+                  max="65535"
+                  value={state.remotePort}
+                  onInput={(event) => setState("remotePort", Number(event.currentTarget.value))}
+                />
+              </label>
+            </Show>
+          </details>
           <Show when={physical.state.failures.action}>
             <p role="alert" class="ps-error">
               {physical.state.failures.action}
             </p>
           </Show>
           <div class="ps-actions">
-            <button type="button" onClick={props.close}>
+            <button type="button" onClick={props.close} disabled={props.pending}>
               {language.t("physicalsystems.cancel")}
             </button>
-            <button class="ps-primary" type="submit" disabled={physical.state.pending.action}>
+            <button class="ps-primary" type="submit" disabled={physical.state.pending.action || props.pending}>
               {language.t("physicalsystems.project.create")}
             </button>
           </div>
@@ -202,6 +211,10 @@ function PhysicalWorkspace(props: ParentProps) {
   )
   const [state, setState] = createStore({
     create: false,
+    creatingProject: false,
+    initialized: false,
+    initializing: false,
+    navigation: undefined as { from: string; serverId: string; sessionId: string } | undefined,
     credentials: "",
     creatingConversation: false,
     hover: "",
@@ -218,10 +231,28 @@ function PhysicalWorkspace(props: ParentProps) {
     if (!match) return
     return { serverId: String(requireServerKey(match[1])), sessionId: decodeURIComponent(match[2]) }
   })
+  const canLinkConversation = createMemo(() => {
+    const identity = route()
+    const project = physical.project()
+    if (!identity || !project?.cwd || physical.bound()) return false
+    const serverId = ServerConnection.Key.make(identity.serverId)
+    if (!server.list.some((item) => ServerConnection.key(item) === serverId && ServerConnection.builtin(item)))
+      return false
+    const directory = tabs.info[tabKey({ type: "session", server: serverId, sessionId: identity.sessionId })]?.directory
+    // Metadata only controls which action is offered; the worker still verifies ownership.
+    return Boolean(directory && pathKey(directory) === pathKey(project.cwd))
+  })
   createEffect(() => {
     const identity = route()
     physical.setState("view", identity)
-    if (!identity || state.creatingConversation || physical.state.binding) return
+    const navigation = state.navigation
+    if (navigation) {
+      if (identity?.serverId === navigation.serverId && identity.sessionId === navigation.sessionId)
+        setState("navigation", undefined)
+      else if (location.pathname === navigation.from) return
+      else setState("navigation", undefined)
+    }
+    if (!identity || state.creatingProject || state.creatingConversation || physical.state.binding) return
     const snapshot = physical.state.snapshot
     const project = snapshot?.projects.find((project) =>
       project.conversations.some(
@@ -332,18 +363,82 @@ function PhysicalWorkspace(props: ParentProps) {
     global.ensureServerCtx(connection).sync.session.remember(session)
     const tab = tabs.addSessionTab({ server: serverId, sessionId: session.id })
     if ("sessionId" in tab) tabs.rememberSessionInfo(tab, session)
+    // Route transitions can wait for lazy content after tabs.select has returned.
+    setState("navigation", { from: location.pathname, serverId, sessionId: session.id })
     tabs.select(tab)
     setState("creatingConversation", false)
     close()
     return true
   }
+  const createProject = async (request: Extract<PhysicalCommand, { type: "project.create" }>) => {
+    if (state.creatingProject || state.creatingConversation || physical.state.pending.selection) return
+    // Keep the old tab from selecting its former project while the new project is prepared.
+    setState("creatingProject", true)
+    try {
+      const result = await physical.send(request)
+      if (!result) return
+      const project = result.projects.find((item) => item.id === result.activeProjectId)
+      setState("create", false)
+      if (project) await newConversation(project)
+    } finally {
+      setState("creatingProject", false)
+    }
+  }
+  createEffect(() => {
+    if (
+      state.initialized ||
+      !ready() ||
+      !physical.state.snapshot ||
+      physical.state.unavailable ||
+      physical.state.snapshot.projects.length ||
+      state.create ||
+      state.creatingProject ||
+      physical.state.pending.action ||
+      physical.state.pending.selection ||
+      (location.pathname !== "/" && location.pathname !== "/new-session") ||
+      !server.list.some((item) => ServerConnection.key(item) === server.key && ServerConnection.builtin(item))
+    )
+      return
+    untrack(() => {
+      // A fresh installation starts with one local workspace. Never replay a failed creation automatically.
+      setState({ initialized: true, initializing: true })
+      void createProject({
+        type: "project.create",
+        name: language.t("physicalsystems.project.defaultName"),
+        connection: { type: "simulation" },
+      })
+        .then(() => {
+          if (!physical.state.snapshot?.projects.length)
+            physical.setState("failures", "conversation", language.t("physicalsystems.project.prepareFailed"))
+        })
+        .catch(() => {
+          physical.setState("failures", "conversation", language.t("physicalsystems.project.prepareFailed"))
+        })
+        .finally(() => setState("initializing", false))
+    })
+  })
   const selectConversation = async (project: PhysicalProject, conversation: PhysicalConversation) => {
-    if (!conversation.serverId || !conversation.sessionId || state.creatingConversation) return false
+    if (
+      !conversation.serverId ||
+      !conversation.sessionId ||
+      state.creatingProject ||
+      state.creatingConversation ||
+      physical.state.pending.selection
+    )
+      return false
+    setState("navigation", {
+      from: location.pathname,
+      serverId: conversation.serverId,
+      sessionId: conversation.sessionId,
+    })
     const selected = await physical.send(
       { type: "session.select", projectId: project.id, conversationId: conversation.id },
       "selection",
     )
-    if (!selected) return false
+    if (!selected) {
+      setState("navigation", undefined)
+      return false
+    }
     const tab = tabs.addSessionTab({
       server: ServerConnection.Key.make(conversation.serverId),
       sessionId: conversation.sessionId,
@@ -353,6 +448,7 @@ function PhysicalWorkspace(props: ParentProps) {
     return true
   }
   const selectProject = async (project: PhysicalProject) => {
+    if (state.creatingProject || state.creatingConversation || physical.state.pending.selection) return false
     const recent =
       project.conversations.find((conversation) => conversation.id === physical.state.snapshot?.activeConversationId) ??
       project.conversations.findLast((conversation) => conversation.sessionId && conversation.serverId)
@@ -375,6 +471,7 @@ function PhysicalWorkspace(props: ParentProps) {
             type="button"
             class="ps-create-project"
             aria-label={language.t("physicalsystems.project.create")}
+            disabled={state.creatingProject || state.creatingConversation}
             onClick={() => setState("create", true)}
           >
             +
@@ -400,6 +497,7 @@ function PhysicalWorkspace(props: ParentProps) {
                 type="button"
                 ref={(element) => anchors.set(project.id, element)}
                 class="ps-project-row"
+                disabled={state.creatingProject || state.creatingConversation || physical.state.pending.selection}
                 data-ps-project-row={project.id}
                 aria-current={physical.state.snapshot?.activeProjectId === project.id ? "true" : undefined}
                 aria-label={language.t("physicalsystems.project.details", { name: project.name })}
@@ -474,10 +572,16 @@ function PhysicalWorkspace(props: ParentProps) {
             </Show>
           </div>
           <div class="ps-actions">
-            <Show when={route() && physical.project() && !physical.bound()}>
+            <Show when={canLinkConversation()}>
               <button
                 type="button"
-                disabled={physical.state.binding || physical.state.unavailable}
+                data-ps-link-conversation
+                disabled={
+                  physical.state.binding ||
+                  physical.state.unavailable ||
+                  state.creatingProject ||
+                  state.creatingConversation
+                }
                 onClick={() => {
                   const project = physical.project()
                   const identity = route()
@@ -494,15 +598,25 @@ function PhysicalWorkspace(props: ParentProps) {
               {(project) => (
                 <button
                   type="button"
-                  class="ps-compose"
-                  aria-label={language.t("physicalsystems.conversation.new")}
-                  title={language.t("physicalsystems.conversation.new")}
+                  data-ps-new-conversation
+                  classList={{ "ps-compose": physical.bound(), "ps-primary": !physical.bound() }}
+                  aria-label={language.t("physicalsystems.conversation.newInProject", { name: project().name })}
+                  title={language.t("physicalsystems.conversation.newInProject", { name: project().name })}
                   disabled={
-                    !project().cwd || !server.key || physical.state.pending.selection || state.creatingConversation
+                    !project().cwd ||
+                    !server.key ||
+                    physical.state.unavailable ||
+                    physical.state.binding ||
+                    physical.state.pending.selection ||
+                    state.creatingProject ||
+                    state.creatingConversation
                   }
                   onClick={() => void newConversation(project())}
                 >
                   <Icon name="edit" size="small" aria-hidden="true" />
+                  <Show when={!physical.bound()}>
+                    {language.t("physicalsystems.conversation.newInProject", { name: project().name })}
+                  </Show>
                 </button>
               )}
             </Show>
@@ -528,7 +642,11 @@ function PhysicalWorkspace(props: ParentProps) {
               physical.state.failures.conversation}
           </p>
         </Show>
-        <div class="ps-session-content">{props.children}</div>
+        <div class="ps-session-content">
+          <Show when={state.initializing} fallback={props.children}>
+            <p role="status">{language.t("physicalsystems.project.preparing")}</p>
+          </Show>
+        </div>
       </div>
       <Show when={physical.state.panelOpen}>
         <PhysicalPanel />
@@ -700,7 +818,13 @@ function PhysicalWorkspace(props: ParentProps) {
               <button
                 type="button"
                 disabled={
-                  !project().cwd || !server.key || physical.state.pending.selection || state.creatingConversation
+                  !project().cwd ||
+                  !server.key ||
+                  physical.state.unavailable ||
+                  physical.state.binding ||
+                  physical.state.pending.selection ||
+                  state.creatingProject ||
+                  state.creatingConversation
                 }
                 onClick={() => void newConversation(project())}
               >
@@ -714,7 +838,13 @@ function PhysicalWorkspace(props: ParentProps) {
         {(project) => <ProjectCredentials project={project()} close={() => setState("credentials", "")} />}
       </Show>
       <Show when={state.create}>
-        <ProjectCreate close={() => setState("create", false)} />
+        <ProjectCreate
+          close={() => {
+            if (!state.creatingProject) setState("create", false)
+          }}
+          create={createProject}
+          pending={state.creatingProject || state.creatingConversation || physical.state.pending.selection}
+        />
       </Show>
     </div>
   )
