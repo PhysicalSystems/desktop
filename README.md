@@ -11,9 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://physicalsystems.ai/download"><img alt="Download preview" src="https://img.shields.io/badge/download-preview-87e089?style=flat-square&amp;labelColor=20252b"></a>
-  <a href="https://physicalsystems.ai/download"><img alt="Platforms: Windows and Linux" src="https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-87e089?style=flat-square&amp;labelColor=20252b"></a>
-  <a href="https://github.com/PhysicalSystems/desktop"><img alt="Open source" src="https://img.shields.io/badge/source-open-87e089?style=flat-square&amp;labelColor=20252b"></a>
+  <a href="https://physicalsystems.ai"><img alt="Physical Systems website" src="https://img.shields.io/badge/website-physicalsystems.ai-87e089?style=flat-square&amp;labelColor=20252b"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-87e089?style=flat-square&amp;labelColor=20252b"></a>
 </p>
 
