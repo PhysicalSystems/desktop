@@ -208,7 +208,70 @@
   display: none;
 }
 .ps-workspace [data-component="session-new-design"] [data-component="wordmark-v2"] + div {
-  margin-top: 0;
+  margin-top: 32px;
+}
+/* The managed workspace already has a bound, empty session. Present it as a
+   welcome screen using the existing composer; keep its focus and draft intact.
+   The timeline mounts only after messages are ready, and its bottom spacer is
+   present for any history even when individual rows have been virtualized away. */
+.ps-session-content
+  :has(> [data-component="session-prompt-dock"]):has([data-timeline-virtual-content]):not(
+    :has([data-timeline-virtual-content] > [data-timeline-row="bottom-spacer"])
+  ) {
+  position: relative;
+
+  [data-session-title] {
+    visibility: hidden;
+  }
+
+  > [data-component="session-prompt-dock"] {
+    position: absolute;
+    inset: 0;
+    justify-content: safe center;
+    padding: 24px;
+    overflow-y: auto;
+    background: transparent;
+    pointer-events: auto;
+
+    > div {
+      width: 100%;
+      max-width: 640px;
+      padding-inline: 0;
+    }
+
+    &::before {
+      margin-bottom: 32px;
+    }
+  }
+
+  > [data-component="session-prompt-dock"]::before {
+    content: var(--ps-welcome-wordmark);
+    display: block;
+    flex: none;
+    max-width: 100%;
+    color: color-mix(in srgb, var(--ps-text) 16%, transparent);
+    font-family: var(--font-family-mono, monospace);
+    font-size: clamp(28px, 5vw, 60px);
+    font-weight: 700;
+    letter-spacing: -0.055em;
+    line-height: 1.15;
+    text-align: center;
+    pointer-events: none;
+    user-select: none;
+  }
+}
+.ps-session-content [data-component="session-new-design"] div:has(> [data-component="wordmark-v2"])::before {
+  content: var(--ps-welcome-wordmark);
+  display: block;
+  color: color-mix(in srgb, var(--ps-text) 16%, transparent);
+  font-family: var(--font-family-mono, monospace);
+  font-size: clamp(28px, 5vw, 60px);
+  font-weight: 700;
+  letter-spacing: -0.055em;
+  line-height: 1.15;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
 }
 .ps-contextbar {
   min-height: 46px;
