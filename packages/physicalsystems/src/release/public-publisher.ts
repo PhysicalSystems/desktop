@@ -518,30 +518,38 @@ export async function publishPreparedPublication(input: {
 }
 
 /** The runner supplies these API responses before handling release credentials.
- * A public candidate run, a fork, an earlier attempt or an unprotected environment
- * cannot authenticate public qualification or final approval.
+ * The run is still executing, so require its completed collector job instead of
+ * requiring the entire pipeline to have succeeded. A publication-only retry may
+ * reuse successful qualification from an earlier attempt of this same run.
  */
 export function validatePublisherPrerequisites(input: {
   run: unknown
   attempt: unknown
+  jobs: unknown
   environment: unknown
   runId: string
   runAttempt: string
+  currentRunAttempt: string
   sourceRevision: string
 }) {
   if (
     !/^[1-9]\d*$/.test(input.runId) ||
     !/^[1-9]\d*$/.test(input.runAttempt) ||
+    !/^[1-9]\d*$/.test(input.currentRunAttempt) ||
+    BigInt(input.runAttempt) > BigInt(input.currentRunAttempt) ||
     !/^[a-f0-9]{40}$/.test(input.sourceRevision)
   )
     throw new Error("Qualification run, attempt and source must be immutable identities")
-  for (const value of [input.run, input.attempt]) {
+  for (const [value, expectedAttempt, current] of [
+    [input.run, input.currentRunAttempt, true],
+    [input.attempt, input.runAttempt, input.runAttempt === input.currentRunAttempt],
+  ] as const) {
     if (!value || typeof value !== "object") throw new Error("Qualification run could not be verified")
     const run = value as {
       id: number
       run_attempt: number
       status: string
-      conclusion: string
+      conclusion: string | null
       path: string
       head_sha: string
       head_branch: string
@@ -551,18 +559,35 @@ export function validatePublisherPrerequisites(input: {
     }
     if (
       String(run.id) !== input.runId ||
-      String(run.run_attempt) !== input.runAttempt ||
-      run.status !== "completed" ||
-      run.conclusion !== "success" ||
-      run.path !== ".github/workflows/desktop-public-build.yml" ||
+      String(run.run_attempt) !== expectedAttempt ||
+      (current
+        ? run.status !== "in_progress" || run.conclusion !== null
+        : run.status !== "completed" || !["success", "failure", "cancelled"].includes(run.conclusion ?? "")) ||
+      run.path !== ".github/workflows/desktop-public-release.yml" ||
       run.head_sha !== input.sourceRevision ||
       run.head_branch !== "main" ||
       run.event !== "workflow_dispatch" ||
       run.repository?.full_name !== "PhysicalSystems/desktop" ||
       run.head_repository?.full_name !== "PhysicalSystems/desktop"
     )
-      throw new Error("Expected the exact successful current attempt of the trusted public qualification producer")
+      throw new Error("Expected the executing owned release pipeline and its trusted public qualification attempt")
   }
+  if (!input.jobs || typeof input.jobs !== "object") throw new Error("Qualification jobs are unavailable")
+  const jobs = input.jobs as {
+    total_count?: number
+    jobs?: { run_id?: number; head_sha?: string; name?: string; status?: string; conclusion?: string }[]
+  }
+  if (!Array.isArray(jobs.jobs) || jobs.total_count !== jobs.jobs.length)
+    throw new Error("Qualification job listing must be complete")
+  const collectors = jobs.jobs.filter((job) => job?.name === "Verify Windows and Linux test results")
+  if (
+    collectors.length !== 1 ||
+    String(collectors[0]!.run_id) !== input.runId ||
+    collectors[0]!.head_sha !== input.sourceRevision ||
+    collectors[0]!.status !== "completed" ||
+    collectors[0]!.conclusion !== "success"
+  )
+    throw new Error("The exact qualification attempt must have one successful Windows/Linux collector job")
   if (!input.environment || typeof input.environment !== "object")
     throw new Error("Protected publication environment is unavailable")
   const environment = input.environment as {

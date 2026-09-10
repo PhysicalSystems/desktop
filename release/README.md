@@ -119,16 +119,16 @@ The website integration is reviewed in [platform PR #287](https://github.com/Phy
 
 The [public producer workflow](public-producer.md) freezes the explicit Windows signing policy and exact source inputs, reuses source CI, invokes the [public build driver](public-build.md) for Windows/Linux and records actual public-mode native observations. Signing credentials are scoped to packaging. Separate Windows/Linux job outputs anchor the exact bytes and receipts for the strict collector, which emits a qualified bundle only when all required checks pass. Signing setup is required only for the signed policy. Native checks and account sign-in remain prerequisites for both public modes; partial observations stay unqualified.
 
-The [public publisher](public-publisher.md) is implemented, with publication disabled until qualified public installer evidence and protected credentials are available:
+Dispatch **Release desktop (build, test, publish)** once from main. The [single public workflow](public-publisher.md) builds and tests both platforms, then continues automatically through publication and the website update:
 
-1. Consume a successful public qualification run on the exact reviewed source, using signed Windows installers or an explicitly qualified unsigned preview. Verify the anchored bundle, reserve a draft and upload the exact installers.
+1. Consume the successful qualification stage of this run on the exact reviewed source, using signed Windows installers or an explicitly qualified unsigned preview. Verify the anchored bundle, reserve a draft and upload the exact installers.
 2. Obtain **one final protected approval**, then publish without rebuilding or replacing assets.
 3. Anonymously stream the published files and verify their sizes and SHA-256 hashes. Only successful readback produces the website selection.
 4. In that same approved job, create or resume a one-file website integration PR. Website CI validates the selection contract and independently reads the public bytes. Selection-only changes do not repeat dependency installation and the full application build.
 5. The coordinator verifies successful CI for the exact PR, head, base and current attempt, rechecks scope and selection bytes, and merges through the normal GitHub API. Repository rules remain effective; the coordinator does not use an administrator override.
 6. Confirm Render serves the exact selection, a healthy API and the download page. An uncertain update can be resumed without replacing installers or duplicating the PR. A failed deployment is not reported as complete.
 
-There is no release-preparation PR or second human website approval in the normal flow. `.github/workflows/desktop-download-promotion.yml` remains an explicit protected recovery path for a completed publisher run. Rerun the full publisher when publication succeeded but its website step failed. See the publisher guide for credentials, immutable evidence and retry prerequisites.
+There is no second workflow dispatch, release-preparation PR or second human website approval. The old standalone public build and website-promotion workflows have been removed. If publication or the website update fails, use **Re-run failed jobs** in the same release run to reuse its exact qualified installers. See the publisher guide for credentials, immutable evidence and retry prerequisites.
 
 A JSON field saying approved is insufficient: `PublicDistributionReview` must come from the protected process, with an independently anchored canonical digest. The public build producer and required native qualification are still prerequisites; adding the workflow or setting an enable variable does not satisfy them.
 

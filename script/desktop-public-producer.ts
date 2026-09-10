@@ -76,7 +76,7 @@ try {
     if (process.env.GITHUB_STEP_SUMMARY)
       await appendFile(
         process.env.GITHUB_STEP_SUMMARY,
-        `Public build inputs frozen for ${release.version} at ${release.source.revision}.\n\nRelease input SHA-256: \`${release.sha256}\`.\n\nPublic build SHA-256: \`${prepared.sha256}\`.\n\nInstallers and smoke results remain unqualified; this workflow cannot publish.\n`,
+        `Public build inputs frozen for ${release.version} at ${release.source.revision}.\n\nRelease input SHA-256: \`${release.sha256}\`.\n\nPublic build SHA-256: \`${prepared.sha256}\`.\n\nInstallers and smoke results remain unqualified; publication waits for successful qualification and protected approval.\n`,
       )
   } else if (command === "verify-upgrade") {
     const upgrade = await loadPublicUpgradeInputs({ root, env: process.env })
@@ -143,6 +143,7 @@ try {
       output: required("PUBLIC_QUALIFIED_DIRECTORY"),
     })
     await output("qualification_sha256", result.sha256)
+    await output("run_attempt", required("GITHUB_RUN_ATTEMPT"))
     if (process.env.GITHUB_STEP_SUMMARY)
       await appendFile(
         process.env.GITHUB_STEP_SUMMARY,

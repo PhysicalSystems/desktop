@@ -1,14 +1,16 @@
 # Public installer build workflow
 
-`.github/workflows/desktop-public-build.yml` implements public input preparation,
+The build stages of `.github/workflows/desktop-public-release.yml` implement public input preparation,
 source validation, native Windows/Linux packaging and packaged simulation smoke.
 It is restricted to an explicit dispatch of the owned repository's `main` branch
 at that workflow's exact commit. The explicit `windows_signing` choice defaults to
 `signed`; `unsigned-preview` is accepted only with `channel=preview`. There is no
-automatic fallback after missing credentials or failed signing. Its final job runs
-the strict collector: a publisher-eligible bundle is
+automatic fallback after missing credentials or failed signing. After the native jobs,
+the strict collector runs: a publisher-eligible bundle is
 created only when every required native check passes for every exact artifact.
-Missing observations fail collection; there is no unconditional terminal stub.
+Missing observations fail collection and block publishing. Successful collection
+automatically continues to draft preparation, protected approval, publication and
+the website update in the same run; see [publication](public-publisher.md).
 
 Dispatch requires an authorized public build and provisioning for its selected
 policy. Adding the workflow does not provision accounts
@@ -63,7 +65,7 @@ subprocess. Dependency installation and compilation receive scrubbed environment
 Linux jobs, unsigned PREVIEW packaging, source validation, input preparation and
 smoke receive no signing secrets.
 
-No publication or website write credentials belong in this producer. Protect
+No publication or website write credentials belong in the build or test jobs. Protect
 reviewed `main` and restrict workflow dispatch to trusted repository operators;
 that trusted source handles signing credentials only when signed packaging is selected.
 

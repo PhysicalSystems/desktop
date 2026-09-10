@@ -407,35 +407,110 @@ describe("protected exact-byte public desktop publisher", () => {
     }
   })
 
-  test("rejects untrusted producers, rerun attempts, forks and missing reviewers", () => {
+  test("requires a successful collector inside the executing owned release pipeline", () => {
     const run = {
       id: 20,
       run_attempt: 1,
-      status: "completed",
-      conclusion: "success",
-      path: ".github/workflows/desktop-public-build.yml",
+      status: "in_progress",
+      conclusion: null,
+      path: ".github/workflows/desktop-public-release.yml",
       head_sha: "a".repeat(40),
       head_branch: "main",
       event: "workflow_dispatch",
       repository: { full_name: "PhysicalSystems/desktop" },
       head_repository: { full_name: "PhysicalSystems/desktop" },
     }
+    const collector = {
+      run_id: 20,
+      head_sha: run.head_sha,
+      name: "Verify Windows and Linux test results",
+      status: "completed",
+      conclusion: "success",
+    }
     const environment = {
       name: "desktop-public-release",
       protection_rules: [{ type: "required_reviewers", reviewers: [{ id: 1 }] }],
     }
-    const input = { run, attempt: run, environment, runId: "20", runAttempt: "1", sourceRevision: run.head_sha }
+    const input = {
+      run,
+      attempt: run,
+      environment,
+      jobs: { total_count: 1, jobs: [collector] },
+      runId: "20",
+      runAttempt: "1",
+      currentRunAttempt: "1",
+      sourceRevision: run.head_sha,
+    }
     expect(() => validatePublisherPrerequisites(input)).not.toThrow()
     for (const changed of [
+      { id: 21 },
+      { path: ".github/workflows/desktop-public-build.yml" },
       { path: ".github/workflows/desktop-release.yml" },
-      { conclusion: "failure" },
+      { status: "completed", conclusion: "success" },
+      { status: "completed", conclusion: "failure" },
       { run_attempt: 2 },
+      { head_sha: "b".repeat(40) },
+      { head_branch: "feature" },
+      { repository: { full_name: "SomeoneElse/desktop" } },
       { head_repository: { full_name: "SomeoneElse/desktop" } },
       { event: "pull_request" },
-    ])
+    ]) {
       expect(() => validatePublisherPrerequisites({ ...input, run: { ...run, ...changed } })).toThrow("trusted public")
+      expect(() => validatePublisherPrerequisites({ ...input, attempt: { ...run, ...changed } })).toThrow(
+        "trusted public",
+      )
+    }
+    for (const changed of [
+      { run_id: 21 },
+      { head_sha: "b".repeat(40) },
+      { name: "Other job" },
+      { status: "in_progress" },
+      { conclusion: "failure" },
+      { conclusion: "skipped" },
+      { conclusion: "cancelled" },
+    ])
+      expect(() =>
+        validatePublisherPrerequisites({
+          ...input,
+          jobs: { total_count: 1, jobs: [{ ...collector, ...changed }] },
+        }),
+      ).toThrow("collector job")
+    for (const jobs of [
+      null,
+      {},
+      { total_count: 2, jobs: [collector] },
+      { total_count: 0, jobs: [] },
+      { total_count: 2, jobs: [collector, collector] },
+    ])
+      expect(() => validatePublisherPrerequisites({ ...input, jobs })).toThrow()
     expect(() =>
-      validatePublisherPrerequisites({ ...input, environment: { name: environment.name, protection_rules: [] } }),
+      validatePublisherPrerequisites({
+        ...input,
+        environment: { name: environment.name, protection_rules: [] },
+      }),
     ).toThrow("required reviewers")
+
+    // Re-running only a failed publication keeps the successful collector and
+    // its artifact/digest outputs from attempt 1; no installers need rebuilding.
+    const retry = {
+      ...input,
+      currentRunAttempt: "2",
+      run: { ...run, run_attempt: 2 },
+      attempt: { ...run, status: "completed", conclusion: "failure" },
+    }
+    expect(() => validatePublisherPrerequisites(retry)).not.toThrow()
+    expect(() => validatePublisherPrerequisites({ ...retry, runAttempt: "3" })).toThrow("immutable identities")
+    expect(() => validatePublisherPrerequisites({ ...retry, currentRunAttempt: "invalid" })).toThrow(
+      "immutable identities",
+    )
+    expect(() => validatePublisherPrerequisites({ ...retry, attempt: { ...retry.attempt, id: 21 } })).toThrow(
+      "trusted public",
+    )
+    expect(() =>
+      validatePublisherPrerequisites({
+        ...retry,
+        jobs: { total_count: 1, jobs: [{ ...collector, conclusion: "failure" }] },
+      }),
+    ).toThrow("collector job")
   })
 })
