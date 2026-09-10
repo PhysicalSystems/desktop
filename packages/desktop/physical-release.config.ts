@@ -24,6 +24,7 @@ const config: Configuration = {
   electronDist: "node_modules/electron/dist",
   npmRebuild: false,
   files: ["out/**/*", "resources/entitlements.plist"],
+  extraResources: [{ from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
   extraMetadata: {
     name: "physical-systems-desktop-candidate",
     version: inputs.version,
@@ -34,12 +35,16 @@ const config: Configuration = {
   asar: true,
   publish: null,
   win: {
+    icon: "icons/physicalsystems/icon.ico",
     target: [{ target: "nsis", arch: ["x64"] }],
     artifactName: "physical-systems-desktop-${version}-windows-${arch}.${ext}",
     signExecutable: false,
     verifyUpdateCodeSignature: true,
   },
   nsis: {
+    installerIcon: "icons/physicalsystems/icon.ico",
+    uninstallerIcon: "icons/physicalsystems/icon.ico",
+    installerHeaderIcon: "icons/physicalsystems/icon.ico",
     oneClick: true,
     perMachine: false,
     allowElevation: false,
@@ -49,6 +54,7 @@ const config: Configuration = {
     uninstallDisplayName: "Physical Systems Candidate",
   },
   linux: {
+    icon: "icons/physicalsystems/icon.png",
     // Pinned builder copies appOutDir over its generated AppRun before creating
     // the final AppImage. Qualification checks the resulting launcher bytes.
     extraFiles: [{ from: "resources/AppRun", to: "AppRun" }],

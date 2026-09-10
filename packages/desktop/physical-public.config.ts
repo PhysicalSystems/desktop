@@ -25,6 +25,7 @@ const config: Configuration = {
   electronDist: "node_modules/electron/dist",
   npmRebuild: false,
   files: ["out/**/*", "resources/entitlements.plist"],
+  extraResources: [{ from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
   extraMetadata: {
     name: identity.packageName,
     version: inputs.version,
@@ -36,6 +37,7 @@ const config: Configuration = {
   publish: null,
   forceCodeSigning: inputs.windowsSigning.provider !== "unsigned-preview",
   win: {
+    icon: "icons/physicalsystems/icon.ico",
     target: [{ target: "nsis", arch: ["x64"] }],
     artifactName: "physical-systems-desktop-${version}-windows-${arch}.${ext}",
     signExecutable: inputs.windowsSigning.provider !== "unsigned-preview",
@@ -43,6 +45,9 @@ const config: Configuration = {
     ...publicSigningConfiguration(inputs, process.env, process.platform),
   },
   nsis: {
+    installerIcon: "icons/physicalsystems/icon.ico",
+    uninstallerIcon: "icons/physicalsystems/icon.ico",
+    installerHeaderIcon: "icons/physicalsystems/icon.ico",
     oneClick: true,
     perMachine: false,
     allowElevation: false,
@@ -53,6 +58,7 @@ const config: Configuration = {
     uninstallDisplayName: identity.productName,
   },
   linux: {
+    icon: "icons/physicalsystems/icon.png",
     extraFiles: [{ from: `resources/${identity.launcherSource}`, to: "AppRun" }],
     target: [
       { target: "deb", arch: ["x64"] },
