@@ -9,6 +9,7 @@ export function createPhysicalSystems(
   bridge: PhysicalSystemsBridge | undefined,
   failure: () => string,
   timeout: () => string,
+  bindingFailure: () => string = failure,
 ) {
   const [state, setState] = createStore<{
     snapshot?: PhysicalSnapshot
@@ -80,7 +81,11 @@ export function createPhysicalSystems(
         setState(
           "failures",
           key,
-          error instanceof Error && !/^[A-Z][A-Z_]+$/.test(error.message) ? error.message : failure(),
+          error instanceof Error && /\bMODEL_SESSION_SCOPE_MISMATCH$/.test(error.message)
+            ? bindingFailure()
+            : error instanceof Error && !/^[A-Z][A-Z_]+$/.test(error.message)
+              ? error.message
+              : failure(),
         )
         return undefined
       })
@@ -134,6 +139,7 @@ export function PhysicalSystemsProvider(props: ParentProps<{ bridge?: PhysicalSy
     props.bridge ?? window.api?.physicalSystems,
     () => language.t("physicalsystems.error"),
     () => language.t("physicalsystems.timeout"),
+    () => language.t("physicalsystems.conversation.scopeMismatch"),
   )
   onMount(() => {
     const unsubscribe = controller.subscribe()
