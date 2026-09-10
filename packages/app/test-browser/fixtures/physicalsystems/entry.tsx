@@ -2,7 +2,7 @@ import { render, Dynamic, Portal } from "solid-js/web"
 import { PhysicalSystemsProvider } from "../../../src/physicalsystems/context"
 import { PhysicalSystemsLayout } from "../../../src/physicalsystems/layout"
 import { PhysicalOperations } from "../../../src/physicalsystems/operations"
-import { ToolRegistry, setLocation, location, sessions } from "./mocks"
+import { ToolRegistry, setLocation, location, sessions, setTabInfo, tabKey, navigation } from "./mocks"
 import type { PhysicalCommand, PhysicalSnapshot } from "../../../src/physicalsystems/types"
 import { createStore } from "solid-js/store"
 import { Show } from "solid-js"
@@ -86,6 +86,15 @@ const state: PhysicalSnapshot = {
     },
   ],
 }
+if ((window as typeof window & { __fixtureEmpty?: boolean }).__fixtureEmpty) {
+  state.projects = []
+  state.activeProjectId = null
+  state.activeConversationId = null
+  state.conversation = null
+  state.activeExperiments = []
+  state.experiments = null
+  setLocation("pathname", "/")
+}
 const fixtureWindow = window as typeof window & {
   __fixture: {
     state: PhysicalSnapshot
@@ -93,7 +102,11 @@ const fixtureWindow = window as typeof window & {
     emit: (patch?: Partial<PhysicalSnapshot>) => void
     gate: (value: boolean) => void
     forge: (value: boolean) => void
-    route: (value: string) => void
+    route: (value: string, directory?: string) => void
+    failBinding: boolean
+    failProjectCreate: boolean
+    holdNavigation: boolean
+    flushNavigation: () => void
     release?: () => void
     hold: boolean
     recoverCalls: number
@@ -113,6 +126,17 @@ fixtureWindow.__fixture = {
   state,
   calls: [],
   hold: false,
+  failBinding: false,
+  failProjectCreate: Boolean(
+    (window as typeof window & { __fixtureFailProjectCreate?: boolean }).__fixtureFailProjectCreate,
+  ),
+  get holdNavigation() {
+    return navigation.hold
+  },
+  set holdNavigation(value) {
+    navigation.hold = value
+  },
+  flushNavigation: navigation.flush,
   recoverCalls: 0,
   recoverReject: false,
   imports: [],
@@ -171,7 +195,11 @@ fixtureWindow.__fixture = {
   },
   gate: (value) => setFixture("gate", value),
   forge: (value) => setFixture("forged", value),
-  route: (value) => setLocation("pathname", value),
+  route(value, directory) {
+    const match = /^\/server\/([^/]+)\/session\/([^/]+)$/.exec(value)
+    if (match && directory) setTabInfo(tabKey({ server: atob(match[1]), sessionId: match[2] }), { directory })
+    setLocation("pathname", value)
+  },
 }
 window.addEventListener("error", (event) => fixtureWindow.__fixture.errors.push(event.message))
 window.addEventListener("unhandledrejection", (event) => fixtureWindow.__fixture.errors.push(String(event.reason)))
@@ -255,6 +283,27 @@ window.api = {
     },
     async command(request) {
       fixtureWindow.__fixture.calls.push(request)
+      if (request.type === "project.create") {
+        if (fixtureWindow.__fixture.failProjectCreate) throw new Error("Fixture project creation failed")
+        const id = `project-created-${state.projects.length}`
+        state.projects.push({
+          id,
+          name: request.name,
+          cwd: request.cwd || `/fixture/managed/${id}`,
+          connection: {
+            kind: request.connection.type,
+            label: "Synthetic fixture",
+            status: "connected",
+            observedAt: null,
+            deviceCount: null,
+            inUseCount: null,
+          },
+          conversations: [],
+        })
+        state.activeProjectId = id
+        state.activeConversationId = null
+        state.conversation = null
+      }
       if (request.type === "experiment.approveAndContinue" && fixtureWindow.__fixture.hold)
         await new Promise<void>((resolve) => (fixtureWindow.__fixture.release = resolve))
       if (request.type === "session.select") {
@@ -264,6 +313,8 @@ window.api = {
         state.conversation = project.conversations.find((conversation) => conversation.id === request.conversationId)!
       }
       if (request.type === "session.bind") {
+        if (fixtureWindow.__fixture.failBinding)
+          throw new Error("Error invoking remote method 'physicalsystems:command': Error: MODEL_SESSION_SCOPE_MISMATCH")
         const project = state.projects.find((project) => project.id === request.projectId)!
         const conversation = project.conversations.find(
           (conversation) => conversation.sessionId === request.sessionId && conversation.serverId === request.serverId,

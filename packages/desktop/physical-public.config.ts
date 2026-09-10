@@ -51,7 +51,8 @@ const config: Configuration = {
     oneClick: true,
     perMachine: false,
     allowElevation: false,
-    runAfterFinish: false,
+    // Open after interactive installation; NSIS /S installs remain silent.
+    runAfterFinish: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
     uninstallDisplayName: identity.productName,

@@ -9,6 +9,11 @@ export const physicalSystemsEnglish = {
   "physicalsystems.credentials.failure": "Credentials could not be saved. Enter them again and retry.",
   "physicalsystems.projects": "Projects",
   "physicalsystems.project.create": "New project",
+  "physicalsystems.project.defaultName": "My workspace",
+  "physicalsystems.project.preparing": "Preparing your workspace…",
+  "physicalsystems.project.prepareFailed": "Your workspace could not be prepared. Use New project to try again.",
+  "physicalsystems.project.options": "Project settings (optional)",
+  "physicalsystems.project.managedDirectory": "Leave this empty to let the app manage the project folder.",
   "physicalsystems.project.name": "Project name",
   "physicalsystems.project.directory": "Working directory",
   "physicalsystems.project.connection": "Connection type",
@@ -34,11 +39,14 @@ export const physicalSystemsEnglish = {
   "physicalsystems.project.viewDevices": "View devices",
   "physicalsystems.project.noHistory": "No linked conversations yet.",
   "physicalsystems.conversation.new": "New conversation",
+  "physicalsystems.conversation.newInProject": "New conversation in {{name}}",
+  "physicalsystems.conversation.scopeMismatch":
+    "This conversation could not be linked to the selected project folder. Start a new conversation in that project to use its tools.",
   "physicalsystems.conversation.createFailed":
     "The conversation could not be prepared. Check the local server and try again.",
   "physicalsystems.conversation.bind": "Link this conversation to {{name}}",
   "physicalsystems.conversation.unbound":
-    "Choose a linked conversation or link this one to enable Physical Systems controls.",
+    "This conversation is not linked to the selected project. Use New conversation in the project header, or open a conversation from the project's history, to use its tools.",
   "physicalsystems.conversation.binding": "Linking conversation…",
   "physicalsystems.connection.connect": "Connect",
   "physicalsystems.connection.disconnect": "Disconnect",

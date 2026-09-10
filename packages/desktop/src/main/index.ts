@@ -40,7 +40,7 @@ import { createWslServersController } from "./wsl/servers"
 import { spawnWslSidecar } from "./wsl/sidecar"
 import { cleanupStoreFiles } from "./store-cleanup"
 import { setNativeTranslations } from "./native-translations"
-import { physicalEnvironment } from "../../../physicalsystems/src/environment"
+import { physicalDeviceConnections, physicalEnvironment } from "../../../physicalsystems/src/environment"
 import { createPhysicalHost } from "./physical"
 import type { PhysicalHost } from "./physical"
 import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycle"
@@ -112,7 +112,7 @@ const main = Effect.gen(function* () {
   const scoped = physicalEnvironment(process.env, physicalRoot)
   for (const key of Object.keys(process.env)) if (!(key in scoped)) delete process.env[key]
   Object.assign(process.env, scoped)
-  if (app.isPackaged) process.env.PHYSICALSYSTEMS_ALLOW_DEVICES = "0"
+  process.env.PHYSICALSYSTEMS_ALLOW_DEVICES = physicalDeviceConnections(identity.kind, app.isPackaged, process.env) ? "1" : "0"
   for (const name of ["data", "config", "cache", "state", "desktop", "session", "workspace"]) mkdirSync(join(physicalRoot, name), { recursive: true, mode: 0o700 })
   process.env.XDG_DATA_HOME = join(physicalRoot, "data")
   process.env.XDG_CONFIG_HOME = join(physicalRoot, "config")

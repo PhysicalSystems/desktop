@@ -205,6 +205,51 @@ describe("Physical Systems agent bridge", () => {
     expect(contacted).toEqual([])
   })
 
+  test.each([
+    [409, "Select a Physical Systems project for this conversation before using its tools.", "not linked"],
+    [409, "SESSION_DIRECTORY_CHANGED", "working folder does not match"],
+    [400, "MODEL_SESSION_SCOPE_MISMATCH", "working folder does not match"],
+  ])("binding failure %s %s explains how to recover without retrying tools", async (status, error, reason) => {
+    const calls: string[] = []
+    serve((request) => {
+      const route = new URL(request.url).pathname
+      calls.push(route)
+      if (route === "/tools") return Response.json({ tools: [descriptor] })
+      return Response.json({ error }, { status })
+    })
+    const [tool] = await PhysicalSystems.tools("/fixture/project")
+    const result = Effect.runPromise(tool.execute({}, context(undefined, "unlinked-call")))
+    await expect(result).rejects.toThrow(reason)
+    await expect(result).rejects.toThrow("Stop retrying Physical Systems tools.")
+    await expect(result).rejects.toThrow("select the intended project and use its New conversation button")
+    expect(calls).toEqual(["/tools", "/call"])
+  })
+
+  test.each([
+    [400, JSON.stringify({ error: "Unknown failure: private-fixture-data" })],
+    [409, JSON.stringify({ error: "MODEL_SESSION_SCOPE_MISMATCH", details: "private-fixture-data" })],
+    [401, JSON.stringify({ error: "MODEL_SESSION_SCOPE_MISMATCH" })],
+    [409, '<html>private-fixture-data</html>'],
+    [409, JSON.stringify({ error: 42 })],
+    [409, "null"],
+    [409, ""],
+    [409, " ".repeat(4096) + JSON.stringify({ error: "MODEL_SESSION_SCOPE_MISMATCH" })],
+  ])("unknown, malformed or oversized failure %s retains the generic message", async (status, body) => {
+    serve((request) => {
+      if (new URL(request.url).pathname === "/tools") return Response.json({ tools: [descriptor] })
+      return new Response(body, { status })
+    })
+    const [tool] = await PhysicalSystems.tools("/fixture/project")
+    const result = Effect.runPromise(tool.execute({}, context(undefined, "rejected-call")))
+    await expect(result).rejects.toThrow("The Physical Systems bridge rejected this request. Inspect its recorded state before retrying.")
+    expect(String(await result.catch((error: unknown) => error))).not.toContain("private-fixture-data")
+  })
+
+  test("binding guidance is only accepted from failed tool calls", async () => {
+    serve(() => Response.json({ error: "MODEL_SESSION_SCOPE_MISMATCH" }, { status: 400 }))
+    await expect(PhysicalSystems.tools("/fixture/project")).rejects.toThrow("The Physical Systems bridge rejected this request.")
+  })
+
   test("already-cancelled calls perform no action, and cancellation targets only the same synthetic call", async () => {
     const calls: { route: string; body: unknown }[] = []
     const started = Promise.withResolvers<void>()
