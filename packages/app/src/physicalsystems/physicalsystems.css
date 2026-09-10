@@ -194,6 +194,12 @@
   flex-direction: column;
   position: relative;
 }
+.ps-workspace [data-component="session-new-design"] [data-component="wordmark-v2"] {
+  display: none;
+}
+.ps-workspace [data-component="session-new-design"] [data-component="wordmark-v2"] + div {
+  margin-top: 0;
+}
 .ps-contextbar {
   min-height: 46px;
   display: flex;
