@@ -5,6 +5,7 @@ import { Icon } from "@opencode-ai/ui/v2/icon"
 import { Portal } from "solid-js/web"
 import { useLocation } from "@solidjs/router"
 import { useLanguage } from "../context/language"
+import { useSettingsCommand } from "../components/settings-dialog"
 import { ServerConnection, useServer } from "../context/server"
 import { useTabs } from "../context/tabs"
 import { useGlobal } from "../context/global"
@@ -194,6 +195,7 @@ function PhysicalWorkspace(props: ParentProps) {
   const global = useGlobal()
   const server = useServer()
   const location = useLocation()
+  const openSettings = useSettingsCommand()
   const [saved, setSaved, , ready] = persisted(
     Persist.window("physicalsystems.ui"),
     createStore({ sidebarOpen: true, panelOpen: true }),
@@ -437,6 +439,17 @@ function PhysicalWorkspace(props: ParentProps) {
           </Show>
         </div>
         <MigrationHistory />
+        <button
+          type="button"
+          class="ps-settings-button"
+          data-ps-settings
+          aria-label={language.t("command.settings.open")}
+          title={language.t("command.settings.open")}
+          onClick={openSettings}
+        >
+          <Icon name="settings-gear" />
+          <Show when={physical.state.sidebarOpen}>{language.t("desktop.menu.settings")}</Show>
+        </button>
       </nav>
       <div class="ps-conversation">
         <div class="ps-contextbar">

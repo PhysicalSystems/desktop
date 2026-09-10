@@ -88,6 +88,21 @@ jobs:
         working-directory: packages/app
         run: bun test ./src/utils/oauth-attempt.test.ts
 
+      - name: Appearance and updater UI regressions
+        working-directory: packages/app
+        run: bun test --conditions=solid --preload ./happydom.ts ./src/theme-preload.test.ts ./src/desktop-menu.test.ts ./src/components/updater-action.test.ts ./src/i18n/desktop-native.test.ts
+
+      - name: Install Chromium for isolated settings fixture
+        working-directory: packages/app
+        run: bunx playwright install --with-deps chromium
+
+      - name: Rendered Physical Systems appearance regression
+        working-directory: packages/app
+        env:
+          PLAYWRIGHT_PORT: "5196"
+          PLAYWRIGHT_WORKERS: "1"
+        run: bunx playwright test ./e2e/regression/physical-settings-appearance.spec.ts --project chromium
+
       - name: Agent authority and adapter regression tests
         working-directory: packages/opencode
         run: bun test --timeout 30000 ./test/plugin/physicalsystems.test.ts ./test/plugin/physicalsystems-authority.test.ts
@@ -99,6 +114,10 @@ jobs:
       - name: Desktop startup diagnostic regression tests
         working-directory: packages/desktop
         run: bun test ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/external-url.test.ts ./src/main/provider-account-trace.test.ts
+
+      - name: Disabled updater controller and install handoff regressions
+        working-directory: packages/desktop
+        run: bun test ./src/main/updater-controller.test.ts ./src/main/updater-install.test.ts ./src/main/updater-policy.test.ts ./src/main/updater-subscriptions.test.ts
 
       - name: Typecheck integration
         working-directory: packages/physicalsystems

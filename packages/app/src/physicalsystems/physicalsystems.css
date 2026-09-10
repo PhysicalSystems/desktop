@@ -110,6 +110,16 @@
   flex-direction: column;
   gap: 3px;
 }
+.ps-settings-button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  flex-shrink: 0;
+}
+.ps-projects[data-collapsed="true"] .ps-settings-button {
+  justify-content: center;
+}
 .ps-project-row {
   display: flex;
   align-items: center;

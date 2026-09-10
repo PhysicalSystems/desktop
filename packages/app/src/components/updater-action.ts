@@ -9,6 +9,8 @@ export function updaterAction(state: UpdaterState | undefined) {
   switch (state.status) {
     case "checking":
       return { label: "settings.updates.action.checking" as const }
+    case "available":
+      return { label: "settings.updates.action.download" as const, run: "download" as const }
     case "downloading":
       return { label: "settings.updates.action.downloading" as const }
     case "ready":
@@ -31,20 +33,27 @@ export function useUpdaterAction() {
     action,
     async run() {
       const run = action().run
-      if (run === "install") return platform.updater?.install()
-      if (run !== "check") return
+      try {
+        if (run === "install") return await platform.updater?.install()
+        if (run !== "check" && run !== "download") return
 
-      const state = await platform.updater?.check()
-      if (state?.status === "up-to-date") {
+        const state = await platform.updater?.[run]()
+        if (state?.status === "up-to-date") {
+          showToast({
+            variant: "success",
+            icon: "circle-check",
+            title: language.t("settings.updates.toast.latest.title"),
+            description: language.t("settings.updates.toast.latest.description", { version: platform.version ?? "" }),
+          })
+        }
+        if (state?.status === "error") {
+          showToast({ title: language.t("common.requestFailed"), description: state.message })
+        }
+      } catch {
         showToast({
-          variant: "success",
-          icon: "circle-check",
-          title: language.t("settings.updates.toast.latest.title"),
-          description: language.t("settings.updates.toast.latest.description", { version: platform.version ?? "" }),
+          title: language.t("common.requestFailed"),
+          description: language.t("settings.updates.toast.failed.description"),
         })
-      }
-      if (state?.status === "error") {
-        showToast({ title: language.t("common.requestFailed"), description: state.message })
       }
     },
   }

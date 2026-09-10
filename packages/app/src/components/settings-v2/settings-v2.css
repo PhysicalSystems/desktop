@@ -54,6 +54,30 @@
   padding: 0 40px 40px;
 }
 
+.settings-v2-color-scheme {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-v2-color-scheme label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--v2-border-border-base);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-v2-color-scheme label:has(input:checked) {
+  background: var(--v2-background-bg-hover);
+}
+
+.settings-v2-color-scheme input {
+  accent-color: var(--v2-text-text-base);
+}
+
 [data-slot="settings-v2-row-description"] a.settings-v2-link {
   color: var(--v2-text-text-accent);
   cursor: pointer;

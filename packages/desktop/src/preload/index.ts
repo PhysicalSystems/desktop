@@ -70,6 +70,7 @@ const api: ElectronAPI = {
       }
     },
     check: () => ipcRenderer.invoke("updater-check"),
+    download: () => ipcRenderer.invoke("updater-download"),
     install: () => ipcRenderer.invoke("updater-install"),
   },
   consumeInitialDeepLinks: () => ipcRenderer.invoke("consume-initial-deep-links"),

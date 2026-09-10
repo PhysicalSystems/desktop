@@ -322,7 +322,11 @@ const main = Effect.gen(function* () {
   // A review build never takes over the installed OpenCode URL handler.
   registerRendererProtocol()
   setDockIcon()
-  const updater = setupAutoUpdater(stopSidecars)
+  const updater = setupAutoUpdater(async (launch) => {
+    // Unlike quitAndInstall, preparation preserves the operator window until
+    // operator/credential cleanup and owned process exit are confirmed.
+    if (!(await shutdown.update(launch))) throw new Error("UPDATE_SHUTDOWN_UNCONFIRMED")
+  })
   const menuDeps = {
     trigger: (id: string) => {
       const win = getLastFocusedWindow()

@@ -6,21 +6,18 @@ import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { usePlatform } from "@/context/platform"
 import { setV2Toast, ToastRegion } from "@/utils/toast"
 import { PhysicalSystemsLayout } from "../physicalsystems/layout"
+import { useUpdaterAction } from "@/components/updater-action"
 
 export default function NewLayout(props: ParentProps) {
   const platform = usePlatform()
+  const updater = useUpdaterAction()
   const [state, setState] = createStore({ debugTools: true })
 
   createEffect(() => setV2Toast(true))
 
   const update: TitlebarUpdate = {
-    version: () => {
-      const state = platform.updater?.state()
-      if (state?.status !== "ready") return
-      return state.version
-    },
-    installing: () => platform.updater?.state().status === "installing",
-    install: () => void platform.updater?.install(),
+    state: () => platform.updater?.state(),
+    run: () => void updater.run(),
   }
 
   return (

@@ -591,7 +591,10 @@ export const dict = {
   "toast.project.reloadFailed.title": "Failed to reload {{project}}",
 
   "toast.update.title": "Update available",
-  "toast.update.description": "A new version of OpenCode ({{version}}) is now available to install.",
+  "toast.update.description":
+    "Physical Systems {{version}} is available. Download it now, then choose when to restart.",
+  "toast.update.ready":
+    "Physical Systems {{version}} has been downloaded and verified. Restart when your work is ready.",
   "toast.update.action.installRestart": "Install and restart",
   "toast.update.action.notYet": "Not yet",
 
@@ -985,10 +988,13 @@ export const dict = {
   "settings.updates.row.check.description": "Manually check for updates and install if available",
   "settings.updates.action.checkNow": "Check now",
   "settings.updates.action.checking": "Checking...",
+  "settings.updates.action.download": "Download update",
+  "settings.updates.toast.failed.description":
+    "The update could not complete. Review any active work before trying again.",
   "settings.updates.action.downloading": "Downloading...",
   "settings.updates.action.installing": "Installing...",
   "settings.updates.toast.latest.title": "You're up to date",
-  "settings.updates.toast.latest.description": "You're running the latest version of OpenCode.",
+  "settings.updates.toast.latest.description": "You're running the latest available version of Physical Systems.",
   "sound.option.none": "None",
   "sound.option.alert01": "Alert 01",
   "sound.option.alert02": "Alert 02",

@@ -8,18 +8,65 @@ export function createShutdownCoordinator(options: {
   finish(intent: ShutdownIntent): void
   blocked(error: unknown): void
 }) {
+  let preparing: Promise<boolean> | undefined
+  let prepared = false
   let pending: Promise<boolean> | undefined
+  let requesting = false
   let complete = false
   let relaunch = false
+  let updating = false
+  let updateScheduled = false
+
+  // The installer schedules exit itself, after the same cleanup used by quit.
+  function prepare(): Promise<boolean> {
+    if (prepared) return Promise.resolve(true)
+    if (preparing) return preparing
+    preparing = (async () => {
+      try {
+        await options.closeOperator()
+        await options.stopServers()
+        prepared = true
+        return true
+      } catch (error) {
+        options.blocked(error)
+        return false
+      }
+    })().finally(() => { preparing = undefined })
+    return preparing
+  }
+
   return {
+    prepare,
+    update(launch: () => void): Promise<boolean> {
+      // A regular shutdown cannot become an installer handoff midway through.
+      if (requesting || complete || updating || updateScheduled) return Promise.resolve(false)
+      updating = true
+      return (async () => {
+        try {
+          if (!await prepare()) return false
+          launch()
+          updateScheduled = true
+          return true
+        } catch (error) {
+          options.blocked(error)
+          return false
+        } finally {
+          updating = false
+        }
+      })()
+    },
     request(intent: ShutdownIntent): Promise<boolean> {
       if (complete) return Promise.resolve(true)
+      // During cleanup/launch the installer owns exit. After synchronous launch,
+      // permit its deferred quit, but never schedule a competing old-app relaunch.
+      if (updating || (updateScheduled && intent === "relaunch")) return Promise.resolve(false)
       if (intent === "relaunch") relaunch = true
       if (pending) return pending
+      if (requesting) return Promise.resolve(false)
+      requesting = true
       pending = (async () => {
         try {
-          await options.closeOperator()
-          await options.stopServers()
+          if (!await prepare()) return false
           complete = true
           options.finish(relaunch ? "relaunch" : "quit")
           return true
@@ -28,6 +75,7 @@ export function createShutdownCoordinator(options: {
           return false
         } finally {
           pending = undefined
+          requesting = false
           if (!complete) relaunch = false
         }
       })()

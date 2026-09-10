@@ -250,6 +250,13 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
   }
 
   async function installUpdate() {
+    if (platform.updater?.state().status === "available") {
+      const state = await platform.updater.download().catch((err) => {
+        setStore("actionError", formatError(err, language.t))
+      })
+      if (state) setStore("actionError", state.status === "error" ? state.message : undefined)
+      return
+    }
     await platform.updater
       ?.install()
       .then(() => setStore("actionError", undefined))
@@ -260,7 +267,7 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
 
   const updateVersion = () => {
     const state = platform.updater?.state()
-    if (state?.status !== "ready") return
+    if (state?.status !== "ready" && state?.status !== "available") return
     return state.version
   }
 
@@ -321,7 +328,7 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
               )
             }}
           </Show>
-          <Show when={platform.updater}>
+          <Show when={platform.updater && platform.updater.state().status !== "disabled"}>
             <Show
               when={updateVersion()}
               fallback={
@@ -339,7 +346,9 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
             >
               {(version) => (
                 <Button size="large" onClick={installUpdate}>
-                  {language.t("error.page.action.updateTo", { version: version() })}
+                  {platform.updater?.state().status === "available"
+                    ? language.t("settings.updates.action.download")
+                    : language.t("error.page.action.updateTo", { version: version() })}
                 </Button>
               )}
             </Show>

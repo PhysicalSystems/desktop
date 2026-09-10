@@ -4,6 +4,7 @@ export type UpdaterState =
   | { status: "disabled" }
   | { status: "idle" }
   | { status: "checking" }
+  | { status: "available"; version: string }
   | { status: "downloading"; version: string; percent?: number }
   | { status: "ready"; version: string }
   | { status: "up-to-date" }
@@ -13,5 +14,6 @@ export type UpdaterState =
 export type UpdaterPlatform = {
   state: Accessor<UpdaterState>
   check(): Promise<UpdaterState>
+  download(): Promise<UpdaterState>
   install(): Promise<void>
 }

@@ -56,6 +56,7 @@ import { ConstrainDragXAxis, getDraggableId } from "@/utils/solid-dnd"
 import { DebugBar } from "@/components/debug-bar"
 import { TabsInfoPopup } from "@/components/help-button"
 import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
+import { useUpdaterAction } from "@/components/updater-action"
 import { useDirectoryPicker } from "@/components/directory-picker"
 import { ServerConnection, useServer } from "@/context/server"
 import { useLanguage, type Locale } from "@/context/language"
@@ -163,11 +164,11 @@ export default function LegacyLayout(props: ParentProps) {
     if (state?.status !== "ready") return
     return state.version
   }
-  const installUpdate = () => void platform.updater?.install()
+  const updater = useUpdaterAction()
+  const installUpdate = () => void updater.run()
   const titlebarUpdate: TitlebarUpdate = {
-    version: updateVersion,
-    installing: () => platform.updater?.state().status === "installing",
-    install: installUpdate,
+    state: () => platform.updater?.state(),
+    run: installUpdate,
   }
 
   const editor = createInlineEditorController()
@@ -2421,7 +2422,7 @@ function UpdateAvailableToast(props: {
       persistent: true,
       icon: "download",
       title: props.language.t("toast.update.title"),
-      description: props.language.t("toast.update.description", { version: props.version }),
+      description: props.language.t("toast.update.ready", { version: props.version }),
       actions: [
         {
           label: props.language.t("toast.update.action.installRestart"),

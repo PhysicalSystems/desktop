@@ -214,7 +214,8 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
 
     updater: {
       state: updaterState,
-      check: () => window.api.updater.check(),
+        check: () => window.api.updater.check(),
+        download: () => window.api.updater.download(),
       install: () => window.api.updater.install(),
     },
 

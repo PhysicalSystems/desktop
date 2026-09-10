@@ -2,6 +2,8 @@
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
   "physicalsystems.name": "Physical Systems",
+  "physicalsystems.settings.colorScheme.description":
+    "Choose Light, Dark, or System to follow your computer's appearance.",
   "physicalsystems.credentials.open": "Credentials",
   "physicalsystems.credentials.title": "Credentials for {{name}}",
   "physicalsystems.credentials.camera": "Node camera token",
@@ -93,7 +95,8 @@ export const physicalSystemsEnglish = {
   "physicalsystems.run.stop": "Request run stop",
   "physicalsystems.run.evidence": "Execution evidence",
   "physicalsystems.operations": "Owned operations",
-  "physicalsystems.operations.closeBlocked": "Cleanup is not confirmed. Keep this window open, review any active operations or recovery notice, then retry closing.",
+  "physicalsystems.operations.closeBlocked":
+    "Cleanup is not confirmed. Keep this window open, review any active operations or recovery notice, then retry closing.",
   "physicalsystems.operations.stop": "Stop",
   "physicalsystems.operations.stopping": "Requesting Stop…",
   "physicalsystems.operations.unconfirmed":

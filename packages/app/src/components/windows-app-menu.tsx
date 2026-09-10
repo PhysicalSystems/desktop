@@ -9,6 +9,7 @@ import { useCommand } from "@/context/command"
 import { DESKTOP_MENU, desktopMenuVisible, type DesktopMenuAction, type DesktopMenuEntry } from "@/desktop-menu"
 import { usePlatform } from "@/context/platform"
 import { useLanguage } from "@/context/language"
+import { usePhysicalSystems } from "@/physicalsystems/context"
 
 export function WindowsAppMenu(props: {
   command: ReturnType<typeof useCommand>
@@ -17,6 +18,7 @@ export function WindowsAppMenu(props: {
 }) {
   let lastFocused: HTMLElement | undefined
   const language = useLanguage()
+  const physical = usePhysicalSystems()
 
   const rememberFocus = () => {
     const active = document.activeElement
@@ -79,7 +81,16 @@ export function WindowsAppMenu(props: {
       <DropdownMenu.Portal>
         <DropdownMenu.Content class="desktop-app-menu">
           <DropdownMenu.Group>
-            <DropdownMenu.GroupLabel class="desktop-app-menu-heading">OpenCode</DropdownMenu.GroupLabel>
+            <DropdownMenu.GroupLabel class="desktop-app-menu-heading">
+              {language.t(physical?.enabled ? "physicalsystems.name" : "desktop.menu.app")}
+            </DropdownMenu.GroupLabel>
+            <DesktopMenuItem
+              label={language.t("desktop.menu.settings")}
+              keybind={props.command.keybind("settings.open")}
+              disabled={commandDisabled("settings.open")}
+              onSelect={() => runCommand("settings.open")}
+            />
+            <DropdownMenu.Separator />
             {DESKTOP_MENU.filter((menu) => desktopMenuVisible(menu, "windows")).map((menu) => (
               <DesktopMenuSubmenu label={language.t(menu.labelKey)}>
                 {menu.items

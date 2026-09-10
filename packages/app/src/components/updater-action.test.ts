@@ -12,6 +12,10 @@ describe("updaterAction", () => {
       run: "check",
     })
     expect(updaterAction({ status: "checking" })).toEqual({ label: "settings.updates.action.checking" })
+    expect(updaterAction({ status: "available", version: "2.0.0" })).toEqual({
+      label: "settings.updates.action.download",
+      run: "download",
+    })
     expect(updaterAction({ status: "downloading", version: "2.0.0" })).toEqual({
       label: "settings.updates.action.downloading",
     })
@@ -22,5 +26,10 @@ describe("updaterAction", () => {
     expect(updaterAction({ status: "installing", version: "2.0.0" })).toEqual({
       label: "settings.updates.action.installing",
     })
+  })
+
+  test("disabled releases have no action and failed downloads can be checked again", () => {
+    expect(updaterAction({ status: "disabled" }).run).toBeUndefined()
+    expect(updaterAction({ status: "error", message: "Signature mismatch" }).run).toBe("check")
   })
 })
