@@ -11,10 +11,11 @@ const config: Configuration = {
   electronDist: "node_modules/electron/dist",
   npmRebuild: false,
   files: ["out/**/*", "resources/**/*", "!resources/opencode-cli*"],
+  extraResources: [{ from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
   extraMetadata: { version: "0.0.0-physical-review.1", name: "physical-systems-desktop-review" },
   publish: null,
-  mac: { target: "dir", identity: null, notarize: false },
-  win: { target: "dir", signAndEditExecutable: false },
-  linux: { target: "dir", executableName: "physical-systems-review", category: "Development" },
+  mac: { target: "dir", icon: "icons/physicalsystems/icon.icns", identity: null, notarize: false },
+  win: { target: "dir", icon: "icons/physicalsystems/icon.ico", signAndEditExecutable: false },
+  linux: { target: "dir", icon: "icons/physicalsystems/icon.png", executableName: "physical-systems-review", category: "Development" },
 }
 export default config
