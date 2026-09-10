@@ -3,6 +3,16 @@ import { join, isAbsolute } from "node:path"
 
 const tools = ["inspect_physical_system", "plan_physical_workflow", "inspect_physical_capabilities", "preview_physical_capability", "read_agent_skill", "inspect_physical_execution", "inspect_physical_setup", "inspect_local_experiment", "propose_local_experiment", "run_simulated_trial", "finish_local_experiment", "question"]
 
+/** Public installations can attach a Node through operator controls. Disposable
+ * tests can always disable attachment; packaged candidates remain isolated. */
+export function physicalDeviceConnections(kind: "candidate" | "public", packaged: boolean, env: NodeJS.ProcessEnv) {
+  const requested = env.PHYSICALSYSTEMS_ALLOW_DEVICES
+  if (requested !== undefined && requested !== "0" && requested !== "1") return false
+  if (requested === "0") return false
+  if (packaged) return kind === "public"
+  return requested === "1"
+}
+
 export const physicalPrompt = `You are Physical Systems, an assistant for investigating physical systems with an operator.
 Use the reviewed tools to inspect available devices, explain every relevant missing prerequisite, and propose useful approaches.
 Basic camera preview does not require commissioning. Direct the operator to the Devices panel (/workcell in the legacy client); only the operator starts preview. Preview does not provide you with vision.

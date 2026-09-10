@@ -1,6 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
-import { physicalEnvironment, physicalPrompt } from "./environment"
+import { physicalDeviceConnections, physicalEnvironment, physicalPrompt } from "./environment"
+
+test("public installations allow explicit Node attachment without a launcher flag", () => {
+  expect(physicalDeviceConnections("public", true, {})).toBe(true)
+  expect(physicalDeviceConnections("public", true, { PHYSICALSYSTEMS_ALLOW_DEVICES: "1" })).toBe(true)
+})
+
+test("the disposable qualification environment disables even a public installed app", () => {
+  const env = physicalEnvironment({ PHYSICALSYSTEMS_ALLOW_DEVICES: "0" }, "/isolated")
+  for (const kind of ["candidate", "public"] as const) {
+    expect(physicalDeviceConnections(kind, true, env)).toBe(false)
+    expect(physicalDeviceConnections(kind, false, env)).toBe(false)
+  }
+  expect(env.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
+})
+
+test("packaged candidates stay isolated and development requires explicit opt-in", () => {
+  for (const requested of [undefined, "0", "1"]) {
+    expect(physicalDeviceConnections("candidate", true, { PHYSICALSYSTEMS_ALLOW_DEVICES: requested })).toBe(false)
+  }
+  for (const kind of ["candidate", "public"] as const) {
+    expect(physicalDeviceConnections(kind, false, {})).toBe(false)
+    expect(physicalDeviceConnections(kind, false, { PHYSICALSYSTEMS_ALLOW_DEVICES: "1" })).toBe(true)
+  }
+})
+
+test("an invalid device attachment override never enables a connection", () => {
+  for (const requested of ["", "true", "false", " 1", "yes"]) {
+    for (const kind of ["candidate", "public"] as const) {
+      expect(physicalDeviceConnections(kind, true, { PHYSICALSYSTEMS_ALLOW_DEVICES: requested })).toBe(false)
+      expect(physicalDeviceConnections(kind, false, { PHYSICALSYSTEMS_ALLOW_DEVICES: requested })).toBe(false)
+    }
+  }
+})
 
 test("profile isolates configuration and keys while preserving native display and home", () => {
   const original = { HOME: "/original", DISPLAY: ":1", OPENAI_API_KEY: "secret", OPENCODE_CONFIG: "/installed", OPENCODE_AGENT_TOKEN: "old", PHYSICALSYSTEMS_ALLOW_DEVICES: "0" }

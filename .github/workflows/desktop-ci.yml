@@ -80,6 +80,10 @@ jobs:
         working-directory: packages/app
         run: bun test --conditions=solid --preload ./happydom.ts ./src/physicalsystems
 
+      - name: Managed workspace and conversation DOM regressions
+        working-directory: packages/app
+        run: bun test ./test-browser/physicalsystems-project-flow.test.ts
+
       - name: Rendered composer and provider sign-in regressions
         working-directory: packages/app
         run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts

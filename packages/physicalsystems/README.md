@@ -1,6 +1,6 @@
 # Physical Systems integration for OpenCode Desktop
 
-This is a local development integration and an unpacked review target. OpenCode supplies the Electron/Solid desktop, conversations, model/provider selection, Markdown, and terminal client. Physical Systems supplies the project/workcell controls and the authority for physical operations. The local Ubuntu Electron flow has been exercised with a deterministic provider and device access disabled. Windows and real-provider/native credential qualification remain open. See `QUALIFICATION.md` for exact evidence and remaining limits.
+OpenCode supplies the Electron/Solid desktop, conversations, model/provider selection, Markdown, and terminal client. Physical Systems supplies managed project workspaces, workcell controls, and the authority for physical operations. Public Windows/Linux installer workflows are described in `../../release/public-publisher.md`; `QUALIFICATION.md` records the earlier unpacked review evidence and its limits.
 
 ## Source and authority boundaries
 
@@ -15,6 +15,33 @@ A Physical Systems project has its own stable ID and explicit OpenCode server/se
 The project's compose action creates an empty OpenCode session on the owned local server, binds it to the project, and opens its native tab. **View devices** selects an existing binding or creates one before opening Devices, so operator controls are available before a chat prompt. Creating this context sends no model prompt and does not connect a Node or start a capture. Existing upstream drafts and conversation tabs remain managed by OpenCode.
 
 ## Developer build and launch
+
+### Public installations and device connections
+
+A fresh public installation creates a managed local workspace and opens its linked
+chat automatically. Creating another project also opens its chat; choosing a
+working directory or a Node connection is optional. The default simulation
+connection uses only the numeric fixture.
+
+Public builds from this source allow the operator to connect a configured Physical
+Systems Node through the project's **Connect** control. Run Node separately on the
+equipment computer. Use a local loopback Node when Desktop is on that computer,
+or an SSH connection when Desktop is on another machine. Save the Node's camera
+credential in the project's credential controls before connecting. SSH requires
+an authorized key and trusted host identity.
+
+Connection verifies Node identity and reads status. Camera capture starts only
+after the operator selects an observed camera and presses **Start preview**.
+Robot execution still requires Node configuration and its existing operation
+approval flow; a completed synthetic experiment does not qualify the robot.
+
+Packaged candidates keep device attachment disabled. Automated installer tests
+and the review launcher set `PHYSICALSYSTEMS_ALLOW_DEVICES=0`, which also disables
+attachment in public builds. Unpacked development requires an explicit enabling
+value of `1`; invalid values disable attachment. Installer qualification therefore
+does not claim validation against real equipment.
+
+### Build the development target
 
 Use the repository's installed Bun toolchain and dependencies. Run these commands from the fork root. The canonical source path and model-catalog path must identify the reviewed local inputs you intend to build:
 
