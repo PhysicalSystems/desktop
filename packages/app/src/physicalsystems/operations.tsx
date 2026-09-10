@@ -13,6 +13,25 @@ export function PhysicalOperations() {
     const snapshot = physical?.state.snapshot
     if (!snapshot) return []
     return [
+      ...(snapshot.activeCommissioning ?? []).map((owner) => ({
+        key: `commissioning:${owner.projectId}:${owner.trialId ?? "pending"}`,
+        owner: { ...owner, canStop: owner.canStop && !!owner.trialId },
+        label: language.t("physicalsystems.commissioning.title"),
+        phase:
+          owner.status?.trial?.phase === "OUTCOME_UNKNOWN"
+            ? "OUTCOME_UNKNOWN"
+            : (owner.status?.trial?.stopStatus ?? owner.status?.trial?.phase ?? "OUTCOME_UNKNOWN"),
+        command: {
+          type: "workcell.commissioning.stop",
+          projectId: owner.projectId,
+          conversationId: owner.conversationId!,
+          serverId: owner.serverId,
+          sessionId: owner.sessionId,
+          connectionGeneration: owner.connectionGeneration,
+          trialId: owner.trialId!,
+          reason: "operator-requested-stop",
+        } as PhysicalCommand,
+      })),
       ...snapshot.activeCaptures.map((owner) => ({
         key: `capture:${owner.projectId}:${owner.captureSessionId ?? "pending"}`,
         owner,

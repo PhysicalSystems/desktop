@@ -6,6 +6,7 @@ import { usePhysicalSystems } from "./context"
 import { CameraPreview } from "./camera"
 import { ExperimentsPanel, Phase } from "./experiments"
 import { executionFresh } from "./state"
+import { GripperCommissioning } from "./commissioning"
 
 function DevicesPanel() {
   const physical = usePhysicalSystems()!
@@ -67,6 +68,7 @@ function SetupPanel() {
   ]
   return (
     <div class="ps-stack">
+      <GripperCommissioning />
       <p class="ps-muted">{language.t("physicalsystems.setup.empty")}</p>
       <button
         type="button"

@@ -87,12 +87,12 @@ export async function createPhysicalHost(dataDir: string) {
     return exit
   }
   let workerExit = watch(child)
-  function request(method: string, values: Record<string, unknown> = {}, stop = false) {
+  function request(method: string, values: Record<string, unknown> = {}, stop = false, timeoutMs = 6500) {
     if (exited) return Promise.reject(new Error("OPERATOR_SERVICE_UNAVAILABLE"))
     if (!stop && pending.size >= 32) return Promise.reject(new Error("OPERATOR_BUSY"))
     const id = randomUUID()
     return new Promise<unknown>((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error("OPERATOR_REQUEST_UNCONFIRMED")) }, method === "start" ? 15_000 : 6500)
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error("OPERATOR_REQUEST_UNCONFIRMED")) }, method === "start" ? 15_000 : timeoutMs)
       pending.set(id, { resolve, reject, timer })
       child.postMessage({ id, method, ...values })
     })
@@ -106,7 +106,7 @@ export async function createPhysicalHost(dataDir: string) {
   return {
     snapshot: () => last ? Promise.resolve(last) : request("snapshot") as Promise<PhysicalSnapshot>,
     async command(command: PhysicalCommand) {
-      return await request("command", { request: command }, command.type.endsWith(".stop")) as PhysicalSnapshot
+      return await request("command", { request: command }, command.type.endsWith(".stop"), command.type === "workcell.commissioning.inspect" ? 40_000 : 6500) as PhysicalSnapshot
     },
     async configureServer(url: string, password: string) {
       modelServer = { url, password }
@@ -133,7 +133,7 @@ export async function createPhysicalHost(dataDir: string) {
       })().finally(() => { recovering = undefined })
       return recovering
     },
-    owned: () => !!last && (last.activeRuns.length > 0 || last.activeCaptures.length > 0 || last.activeExperiments.length > 0),
+    owned: () => !!last && (last.activeRuns.length > 0 || last.activeCaptures.length > 0 || last.activeExperiments.length > 0 || !!last.activeCommissioning?.length),
     notify() { if (last) broadcast({ ...last, closeBlocked: true }) },
     close() {
       if (closed) return Promise.resolve()

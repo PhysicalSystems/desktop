@@ -23,6 +23,7 @@ test.skipIf(!enabled)(
       "../context/server",
       "../context/tabs",
       "../context/global",
+      "../components/settings-dialog",
       "../utils/persist",
       "../utils/session-route",
       "@solidjs/router",
@@ -422,6 +423,48 @@ test.skipIf(!enabled)(
       await until(() => js("return window.__fixture.state.activeProjectId==='project-a'"))
       expect(await js("return document.querySelectorAll('[data-ps-camera] img').length")).toBe(0)
       expect(await js("return window.__fixture.errors")).toEqual([])
+      // Fresh page: exercise the real browser's commissioning controls with inert IPC.
+      await wd(`/session/${session.id}/url`, { url: `http://127.0.0.1:${address.port}/` })
+      await until(() => js("return !!document.querySelector('[data-ps-project-row]')"))
+      await js(`
+        window.__fixture.state.projects[0].connection.status='connected';
+        window.__fixture.emit({activeExperiments:[],workcell:{commissioning:{
+          available:true,fresh:true,receivedAt:Date.now(),maximumAgeMs:5000,pending:null,stopPending:false,message:null,
+          status:{contractVersion:'physicalsystems-gripper-check-v1',nodeSessionId:'node-a',
+            configuration:{id:'gripper-a',digest:'config-a',displayName:'Gripper fixture',deviceIdentity:'fake-robot',
+              calibrationDigest:'calibration-a',minimum:20,maximum:60,maximumDelta:5,maximumDurationSeconds:4,
+              maximumStep:1,stepIntervalSeconds:0.1,tolerance:0.5},
+            inspection:{id:'inspect-a',digest:'inspection-a',observedAt:new Date().toISOString(),
+              expiresAt:new Date(Date.now()+30000).toISOString(),ready:true,positions:{gripper:30},
+              torqueEnabled:{gripper:false},checks:[],gripperPosition:30},
+            trial:{trialId:'trial-a',digest:'plan-a',phase:'WAITING_FOR_APPROVAL',
+              approvalExpiresAt:new Date(Date.now()+30000).toISOString(),startPosition:30,targetPosition:33,
+              maximumDurationSeconds:4,latestPosition:null,stopStatus:null,message:null},
+            canInspect:false,canPrepare:false,canApprove:true,canStop:true,blockedReason:null}
+        }}});
+        document.querySelector('[data-ps-tab="setup"]').click();
+      `)
+      await until(() => js("return !!document.querySelector('[data-ps-commissioning-consent]')"))
+      expect(await js("return window.__fixture.calls")).toEqual([])
+      expect(await js("return document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(true)
+      await js("document.querySelector('[data-ps-commissioning-consent]').click()")
+      await until(() => js("return !document.querySelector('[data-ps-commissioning-approve]').disabled"))
+      await js("document.querySelector('[data-ps-commissioning-approve]').click()")
+      expect(await js("return window.__fixture.calls")).toEqual([
+        {
+          type: "workcell.commissioning.approve",
+          projectId: "project-a",
+          conversationId: "conversation-a",
+          serverId: "sidecar",
+          sessionId: "session-a",
+          connectionGeneration: 7,
+          trialId: "trial-a",
+          trialDigest: "plan-a",
+          approved: true,
+        },
+      ])
+      expect(await js("return window.__fixture.errors")).toEqual([])
+      await js("document.querySelector('[data-ps-commissioning-trial]').scrollIntoView({block:'center'})")
       if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
         const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
         await Bun.write(

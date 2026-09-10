@@ -11,6 +11,11 @@ import type { physicalSystemsEnglish } from "./i18n"
 export function Phase(props: { value?: string }) {
   const language = useLanguage()
   const known = [
+    "WAITING_FOR_APPROVAL",
+    "STOPPING",
+    "met",
+    "violated",
+    "unknown",
     "PROPOSED",
     "READY",
     "RUNNING",

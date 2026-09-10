@@ -1,12 +1,13 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/PhysicalSystems/physicalsystems",
-  "revision": "c68eb84904342e73d9dcd96253b78e22f8643b1e",
+  "revision": "f0f194b4d10810cd105c7b2b7993cc04c43ffc2f",
   "dirty": false,
   "sourceFiles": {
     "packages/cli/src/auth/redact.js": "0d5711bd0c49dc4ee084218222869857041ed88f0c27d9b3d9789d049fe6d408",
     "packages/cli/src/auth/secret-store.js": "a70d31fb6fd35afd0412ac624e0f03466c29c94326a07741fb536eb0cafac6aa",
     "packages/cli/src/harness/agent-skills.js": "88edac05b74a5de203cbadd690ceae1009e04f7e3440fc6693c83e5adc97f259",
+    "packages/cli/src/harness/commissioning-controller.js": "656c63a9592b6f84cb0c5d54aa9cb7f2b8d3e6e87d75b98e0b315c8e8b83bdce",
     "packages/cli/src/harness/execution-controller.js": "795fb4624e810490c3af7d7a9d342f4a999ee7b840cfd4172bafc1205bd4e412",
     "packages/cli/src/harness/execution-evidence.js": "03492c6063d8385700ad07063d34d5cfd8859e0623532e4b0c63efae722d890c",
     "packages/cli/src/harness/execution-inspection.js": "adc5f927024b600bbf7c481f4743756225f055a60323f53ab6731cfafdb2047e",
@@ -16,21 +17,22 @@
     "packages/cli/src/harness/experiments/tools.js": "43dcb642ac0cdee5a3e91276e634e8d80170492d47eef595dd3379204ebd4609",
     "packages/cli/src/harness/setup-inspection.js": "60cedf4295e4020c90be1c8d52b29558f2f8a79c40f66e0dcbb43442b4d6f51f",
     "packages/cli/src/harness/setup-view.js": "2afe12203d13d9bb4555f79571fb82469f6021f018c04bbae63cbca38f2ba046",
-    "packages/cli/src/harness/workcell-controller.js": "0de9d9b5fde16c1e2b27c48c97d5b990646f34306d143ee2c2f1c5dc7aad7052",
+    "packages/cli/src/harness/workcell-controller.js": "055274bf072144a1b8634c8710698e3a08a2c0f46704431f29f07b1d9dc6213a",
     "packages/cli/src/harness/workcell-view/view-state.js": "f02749bcb409e73791bef3fd7e6b22216027c9d92887a1bd2cbbb3f608b8c2b0",
     "packages/cli/src/physical/camera-preview-client.js": "11b91e6eac50e5487c354be267215a7f51da2805e4787801c46d536a452f901e",
+    "packages/cli/src/physical/commissioning-client.js": "e8dd2b5a06a1af35c69d9fbdda08d91362546f339b7f9ed9945274e2e924f857",
     "packages/cli/src/physical/execution-client.js": "41c76fc65bd9c03794c07019ebbdd9aee16900353611d4157c218653eed96fad",
     "packages/cli/src/physical/execution-contracts.js": "bea47b4e005893801254684b2d3406c6161198d544496ce6176e856b9d2e06ba",
     "packages/cli/src/physical/node-client.js": "fe2dd53ad9116b51ca174243cbaa207d387b34f7418b6d271c43cf64550a9303",
     "packages/cli/src/physical/route-contracts.js": "f46153ce57974b73f3a0082763b3390a3969bd75947f7977347e6c4753b09424",
     "packages/cli/src/physical/setup-client.js": "6697ee1bce7379b74592184e1d9bf58dcf4166882115626298a716a369879da0",
     "packages/cli/src/physical/setup-contracts.js": "535e4ffce9507e62338dcc3b80ef749f3bf1e9a8c3991a36449f80c00e28cdd4",
-    "packages/cli/src/physical/workflow-core.js": "e4a9b59f3d52a7d3d4e837ed25192843e451ebf523c1b50c1aea0d8c9a76f565",
+    "packages/cli/src/physical/workflow-core.js": "ee14ed8977cae8d697d4ae1d918243e3474eee16e72668d1a440d636dd42a4cf",
     "packages/desktop/src/connections.js": "d2e745ace8adf751d3108645b4f9485c931d92b9aaa807ea1d2bb6705c36f66f",
-    "packages/operator-core/src/index.js": "f6cb93dfa6c346c10e730f8534d8d1242ef9f40dd16e7a1bc97b0d3efd71c57a",
+    "packages/operator-core/src/index.js": "1b10d8c5a0f351d3def1a2526ccf6008e9f8aaf28286c8e08c9f5d73e03d27e0",
     "packages/operator-service/src/index.js": "ca0b1ae3765bbd079b538766dcf4bc0642a8a5e65988f37210c47a5959242664",
-    "packages/operator-service/src/physical.js": "e2e8d0360dd755aac982605f09af49230397c4b42abecdc958b393c006318a54",
-    "packages/operator-service/src/service.js": "d2c798b2e59d11d47d05cb2ab50402b5fb672d25f3b7e792726e67be0d293636",
+    "packages/operator-service/src/physical.js": "08358c6128beec5112788958a94a0305b6e6759a82f073bf17200e20ab191fa8",
+    "packages/operator-service/src/service.js": "5692b00a8f3589aae0ec31762a5f35b2304f7d9354846dab992c67781ab833bd",
     "packages/operator-service/src/tools.js": "8e26e1790c8d65133483bb06ac0e9101cb10686750ffb196bb1562d3d5f0bdd2"
   },
   "artifacts": {
@@ -40,6 +42,6 @@
     "skills/transfer-container/SKILL.md": "aba324cf88db6c1ceb47fe162cd71039f164a511aec4fe12703479f996b609c2",
     "NOTICE": "1694460fc26d199688f6e76a181c69cfd1246697b3c7690aeebdb318793fdbe9",
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "operator-service.mjs": "6068ffc85d7cb36b03a30a52a66c667da85d0a35022b5573e504af1b087f35ad"
+    "operator-service.mjs": "fe6e732f0aa0a8c45046741307dceba9bcbbb3e1eea002b55e110b426636e23e"
   }
 }

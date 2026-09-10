@@ -35,6 +35,39 @@ after the operator selects an observed camera and presses **Start preview**.
 Robot execution still requires Node configuration and its existing operation
 approval flow; a completed synthetic experiment does not qualify the robot.
 
+### First gripper check
+
+The **Setup → Gripper check** controls use the optional Node
+`physicalsystems-gripper-check-v1` commissioning API. They require a Node build
+with that API, an explicitly reviewed host configuration, and the project's
+encrypted execution credential. Installing this Desktop update alone does not
+configure or replace Node, LeRobot, the motor SDK, or robot calibration. An older
+or unconfigured Node reports the check as unavailable.
+
+Opening Setup reads metadata only. **Inspect robot without movement** explicitly
+reads current positions, calibration checks and torque state. A valid inspection
+allows one absolute gripper target within the host's configured range and delta.
+**Prepare gripper check** produces the exact plan; its checkbox and approval are
+tied to that plan, robot configuration, Node session and conversation. Node
+rechecks the actual starting state before enabling motor 6, steps toward the
+target, records feedback and disables that motor. The other five motors are not
+enabled or commanded by this lane.
+
+Stop remains in the global operation strip across conversation/project changes.
+Stale state, expired approval, a lost acknowledgement or a changed Node session
+cannot silently authorize another attempt. A confirmed motor stop and an unknown
+trial outcome are displayed separately; an unknown outcome retains ownership and
+requires investigation. Do not remove persisted records to clear that state.
+
+This initial Node mode owns the configured serial device until the commissioning
+host closes. It cannot run alongside the normal qualified execution controller.
+A completed gripper check does not qualify arm motion or a transfer skill. The
+operator-service contract and recovery behavior are documented in the canonical
+repository's `packages/operator-service/COMMISSIONING.md`; Node's host setup and
+configuration documentation governs the hardware implementation. Development
+checks use fake robot buses, isolated loopback HTTP and renderer fixtures; real
+device testing remains a separate validation step.
+
 Packaged candidates keep device attachment disabled. Automated installer tests
 and the review launcher set `PHYSICALSYSTEMS_ALLOW_DEVICES=0`, which also disables
 attachment in public builds. Unpacked development requires an explicit enabling

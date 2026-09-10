@@ -74,6 +74,7 @@ test("managed workspace readiness retains hardware isolation and rejects extra o
     "PACKAGED_HARDWARE_OPERATIONS_ACTIVE",
   )
   expect(read({ ...input, snapshot: { ...snapshot, activeRuns: [{}] } })).toBe("PACKAGED_HARDWARE_OPERATIONS_ACTIVE")
+  expect(read({ ...input, snapshot: { ...snapshot, activeCommissioning: [{}] } })).toBe("PACKAGED_HARDWARE_OPERATIONS_ACTIVE")
   for (const projects of [
     [project, { ...project, id: "extra-project" }],
     [{ ...project, connection: { kind: "local" } }],

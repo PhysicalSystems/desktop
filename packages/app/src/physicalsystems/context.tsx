@@ -73,7 +73,10 @@ export function createPhysicalSystems(
         return next
       }),
       new Promise<never>((_, reject) => {
-        timer.id = setTimeout(() => reject(new Error(timeout())), 8000)
+        timer.id = setTimeout(
+          () => reject(new Error(timeout())),
+          request.type === "workcell.commissioning.inspect" ? 45_000 : 8000,
+        )
       }),
     ])
       .catch((error: unknown) => {
