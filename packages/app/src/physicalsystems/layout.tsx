@@ -642,7 +642,10 @@ function PhysicalWorkspace(props: ParentProps) {
               physical.state.failures.conversation}
           </p>
         </Show>
-        <div class="ps-session-content">
+        <div
+          class="ps-session-content"
+          style={{ "--ps-welcome-wordmark": JSON.stringify(language.t("physicalsystems.name")) }}
+        >
           <Show when={state.initializing} fallback={props.children}>
             <p role="status">{language.t("physicalsystems.project.preparing")}</p>
           </Show>
