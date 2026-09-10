@@ -106,7 +106,7 @@ test("unsigned preview traverses both trusted native-job anchors and preserves a
   expect(await readdir(changed.root)).not.toContain("qualified")
 })
 
-test("the real workflow CLI collects complete simulated job evidence and exports only the qualification anchor", async () => {
+test("the real workflow CLI collects complete simulated job evidence and exports the qualification anchor and originating attempt", async () => {
   const f = await fixture()
   const build = join(f.root, "public-build-inputs.json")
   const output = join(f.root, "github-output")
@@ -134,7 +134,9 @@ test("the real workflow CLI collects complete simulated job evidence and exports
   })
   expect(result.status).toBe(0)
   expect(result.stderr).toBe("")
-  expect(await readFile(output, "utf8")).toMatch(/^qualification_sha256=[a-f0-9]{64}\n$/)
+  expect(await readFile(output, "utf8")).toMatch(
+    new RegExp(`^qualification_sha256=[a-f0-9]{64}\\nrun_attempt=${f.input.env.GITHUB_RUN_ATTEMPT}\\n$`),
+  )
   expect(await readFile(summary, "utf8")).toContain("protected approval")
   expect(result.stdout).not.toContain(f.root)
 })

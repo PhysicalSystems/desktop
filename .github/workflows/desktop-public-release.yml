@@ -1,25 +1,47 @@
-name: Publish qualified desktop installers
-run-name: Public desktop from qualified run ${{ inputs.qualification_run_id }} attempt ${{ inputs.qualification_run_attempt }}
+name: Release desktop (build, test, publish)
+run-name: Release desktop ${{ inputs.channel }} (${{ inputs.windows_signing }}) from ${{ github.sha }}
 
-# The candidate pipeline is ineligible. This workflow consumes the owned public
-# native-qualification producer and its declared policy; it never fabricates receipts.
-# One final environment approval covers publication and website selection. No
-# source preparation PR or second website approval is part of this publisher.
+# Native observations are bound through distinct Windows/Linux job outputs.
+# The strict collector succeeds only when every required check actually passes.
 on:
   workflow_dispatch:
     inputs:
-      qualification_run_id:
-        description: Successful public qualification run with declared Windows signing policy from reviewed main
-        type: string
+      channel:
+        description: Public target track; includes an unpublished lower-version upgrade lab
+        type: choice
+        options: [preview, stable]
+        default: preview
         required: true
-      qualification_run_attempt:
-        description: Exact current successful qualification attempt
+      version:
+        description: Optional preview version; stable requires an explicit version
         type: string
+        required: false
+      windows_signing:
+        description: Windows signing policy; unsigned-preview is allowed only on preview
+        type: choice
+        options: [signed, unsigned-preview]
+        default: signed
         required: true
-      expected_qualification_sha256:
-        description: Canonical qualification digest from the trusted producer summary (not the downloaded record)
+
+      browser_review:
+        description: Verify the native browser handoff against an owned loopback fixture; no provider sign-in
+        type: boolean
+        default: false
+        required: false
+      provider_qa:
+        description: Optional owned provider sign-in qualification
+        type: choice
+        options: [disabled, openai-device]
+        default: disabled
+        required: true
+      provider_qa_public_key:
+        description: Optional RSA SPKI public key for encrypted provider challenge review
         type: string
-        required: true
+        required: false
+      provider_qa_key_sha256:
+        description: SHA-256 of the reviewer public key DER SPKI
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -33,19 +55,230 @@ env:
   GIT_CONFIG_COUNT: "1"
   GIT_CONFIG_KEY_0: core.autocrlf
   GIT_CONFIG_VALUE_0: "false"
-  QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
-  QUALIFICATION_RUN_ATTEMPT: ${{ inputs.qualification_run_attempt }}
-  EXPECTED_QUALIFICATION_SHA256: ${{ inputs.expected_qualification_sha256 }}
-  QUALIFICATION_DIR: ${{ github.workspace }}/../qualified-public-desktop
+  PHYSICALSYSTEMS_RELEASE_REPOSITORY: PhysicalSystems/desktop
 
 jobs:
   prepare:
-    name: Validate qualification and declared signing policy, then complete the reserved draft
-    if: github.repository == 'PhysicalSystems/desktop'
+    name: Freeze reviewed main and explicit public signing policy
+    if: github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    outputs:
+      source_sha: ${{ steps.policy.outputs.source_sha }}
+      inputs_sha256: ${{ steps.inputs.outputs.inputs_sha256 }}
+      public_build_sha256: ${{ steps.inputs.outputs.public_build_sha256 }}
+      version: ${{ steps.inputs.outputs.version }}
+      baseline_inputs_sha256: ${{ steps.inputs.outputs.baseline_inputs_sha256 }}
+      baseline_public_build_sha256: ${{ steps.inputs.outputs.baseline_public_build_sha256 }}
+      baseline_version: ${{ steps.inputs.outputs.baseline_version }}
+      upgrade_plan_sha256: ${{ steps.inputs.outputs.upgrade_plan_sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+        with:
+          install-dependencies: "false"
+      - name: Freeze source and validate the explicit signing policy before builds
+        id: policy
+        env:
+          DESKTOP_PUBLIC_BUILD_ENABLED: ${{ vars.DESKTOP_PUBLIC_BUILD_ENABLED }}
+          DESKTOP_WINDOWS_SIGNING_POLICY: ${{ vars.DESKTOP_WINDOWS_SIGNING_POLICY }}
+          DESKTOP_WINDOWS_SIGNING: ${{ inputs.windows_signing }}
+          CHANNEL: ${{ inputs.channel }}
+          PUBLIC_POLICY_DIRECTORY: ${{ runner.temp }}/desktop-public-policy
+        run: bun script/desktop-public-producer.ts preflight
+      - name: Read complete download-repository history, including drafts
+        env:
+          # Read-only contents access to the separate download repository. The
+          # desktop GITHUB_TOKEN cannot read that repository's draft releases.
+          GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_HISTORY_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'Provision DESKTOP_RELEASE_HISTORY_TOKEN with read-only contents access to the download repository.'
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/desktop-public"
+          gh api --paginate --slurp 'repos/PhysicalSystems/physicalsystems/releases?per_page=100' > "$RUNNER_TEMP/desktop-public/history-pages.json"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import path from 'node:path';
+          const root = path.join(process.env.RUNNER_TEMP, 'desktop-public');
+          const pages = JSON.parse(readFileSync(path.join(root, 'history-pages.json'), 'utf8'));
+          if (!Array.isArray(pages) || !pages.length || pages.some(page => !Array.isArray(page))) throw new Error('Incomplete release history');
+          const releases = pages.flat();
+          if (releases.some(release => typeof release.tag_name !== 'string')) throw new Error('Malformed release history');
+          const versions = releases.filter(release => release.tag_name.startsWith('desktop-v')).map(release => release.tag_name.slice('desktop-v'.length));
+          writeFileSync(path.join(root, 'history.json'), JSON.stringify({ complete: true, versions }, null, 2) + '\n');
+          NODE
+      - name: Freeze target and separate lower-version lab inputs from the reviewed source
+        id: inputs
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          PUBLIC_RELEASE_HISTORY: ${{ runner.temp }}/desktop-public/history.json
+          PUBLIC_INPUT_DIRECTORY: ${{ runner.temp }}/desktop-public/inputs
+          PUBLIC_POLICY_FILE: ${{ runner.temp }}/desktop-public-policy/producer-policy.json
+          EXPECTED_POLICY_SHA256: ${{ steps.policy.outputs.policy_sha256 }}
+        run: bun script/desktop-public-upgrade-inputs.ts
+      - name: Retain only the immutable public input bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/desktop-public/inputs/release-inputs.json
+            ${{ runner.temp }}/desktop-public/inputs/public-build-inputs.json
+            ${{ runner.temp }}/desktop-public/inputs/history.json
+            ${{ runner.temp }}/desktop-public/inputs/models.dev-api.json
+            ${{ runner.temp }}/desktop-public/inputs/upgrade-plan.json
+            ${{ runner.temp }}/desktop-public/inputs/baseline/release-inputs.json
+            ${{ runner.temp }}/desktop-public/inputs/baseline/public-build-inputs.json
+            ${{ runner.temp }}/desktop-public/inputs/baseline/history.json
+            ${{ runner.temp }}/desktop-public/inputs/baseline/models.dev-api.json
+          if-no-files-found: error
+          retention-days: 30
+
+  source:
+    name: Validate exact public source
+    needs: prepare
+    uses: ./.github/workflows/desktop-ci.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+
+  windows:
+    name: Public windows-x64 installers and native evidence
+    needs: [prepare, source]
+    uses: ./.github/workflows/desktop-public-package.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      inputs_sha256: ${{ needs.prepare.outputs.inputs_sha256 }}
+      public_build_sha256: ${{ needs.prepare.outputs.public_build_sha256 }}
+      version: ${{ needs.prepare.outputs.version }}
+      baseline_inputs_sha256: ${{ needs.prepare.outputs.baseline_inputs_sha256 }}
+      baseline_public_build_sha256: ${{ needs.prepare.outputs.baseline_public_build_sha256 }}
+      baseline_version: ${{ needs.prepare.outputs.baseline_version }}
+      upgrade_plan_sha256: ${{ needs.prepare.outputs.upgrade_plan_sha256 }}
+      platform: windows-x64
+      windows_signing: ${{ inputs.windows_signing }}
+      browser_review: ${{ inputs.browser_review }}
+      provider_qa: ${{ inputs.provider_qa }}
+      provider_qa_public_key: ${{ inputs.provider_qa_public_key }}
+      provider_qa_key_sha256: ${{ inputs.provider_qa_key_sha256 }}
+    secrets:
+      DESKTOP_WINDOWS_PFX_BASE64: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_WINDOWS_PFX_BASE64 || '' }}
+      DESKTOP_WINDOWS_PFX_PASSWORD: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_WINDOWS_PFX_PASSWORD || '' }}
+      DESKTOP_AZURE_TENANT_ID: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_AZURE_TENANT_ID || '' }}
+      DESKTOP_AZURE_CLIENT_ID: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_AZURE_CLIENT_ID || '' }}
+      DESKTOP_AZURE_CLIENT_SECRET: ${{ inputs.windows_signing == 'signed' && secrets.DESKTOP_AZURE_CLIENT_SECRET || '' }}
+
+  linux:
+    name: Public linux-x64 installers and native evidence
+    needs: [prepare, source]
+    uses: ./.github/workflows/desktop-public-package.yml
+    with:
+      source_sha: ${{ needs.prepare.outputs.source_sha }}
+      inputs_sha256: ${{ needs.prepare.outputs.inputs_sha256 }}
+      public_build_sha256: ${{ needs.prepare.outputs.public_build_sha256 }}
+      version: ${{ needs.prepare.outputs.version }}
+      baseline_inputs_sha256: ${{ needs.prepare.outputs.baseline_inputs_sha256 }}
+      baseline_public_build_sha256: ${{ needs.prepare.outputs.baseline_public_build_sha256 }}
+      baseline_version: ${{ needs.prepare.outputs.baseline_version }}
+      upgrade_plan_sha256: ${{ needs.prepare.outputs.upgrade_plan_sha256 }}
+      platform: linux-x64
+      windows_signing: ${{ inputs.windows_signing }}
+      browser_review: ${{ inputs.browser_review }}
+      provider_qa: ${{ inputs.provider_qa }}
+      provider_qa_public_key: ${{ inputs.provider_qa_public_key }}
+      provider_qa_key_sha256: ${{ inputs.provider_qa_key_sha256 }}
+
+  qualification:
+    name: Verify Windows and Linux test results
+    if: always() && github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main' && needs.prepare.result == 'success'
+    needs: [prepare, source, windows, linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      qualification_sha256: ${{ steps.collect.outputs.qualification_sha256 }}
+      run_attempt: ${{ steps.collect.outputs.run_attempt }}
+      artifact_id: ${{ steps.bundle.outputs.artifact-id }}
+    steps:
+      - name: Require successful exact-source native producer jobs
+        env:
+          SOURCE_RESULT: ${{ needs.source.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+          LINUX_RESULT: ${{ needs.linux.result }}
+        run: |
+          if [ "$SOURCE_RESULT" != success ] || [ "$WINDOWS_RESULT" != success ] || [ "$LINUX_RESULT" != success ]; then
+            echo 'Public qualification requires successful source and both native producer jobs; inspect their fixed check summaries.'
+            exit 1
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ needs.prepare.outputs.source_sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+        with:
+          install-dependencies: "false"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: desktop-public-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-public/inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.windows.outputs.build_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/windows/artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.windows.outputs.receipt_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/windows/receipts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.linux.outputs.build_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/linux/artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          artifact-ids: ${{ needs.linux.outputs.receipt_artifact_id }}
+          path: ${{ runner.temp }}/desktop-public/downloaded/linux/receipts
+          merge-multiple: true
+      - name: Strictly collect the exact bytes, declared signing policy and all native requirements
+        id: collect
+        env:
+          PUBLIC_BUILD_INPUTS: ${{ runner.temp }}/desktop-public/inputs/public-build-inputs.json
+          EXPECTED_RELEASE_INPUTS_SHA256: ${{ needs.prepare.outputs.inputs_sha256 }}
+          EXPECTED_PUBLIC_BUILD_SHA256: ${{ needs.prepare.outputs.public_build_sha256 }}
+          EXPECTED_WINDOWS_JOB_SHA256: ${{ needs.windows.outputs.job_receipt_sha256 }}
+          EXPECTED_LINUX_JOB_SHA256: ${{ needs.linux.outputs.job_receipt_sha256 }}
+          PUBLIC_DOWNLOADED_DIRECTORY: ${{ runner.temp }}/desktop-public/downloaded
+          PUBLIC_COLLECTION_STAGING: ${{ runner.temp }}/desktop-public/collection-evidence
+          PUBLIC_QUALIFIED_DIRECTORY: ${{ runner.temp }}/desktop-public/qualified
+        run: bun script/desktop-public-producer.ts collect
+      - name: Retain only the verified publisher bundle
+        id: bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: desktop-public-qualified-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-public/qualified/*
+          if-no-files-found: error
+          retention-days: 30
+
+  reserve:
+    name: Prepare the tested installers for release
+    needs: qualification
+    if: github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main'
+    env:
+      QUALIFICATION_RUN_ATTEMPT: ${{ needs.qualification.outputs.run_attempt }}
+      EXPECTED_QUALIFICATION_SHA256: ${{ needs.qualification.outputs.qualification_sha256 }}
+      QUALIFICATION_DIR: ${{ github.workspace }}/../qualified-public-desktop
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     outputs:
       prepared_sha256: ${{ steps.prepare.outputs.prepared_sha256 }}
+      artifact_id: ${{ steps.prepared.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -61,17 +294,17 @@ jobs:
         run: bun script/desktop-public-release.ts preflight
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: desktop-public-qualified-${{ inputs.qualification_run_id }}-${{ inputs.qualification_run_attempt }}
+          artifact-ids: ${{ needs.qualification.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ env.QUALIFICATION_DIR }}
-          run-id: ${{ inputs.qualification_run_id }}
-          github-token: ${{ github.token }}
       - name: Reserve and verify exact draft bytes without publishing
         id: prepare
         env:
           DESKTOP_RELEASE_TOKEN: ${{ secrets.DESKTOP_DRAFT_TOKEN }}
           PUBLICATION_OUTPUT: ${{ runner.temp }}/prepared-publication
         run: bun script/desktop-public-release.ts prepare
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - id: prepared
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: desktop-public-prepared-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/prepared-publication/prepared-publication.json
@@ -79,9 +312,13 @@ jobs:
           retention-days: 90
 
   publish:
-    name: Approve once, publish the verified bytes and read public downloads back
-    if: github.repository == 'PhysicalSystems/desktop'
-    needs: prepare
+    name: Approve release, publish installers and update website
+    if: github.repository == 'PhysicalSystems/desktop' && github.ref == 'refs/heads/main'
+    needs: [qualification, reserve]
+    env:
+      QUALIFICATION_RUN_ATTEMPT: ${{ needs.qualification.outputs.run_attempt }}
+      EXPECTED_QUALIFICATION_SHA256: ${{ needs.qualification.outputs.qualification_sha256 }}
+      QUALIFICATION_DIR: ${{ github.workspace }}/../qualified-public-desktop
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     # Must preexist with required reviewers. Keep DESKTOP_RELEASE_TOKEN exclusively
@@ -106,13 +343,13 @@ jobs:
         run: bun script/desktop-public-release.ts preflight
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: desktop-public-qualified-${{ inputs.qualification_run_id }}-${{ inputs.qualification_run_attempt }}
+          artifact-ids: ${{ needs.qualification.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ env.QUALIFICATION_DIR }}
-          run-id: ${{ inputs.qualification_run_id }}
-          github-token: ${{ github.token }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: desktop-public-prepared-${{ github.run_id }}-${{ github.run_attempt }}
+          artifact-ids: ${{ needs.reserve.outputs.artifact_id }}
+          merge-multiple: true
           path: ${{ runner.temp }}/prepared-publication
       - name: Confirm ownership and publish without rebuilding or replacing assets
         id: publish
@@ -120,7 +357,7 @@ jobs:
           DESKTOP_RELEASE_TOKEN: ${{ secrets.DESKTOP_RELEASE_TOKEN }}
           PUBLICATION_OUTPUT: ${{ runner.temp }}/published-publication
           PREPARED_PUBLICATION: ${{ runner.temp }}/prepared-publication/prepared-publication.json
-          EXPECTED_PREPARED_SHA256: ${{ needs.prepare.outputs.prepared_sha256 }}
+          EXPECTED_PREPARED_SHA256: ${{ needs.reserve.outputs.prepared_sha256 }}
         run: bun script/desktop-public-release.ts publish
       - name: Retain the approved public review
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

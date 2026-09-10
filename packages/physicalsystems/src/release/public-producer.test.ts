@@ -35,10 +35,20 @@ test("workflow keeps explicit signed default, both platforms, and a separate uns
     jobs: Record<
       string,
       {
-        needs?: string[]
+        needs?: string[] | string
+        environment?: string
+        env?: Record<string, string>
+        outputs?: Record<string, string>
         with?: Record<string, string>
         secrets?: Record<string, string>
-        steps?: { if?: string; run?: string; env?: Record<string, string> }[]
+        steps?: {
+          id?: string
+          uses?: string
+          with?: Record<string, string>
+          if?: string
+          run?: string
+          env?: Record<string, string>
+        }[]
       }
     >
   }
@@ -46,7 +56,7 @@ test("workflow keeps explicit signed default, both platforms, and a separate uns
     Bun.YAML.parse(
       await readFile(new URL(`../../../../.github/workflows/${name}.yml`, import.meta.url), "utf8"),
     ) as Workflow
-  const build = await readWorkflow("desktop-public-build")
+  const build = await readWorkflow("desktop-public-release")
   expect(build.on.workflow_dispatch!.inputs.windows_signing).toMatchObject({
     default: "signed",
     options: ["signed", "unsigned-preview"],
@@ -59,6 +69,35 @@ test("workflow keeps explicit signed default, both platforms, and a separate uns
   for (const value of Object.values(build.jobs.windows!.secrets!))
     expect(value).toMatch(/^\$\{\{ inputs\.windows_signing == 'signed' && secrets\.[A-Z0-9_]+ \|\| '' \}\}$/)
   expect(build.jobs.qualification!.needs).toEqual(["prepare", "source", "windows", "linux"])
+  expect(build.on.workflow_dispatch!.inputs.qualification_run_id).toBeUndefined()
+  expect(build.jobs.qualification!.outputs).toEqual({
+    qualification_sha256: "${{ steps.collect.outputs.qualification_sha256 }}",
+    run_attempt: "${{ steps.collect.outputs.run_attempt }}",
+    artifact_id: "${{ steps.bundle.outputs.artifact-id }}",
+  })
+  expect(build.jobs.reserve!.needs).toBe("qualification")
+  expect(build.jobs.publish!.needs).toEqual(["qualification", "reserve"])
+  expect(build.jobs.publish!.environment).toBe("desktop-public-release")
+  for (const name of ["reserve", "publish"]) {
+    const job = build.jobs[name]!
+    expect(job.env!.EXPECTED_QUALIFICATION_SHA256).toBe("${{ needs.qualification.outputs.qualification_sha256 }}")
+    expect(job.env!.QUALIFICATION_RUN_ATTEMPT).toBe("${{ needs.qualification.outputs.run_attempt }}")
+    expect(
+      job.steps!.some((step) => step.with?.["artifact-ids"] === "${{ needs.qualification.outputs.artifact_id }}"),
+    ).toBe(true)
+    expect(job.steps!.some((step) => step.run === "bun script/desktop-public-release.ts preflight")).toBe(true)
+  }
+  expect(
+    build.jobs.publish!.steps!.some(
+      (step) => step.with?.["artifact-ids"] === "${{ needs.reserve.outputs.artifact_id }}",
+    ),
+  ).toBe(true)
+  expect(build.jobs.publish!.steps!.find((step) => step.id === "publish")!.env!.EXPECTED_PREPARED_SHA256).toBe(
+    "${{ needs.reserve.outputs.prepared_sha256 }}",
+  )
+  expect(build.jobs.publish!.steps!.at(-1)!.run).toContain("desktop-promote-website.ts")
+  for (const name of ["desktop-public-build", "desktop-download-promotion"])
+    await expect(readWorkflow(name)).rejects.toMatchObject({ code: "ENOENT" })
   const steps = (await readWorkflow("desktop-public-package")).jobs.package!.steps!
   const windows = steps.filter((step) => step.run === "bun script/desktop-public-producer.ts build-windows")
   expect(windows).toHaveLength(2)

@@ -45,21 +45,24 @@ try {
         throw new Error("Publisher prerequisite returned malformed metadata")
       }) as Promise<unknown>
     }
-    const runId = required("QUALIFICATION_RUN_ID")
+    const runId = required("GITHUB_RUN_ID")
     const runAttempt = required("QUALIFICATION_RUN_ATTEMPT")
     if (!/^[1-9]\d*$/.test(runId) || !/^[1-9]\d*$/.test(runAttempt))
       throw new Error("Invalid qualification run identity")
-    const [run, attempt, environment] = await Promise.all([
+    const [run, attempt, jobs, environment] = await Promise.all([
       get(`actions/runs/${runId}`),
       get(`actions/runs/${runId}/attempts/${runAttempt}`),
+      get(`actions/runs/${runId}/attempts/${runAttempt}/jobs?per_page=100`),
       get("environments/desktop-public-release"),
     ])
     validatePublisherPrerequisites({
       run,
       attempt,
+      jobs,
       environment,
       runId,
       runAttempt,
+      currentRunAttempt: required("GITHUB_RUN_ATTEMPT"),
       sourceRevision: required("GITHUB_SHA"),
     })
     if (!/^[a-f0-9]{64}$/.test(required("EXPECTED_QUALIFICATION_SHA256")))

@@ -1,14 +1,31 @@
 # Protected public desktop publication
 
-`desktop-public-release.yml` adds the publication half of the release process. It consumes publicly identified, natively qualified installers from the owned producer, with either verified Windows signing or an explicitly qualified unsigned Windows preview. Internal candidate builds remain ineligible. Publishing does not establish that native checks ran; the owned producer supplies their independently anchored evidence.
+**Release desktop (build, test, publish)** (`.github/workflows/desktop-public-release.yml`)
+is the single public release workflow. Dispatch it once from reviewed `main`, select
+the channel and Windows signing policy, and optionally supply a version. It runs:
 
-The producer prerequisite is `.github/workflows/desktop-public-build.yml`, successful on the exact reviewed `main` commit used by the publisher. Its [implemented build and smoke stages](public-producer.md) run a strict final collector that emits a publisher bundle only after every required native observation passes. The existing `.github/workflows/desktop-release.yml` is deliberately rejected. Until complete native evidence and credentials exist, preflight fails closed. Do not change candidate or unqualified booleans to `PASS`.
+```text
+Freeze inputs → source checks → Windows / Linux builds and native tests
+              → verify all results → prepare draft → approve release
+              → publish exact installers → update and verify website
+```
 
-One dispatch to **Publish qualified desktop installers** supplies the producer run ID, its exact current attempt and the canonical qualified-distribution digest from the trusted producer summary. This is a continuation of a previously qualified build; it is not yet a one-dispatch build-and-publish pipeline. A future top-level coordinator can combine those phases without rebuilding qualified bytes.
+The [build and smoke stages](public-producer.md) run a strict collector that emits
+a publisher bundle only after every required native observation passes. Its digest,
+artifact ID and originating attempt flow directly through job outputs. No run ID,
+attempt or digest needs to be copied into a second dispatch. The legacy separate
+public build and website-promotion workflows have been removed. Source CI and the
+reusable native packaging workflow remain internal building blocks. The candidate
+workflow is for diagnostics and cannot publish.
+
+The overall run is still executing at publication time. Preflight therefore checks
+the owned main workflow identity and the successful collector job in its exact
+originating attempt, rather than requiring a completed overall run. Forks, unrelated
+runs, unsuccessful collectors and missing protected reviewers remain ineligible.
 
 The publisher validates the producer identity and the existing `desktop-public-release` environment's required reviewers before accessing release credentials. It validates every installer and referenced receipt against the independently anchored qualification record, reserves a version in a draft release and uploads only missing exact assets. It streams every uploaded asset back and freezes the numeric release and asset IDs before waiting for one final protected approval.
 
-After approval it downloads the same qualified bundle, verifies its bytes again, verifies the same draft and asset IDs, publishes that draft without rebuilding, then anonymously streams all three public downloads and checks their hashes. Only complete successful readback emits `public-review.json` and `desktop-selection.json`. The same approved job creates the one-file website selection PR, waits for its exact-head website checks, merges it automatically and verifies the live website selection. There is no release-preparation PR or additional human website approval in this path. The separate promotion workflow is a recovery path.
+After approval it downloads the same qualified bundle, verifies its bytes again, verifies the same draft and asset IDs, publishes that draft without rebuilding, then anonymously streams all three public downloads and checks their hashes. Only complete successful readback emits `public-review.json` and `desktop-selection.json`. The same approved job creates the one-file website selection PR, waits for its exact-head website checks, merges it automatically and verifies the live website selection. There is no release-preparation PR or additional human website approval in this path. Recovery uses the failed stage of this same workflow.
 
 ## Producer contract
 
@@ -46,7 +63,7 @@ The producer must pin and test the public application identity. For signed distr
 - `DESKTOP_DRAFT_TOKEN`: repository secret scoped to public download destination `PhysicalSystems/physicalsystems`, for draft preparation. GitHub does not offer a draft-only contents permission; protect reviewed workflow source and restrict who can dispatch it.
 - `DESKTOP_RELEASE_TOKEN`: secret only in the protected publication environment, scoped to that same public release destination.
 - `DESKTOP_WEBSITE_TOKEN`: secret in that same protected environment, scoped to `PhysicalSystems/platform` for the checked one-file PR and merge.
-- Both source and artifact workflows must remain owned by `PhysicalSystems/desktop`. A fork, pull request run, failed run, stale attempt, different source, candidate workflow or missing reviewer rule is rejected.
+- The workflow must remain owned by `PhysicalSystems/desktop`. A fork, pull request run, different source, candidate workflow, unsuccessful collector or missing reviewer rule is rejected. Only an earlier successful collector in the same run can be reused for a publication retry.
 
 No credentials, signing private keys, app profiles, camera imagery or raw runtime attachments belong in the bundle or repository. The publisher uploads only installers to GitHub Releases; its reviewed public metadata artifacts contain hashes and identities, not private qualification profiles.
 
@@ -56,9 +73,25 @@ The destination is `PhysicalSystems/physicalsystems`, separate from the desktop 
 
 Release reservation is keyed by version and canonical qualification digest. Every history page is read, visible drafts count, an existing independent tag blocks creation, and an unrelated draft body blocks reuse. Numeric release and asset IDs are frozen before approval. Changed IDs or bytes fail without deleting or overwriting assets. Existing incomplete published releases are not repaired automatically.
 
-Lost create/upload/publish acknowledgements fail the current operation. Rerun the full publisher with the same inputs to reconcile the durable release ID and exact completed assets. If publication succeeded but readback or website deployment failed, the same release is verified again; publication is not replayed and no binary is replaced. Re-run **all jobs**, because preparation artifacts include the workflow attempt in their name. A public readback failure emits no selection, preserving the website's previously selected release. A website failure does not unpublish a verified release.
+Lost create/upload/publish acknowledgements fail the current operation. If draft
+preparation, publication, readback or website deployment fails, use **Re-run failed
+jobs** (or rerun the failed job and its dependents) on that run. Successful
+qualification and preparation outputs retain their immutable artifact IDs and
+originating attempt. Preflight verifies the original successful collector via the
+attempt-specific GitHub API. This resumes publication without rebuilding installers,
+changing their version, replacing assets or copying identifiers into another workflow.
 
-Workflow evidence expires after 90 days. The published installers and release body remain durable, but long-term sanitized native/signature receipts still need an owned durable retention policy before relying on the release audit after artifact expiry.
+If publication succeeded, the same release is verified again; publication is not
+replayed. A public readback failure emits no selection, preserving the previous
+website selection. A website failure does not unpublish a verified release. The
+protected publishing job still requires approval when rerun.
+
+Do not choose **Re-run all jobs** to recover publication: that repeats version
+allocation and builds. Likewise, a build/test failure before qualification should
+start a fresh full run; partially rerunning native build stages can mix attempt-bound
+inputs and is rejected. Artifacts must still be retained for publication recovery.
+
+Qualified build artifacts expire after 30 days; publication review artifacts after 90 days. The published installers and release body remain durable, but long-term sanitized native/signature receipts still need an owned durable retention policy before relying on the release audit after artifact expiry.
 
 Tests use synthetic byte payloads and fake GitHub responses. They verify ordering, digest and identity boundaries, uncertain-outcome recovery, nonreplacement and anonymous readback. They do not perform Authenticode signing, native login, actual installer lifecycle checks or a live GitHub publication. Headless UI blanking passed in prior application qualification; optical/display flicker was not measured.
 
