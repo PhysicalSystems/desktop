@@ -158,6 +158,8 @@ test("failure diagnostics preserve only exact authored codes and never private e
   expect(qualificationFailureCode(new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED"))).toBe(
     "PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED",
   )
+  for (const code of ["PACKAGED_DEVICE_CONNECTIONS_ENABLED", "PACKAGED_HARDWARE_OPERATIONS_ACTIVE"] as const)
+    expect(qualificationFailureCode(new Error(code))).toBe(code)
   for (const unknown of [
     new Error("PACKAGED_SHUTDOWN_DIAGNOSTIC_UNCONFIRMED private-native-output"),
     new Error("PACKAGED_DEBUG_ENDPOINT_UNAVAILABLE credential=qualification-credential-trap"),

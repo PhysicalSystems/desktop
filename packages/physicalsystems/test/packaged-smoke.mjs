@@ -20,7 +20,7 @@ import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import { Transform } from "node:stream"
 import { qualificationPrompt, startFixtureProvider } from "./fixture-provider.mjs"
-import { composerReadiness, composerSelection } from "../src/release/composer-readiness.ts"
+import { composerReadiness, composerSelection, managedWorkspaceReadiness } from "../src/release/composer-readiness.ts"
 import { probePackagedRenderer } from "../src/release/cdp-discovery.ts"
 import { allocateLinuxQualificationTemporary } from "../src/release/linux-temporary.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
@@ -818,7 +818,6 @@ async function qualifyBrowserReview(entrypoint, mode) {
           await launch(entrypoint, "provider-review", lab, {
             environment,
             probeID,
-            projectName: handoff ? "Browser handoff qualification" : "Provider sign-in qualification",
             async review(session) {
               observed = await review(session)
             },
@@ -1187,15 +1186,25 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         : "Installed/extracted Electron payload loaded the actual renderer with no Node or Bun on its PATH.",
     )
     stage = "device-isolation"
-    const safety = await evaluate(
-      "window.api.physicalSystems.snapshot().then(s => ({ enabled: s.deviceConnectionsEnabled, projects: s.projects.length, captures: s.activeCaptures.length, runs: s.activeRuns.length }))",
-    )
-    if (safety.enabled !== false || safety.projects !== (fresh ? 0 : 1) || safety.captures !== 0 || safety.runs !== 0)
-      throw new Error("PACKAGED_PROFILE_NOT_ISOLATED")
+    let workspaceReadiness = "PACKAGED_PROJECT_NOT_CREATED"
+    const expectedProjectId = await until(async () => {
+      const observed = await evaluate(`window.api.physicalSystems.snapshot().then(snapshot => ({
+        readiness: (${managedWorkspaceReadiness.toString()})({ snapshot, managedRoot: ${JSON.stringify(join(profile, "operator", "projects"))} }),
+        projectId: snapshot.activeProjectId,
+      }))`)
+      workspaceReadiness = observed.readiness
+      if (workspaceReadiness === "READY") return observed.projectId
+      if (!["PACKAGED_PROJECT_NOT_CREATED", "PACKAGED_CONVERSATION_NOT_READY"].includes(workspaceReadiness))
+        throw new Error(workspaceReadiness)
+      return false
+    }, "PACKAGED_CONVERSATION_NOT_READY").catch((error) => {
+      if (error.message === "PACKAGED_CONVERSATION_NOT_READY") throw new Error(workspaceReadiness)
+      throw error
+    })
     check(
       stage,
       "PASS",
-      "Owned private profile reports device connections disabled and no owned hardware operations; only the expected synthetic project may persist.",
+      "Owned private profile reports device connections disabled, no hardware operations and exactly one managed simulation workspace with its automatically bound chat.",
     )
     if (!fresh) {
       stage = "native-v2-credential-probe"
@@ -1272,21 +1281,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       return
     }
     stage = "synthetic-chat"
-    await click('[aria-label="New project"]')
-    await until(
-      () => evaluate('Boolean(document.querySelector("dialog[open] input"))'),
-      "PACKAGED_PROJECT_DIALOG_UNAVAILABLE",
-    )
-    await type("dialog[open] input", providerReview ? providerReview.projectName : "Packaged synthetic qualification")
-    await click('dialog[open] button[type="submit"]')
-    await until(
-      () => evaluate('Boolean(document.querySelector("[data-ps-project-row]"))'),
-      "PACKAGED_PROJECT_NOT_CREATED",
-    )
-    const expectedProjectId = await evaluate(
-      'document.querySelector("[data-ps-project-row]")?.getAttribute("data-ps-project-row")',
-    )
-    await click("[data-ps-project-row]")
+    // Exercise the first-launch chat directly; creating a second project would hide onboarding regressions.
     await until(
       () => evaluate('Boolean(document.querySelector("[data-component=prompt-input]"))'),
       "PACKAGED_COMPOSER_UNAVAILABLE",
