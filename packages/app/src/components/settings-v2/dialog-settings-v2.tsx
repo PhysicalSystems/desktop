@@ -4,7 +4,7 @@ import { TabsV2 } from "@opencode-ai/ui/v2/tabs-v2"
 import { Icon } from "@opencode-ai/ui/icon"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
-import { SettingsGeneralV2 } from "./general"
+import { SettingsAppearanceV2, SettingsGeneralV2 } from "./general"
 import { SettingsKeybinds } from "../settings-keybinds"
 import { SettingsProvidersV2 } from "./providers"
 import { SettingsModelsV2 } from "./models"
@@ -14,6 +14,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useLayout } from "@/context/layout"
 import { useTabs } from "@/context/tabs"
 import { useServerSync } from "@/context/server-sync"
+import { usePhysicalSystems } from "@/physicalsystems/context"
 
 export const DialogSettings: Component<{
   sessionID?: string
@@ -25,6 +26,7 @@ export const DialogSettings: Component<{
   const layout = useLayout()
   const tabs = useTabs()
   const serverSync = useServerSync()
+  const physical = usePhysicalSystems()
   const [tab, setTab] = createSignal(props.defaultValue ?? "general")
   const directory = createMemo(() => {
     const route = layout.route()
@@ -61,6 +63,10 @@ export const DialogSettings: Component<{
                       <Icon name="sliders" />
                       {language.t("settings.tab.general")}
                     </TabsV2.Trigger>
+                    <TabsV2.Trigger value="appearance">
+                      <Icon name="settings-gear" />
+                      {language.t("settings.general.section.appearance")}
+                    </TabsV2.Trigger>
                     <TabsV2.Trigger value="shortcuts">
                       <Icon name="keyboard" />
                       {language.t("settings.tab.shortcuts")}
@@ -88,13 +94,16 @@ export const DialogSettings: Component<{
               </div>
             </div>
             <div class="settings-v2-nav-footer">
-              <span>{language.t("app.name.desktop")}</span>
+              <span>{language.t(physical?.enabled ? "physicalsystems.name" : "app.name.desktop")}</span>
               <span>v{platform.version}</span>
             </div>
           </div>
         </TabsV2.List>
         <TabsV2.Content value="general" class="settings-v2-panel">
           <SettingsGeneralV2 sessionID={props.sessionID} />
+        </TabsV2.Content>
+        <TabsV2.Content value="appearance" class="settings-v2-panel">
+          <SettingsAppearanceV2 />
         </TabsV2.Content>
         <TabsV2.Content value="shortcuts" class="settings-v2-panel">
           <SettingsKeybinds v2 />

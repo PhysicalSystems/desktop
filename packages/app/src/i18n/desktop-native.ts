@@ -275,6 +275,16 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.updater.dialog.ready.message": "Update {{version}} downloaded. Restart now?",
   "desktop.updater.dialog.ready.title": "Update Ready",
   "desktop.updater.dialog.restart": "Restart",
+  "desktop.updater.dialog.restart.detail":
+    "Restarting will end active sessions. Physical Systems must confirm local service cleanup before installing. Stop any physical operation before continuing.",
+  "desktop.updater.dialog.available.title": "Update available",
+  "desktop.updater.dialog.available.message":
+    "Physical Systems {{version}} is available. Download the update? Installation will require a separate restart confirmation.",
+  "desktop.updater.dialog.download": "Download update",
+  "desktop.updater.dialog.downloadFailed.message":
+    "The update could not be downloaded and verified. Nothing was installed. Check for updates to retry.",
+  "desktop.updater.dialog.installFailed.message":
+    "The update could not be installed. Physical Systems has not confirmed that it is safe to restart. Review any active work before retrying.",
   "desktop.updater.dialog.later": "Later",
 
   "desktop.recovery.action.relaunch": "Relaunch",

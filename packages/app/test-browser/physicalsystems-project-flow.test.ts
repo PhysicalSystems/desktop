@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import { createRequire } from "node:module"
 import { join, resolve } from "node:path"
 import { createContext, runInContext } from "node:vm"
-import { build } from "vite"
+import { build, normalizePath } from "vite"
 import solid from "vite-plugin-solid"
 
 // Compile real Solid feature components and run their DOM in an isolated VM.
@@ -15,12 +15,13 @@ let code = ""
 
 beforeAll(async () => {
   const fixture = resolve(import.meta.dir, "fixtures/physicalsystems")
-  const feature = resolve(import.meta.dir, "../src/physicalsystems")
+  const feature = normalizePath(resolve(import.meta.dir, "../src/physicalsystems"))
   const contexts = [
     "../context/language",
     "../context/server",
     "../context/tabs",
     "../context/global",
+    "../components/settings-dialog",
     "../utils/persist",
     "../utils/session-route",
     "@solidjs/router",
@@ -35,7 +36,8 @@ beforeAll(async () => {
         name: "physicalsystems-project-fixture-contexts",
         enforce: "pre",
         resolveId(id, importer) {
-          if (importer?.startsWith(feature) && contexts.includes(id)) return join(fixture, "mocks.ts")
+          if (importer && normalizePath(importer).startsWith(feature) && contexts.includes(id))
+            return normalizePath(join(fixture, "mocks.ts"))
         },
       },
       solid(),
@@ -103,6 +105,18 @@ async function settle() {
   // polling intervals, which intentionally stay active until DOM disposal.
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
+
+test("sidebar Settings invokes its app command without changing the managed project", async () => {
+  const fixture = await mount()
+  let opened = 0
+  fixture.window.document.addEventListener("fixture:settings-open", () => opened++)
+  fixture.js(`document.querySelector('[data-ps-settings]').click()`)
+  await settle()
+
+  expect(opened).toBe(1)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+})
 
 test("creating a project from a linked old chat opens its own conversation without reselecting the old project", async () => {
   const fixture = await mount()

@@ -43,4 +43,26 @@ describe("theme preload", () => {
     expect(document.documentElement.dataset.theme).toBe("nightowl")
     expect(document.getElementById("oc-theme-preload")?.textContent).toContain("--background-base:#fff;")
   })
+
+  test.each(["light", "dark"])("restores a saved %s appearance before the app mounts", (scheme) => {
+    localStorage.setItem("opencode-color-scheme", scheme)
+
+    run()
+
+    expect(document.documentElement.dataset.colorScheme).toBe(scheme)
+    expect(localStorage.getItem("opencode-color-scheme")).toBe(scheme)
+  })
+
+  test.each([true, false])("System resolves the operating system's dark preference (%s)", (dark) => {
+    localStorage.setItem("opencode-color-scheme", "system")
+    Object.defineProperty(window, "matchMedia", {
+      value: () => ({ matches: dark }),
+      configurable: true,
+    })
+
+    run()
+
+    expect(document.documentElement.dataset.colorScheme).toBe(dark ? "dark" : "light")
+    expect(localStorage.getItem("opencode-color-scheme")).toBe("system")
+  })
 })

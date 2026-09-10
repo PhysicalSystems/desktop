@@ -1,4 +1,4 @@
-import { Component, Show, createMemo, createResource } from "solid-js"
+import { Component, For, Show, createMemo, createResource, createUniqueId } from "solid-js"
 import { createMediaQuery } from "@solid-primitives/media"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { SelectV2 } from "@opencode-ai/ui/v2/select-v2"
@@ -9,6 +9,7 @@ import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useUpdaterAction } from "../updater-action"
 import { useSettings } from "@/context/settings"
+import { usePhysicalSystems } from "@/physicalsystems/context"
 import { ExternalLink } from "../external-link"
 import { SettingsListV2 } from "./parts/list"
 import { SettingsRowV2 } from "./parts/row"
@@ -121,28 +122,46 @@ const ShellSetting: Component<{ controller: ShellSettingsController }> = (props)
 
 const AppearanceSection: Component<{ controller: AppearanceSettingsController }> = (props) => {
   const language = useLanguage()
+  const physical = usePhysicalSystems()
+  const schemeName = createUniqueId()
   return (
     <div class="settings-v2-section">
-      <h3 class="settings-v2-section-title">{language.t("settings.general.section.appearance")}</h3>
       <SettingsListV2>
         <SettingsRowV2
           title={language.t("settings.general.row.colorScheme.title")}
-          description={language.t("settings.general.row.colorScheme.description")}
+          description={language.t(
+            physical?.enabled
+              ? "physicalsystems.settings.colorScheme.description"
+              : "settings.general.row.colorScheme.description",
+          )}
         >
-          <SelectV2
-            appearance="inline"
+          <div
             data-action="settings-color-scheme"
-            options={schemeOptions}
-            current={schemeOptions.find((option) => option === props.controller.scheme.current())}
-            placement="bottom-end"
-            gutter={6}
-            label={(option) => {
-              if (option === "system") return language.t("theme.scheme.system")
-              if (option === "light") return language.t("theme.scheme.light")
-              return language.t("theme.scheme.dark")
-            }}
-            onSelect={(option) => option && props.controller.scheme.select(option)}
-          />
+            class="settings-v2-color-scheme"
+            role="radiogroup"
+            aria-label={language.t("settings.general.row.colorScheme.title")}
+          >
+            <For each={schemeOptions}>
+              {(option) => (
+                <label>
+                  <input
+                    type="radio"
+                    name={schemeName}
+                    value={option}
+                    checked={props.controller.scheme.current() === option}
+                    onChange={() => props.controller.scheme.select(option)}
+                  />
+                  {language.t(
+                    option === "system"
+                      ? "theme.scheme.system"
+                      : option === "light"
+                        ? "theme.scheme.light"
+                        : "theme.scheme.dark",
+                  )}
+                </label>
+              )}
+            </For>
+          </div>
         </SettingsRowV2>
 
         <SettingsRowV2
@@ -282,7 +301,6 @@ export const SettingsGeneralV2: Component<{
   const updater = useUpdaterAction()
   const permissionScope = createPermissionScopeController(() => props.sessionID)
   const shell = createShellSettingsController()
-  const appearance = createAppearanceSettingsController()
   const sounds = createSoundSettingsController()
   const desktop = createMemo(() => platform.platform === "desktop")
 
@@ -552,8 +570,6 @@ export const SettingsGeneralV2: Component<{
 
         <GeneralSection />
 
-        <AppearanceSection controller={appearance} />
-
         <NotificationsSection />
 
         <SoundsSection controller={sounds} />
@@ -565,6 +581,21 @@ export const SettingsGeneralV2: Component<{
         <DisplaySection />
 
         <AdvancedSection />
+      </div>
+    </>
+  )
+}
+
+export const SettingsAppearanceV2 = () => {
+  const language = useLanguage()
+  const appearance = createAppearanceSettingsController()
+  return (
+    <>
+      <div class="settings-v2-tab-header">
+        <h2 class="settings-v2-tab-title">{language.t("settings.general.section.appearance")}</h2>
+      </div>
+      <div class="settings-v2-tab-body">
+        <AppearanceSection controller={appearance} />
       </div>
     </>
   )

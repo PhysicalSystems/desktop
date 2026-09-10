@@ -13,6 +13,9 @@ export const language = {
     ),
 }
 export const useLanguage = () => language
+// Settings itself is exercised by the full Chromium appearance fixture. This
+// project-flow fixture observes the app-command boundary without loading it.
+export const useSettingsCommand = () => () => document.dispatchEvent(new CustomEvent("fixture:settings-open"))
 const connection = { type: "http-base", key: "sidecar" }
 export const ServerConnection = {
   Key: { make: (key: string) => key },
