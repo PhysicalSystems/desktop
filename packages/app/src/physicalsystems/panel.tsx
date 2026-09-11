@@ -68,7 +68,9 @@ function SetupPanel() {
   ]
   return (
     <div class="ps-stack">
-      <GripperCommissioning />
+      <Show when={physical.project()?.connection.kind === "local" || physical.project()?.connection.kind === "ssh"}>
+        <GripperCommissioning />
+      </Show>
       <p class="ps-muted">{language.t("physicalsystems.setup.empty")}</p>
       <button
         type="button"

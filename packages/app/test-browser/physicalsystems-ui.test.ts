@@ -428,6 +428,15 @@ test.skipIf(!enabled)(
       await until(() => js("return !!document.querySelector('[data-ps-project-row]')"))
       await js(`
         window.__fixture.state.projects[0].connection.status='connected';
+        window.__fixture.emit();
+        document.querySelector('[data-ps-tab="setup"]').click();
+      `)
+      expect(await js("return window.__fixture.calls")).toEqual([])
+      expect(await js("return document.querySelectorAll('[data-ps-commissioning]').length")).toBe(0)
+      expect(await js("return document.querySelectorAll('[role=alert]').length")).toBe(0)
+      await js(`
+        window.__fixture.state.projects[0].connection.kind='local';
+        window.__fixture.state.projects[0].connection.status='connected';
         window.__fixture.emit({activeExperiments:[],workcell:{commissioning:{
           available:true,fresh:true,receivedAt:Date.now(),maximumAgeMs:5000,pending:null,stopPending:false,message:null,
           status:{contractVersion:'physicalsystems-gripper-check-v1',nodeSessionId:'node-a',

@@ -24,7 +24,13 @@ export function GripperCommissioning() {
   const status = () => view()?.status
   const trial = () => status()?.trial
   const fresh = () => commissioningFresh(view(), now())
-  const available = () => physical.bound() && !physical.state.unavailable && fresh()
+  const connected = () => {
+    const connection = physical.project()?.connection
+    return (connection?.kind === "local" || connection?.kind === "ssh") && connection.status === "connected"
+  }
+  const canRefresh = () =>
+    connected() && physical.bound() && !physical.state.unavailable && !physical.state.pending.action
+  const available = () => connected() && physical.bound() && !physical.state.unavailable && fresh()
   const target = () => commissioningTarget(view(), state.target, now())
   const consent = () => commissioningConsent(physical.state.snapshot)
   const stopKey = () => `stop:commissioning:${physical.state.snapshot?.activeProjectId}:${trial()?.trialId}`
@@ -41,15 +47,7 @@ export function GripperCommissioning() {
   createEffect(() => {
     const scope = physical.scope()
     const key = JSON.stringify([physical.state.snapshot?.serviceId, scope])
-    if (
-      !scope ||
-      status() ||
-      physical.state.unavailable ||
-      physical.state.pending.action ||
-      physical.project()?.connection.status !== "connected" ||
-      refreshed.has(key)
-    )
-      return
+    if (!scope || status() || !canRefresh() || refreshed.has(key)) return
     refreshed.add(key)
     // Status is metadata only. Inspection and all effects require explicit actions.
     void physical.send({ type: "workcell.commissioning.refresh", ...scope })
@@ -60,7 +58,7 @@ export function GripperCommissioning() {
   })
   const refresh = () => {
     const scope = physical.scope()
-    if (scope) void physical.send({ type: "workcell.commissioning.refresh", ...scope })
+    if (scope && canRefresh()) void physical.send({ type: "workcell.commissioning.refresh", ...scope })
   }
   const inspect = () => {
     const scope = physical.scope()
@@ -106,12 +104,7 @@ export function GripperCommissioning() {
     <section class="ps-card ps-stack" data-ps-commissioning>
       <h3>{language.t("physicalsystems.commissioning.title")}</h3>
       <p>{language.t("physicalsystems.commissioning.description")}</p>
-      <button
-        type="button"
-        data-ps-commissioning-refresh
-        disabled={!physical.bound() || physical.state.unavailable || physical.state.pending.action}
-        onClick={refresh}
-      >
+      <button type="button" data-ps-commissioning-refresh disabled={!canRefresh()} onClick={refresh}>
         {language.t("physicalsystems.refresh")}
       </button>
       <Show when={view()?.message}>

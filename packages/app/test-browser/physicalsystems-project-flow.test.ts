@@ -262,9 +262,61 @@ test("failed first-launch preparation does not automatically retry and can recov
   expect(fixture.js("window.__fixture.pathname()")).toBe("/server/c2lkZWNhcg==/session/session-created-1")
 })
 
+test("opening simulation Setup never refreshes device commissioning or shows a connection error", async () => {
+  const fixture = await mount()
+  fixture.js(`
+    window.__fixture.state.projects[0].connection.status='connected';
+    window.__fixture.emit();
+    document.querySelector('[data-ps-tab="setup"]').click();
+  `)
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.window.document.querySelector("[data-ps-commissioning]")).toBeNull()
+  expect(fixture.window.document.querySelector('[role="alert"]')).toBeNull()
+  fixture.js(`
+    document.querySelector('[data-ps-tab="devices"]').click();
+    document.querySelector('[data-ps-tab="setup"]').click();
+    window.__fixture.emit(); window.__fixture.emit();
+  `)
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.errors")).toEqual([])
+  expect(fixture.window.document.querySelector('[role="alert"]')).toBeNull()
+})
+
+test.each(["local", "ssh"] as const)(
+  "%s Node commissioning refresh waits for connection and permits explicit retry",
+  async (kind) => {
+    const fixture = await mount()
+    fixture.js(`
+    window.__fixture.state.projects[0].connection.kind=${JSON.stringify(kind)};
+    window.__fixture.emit();
+    document.querySelector('[data-ps-tab="setup"]').click();
+  `)
+    await settle()
+    expect(fixture.js("window.__fixture.calls")).toEqual([])
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-refresh]').disabled")).toBe(true)
+    fixture.js(`
+    window.__fixture.state.projects[0].connection.status='connected';
+    window.__fixture.emit();
+  `)
+    await settle()
+    expect(fixture.js("window.__fixture.calls.map(x=>x.type)")).toEqual(["workcell.commissioning.refresh"])
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-refresh]').disabled")).toBe(false)
+    fixture.js("document.querySelector('[data-ps-commissioning-refresh]').click()")
+    await settle()
+    expect(fixture.js("window.__fixture.calls.map(x=>x.type)")).toEqual([
+      "workcell.commissioning.refresh",
+      "workcell.commissioning.refresh",
+    ])
+    expect(fixture.js("window.__fixture.errors")).toEqual([])
+  },
+)
+
 async function gripperFixture() {
   const fixture = await mount()
   fixture.js(`
+    window.__fixture.state.projects[0].connection.kind='local';
     window.__fixture.state.projects[0].connection.status='connected';
     window.__fixture.emit({workcell:{commissioning:{
       available:true,fresh:true,receivedAt:Date.now(),maximumAgeMs:5000,pending:null,stopPending:false,message:null,
