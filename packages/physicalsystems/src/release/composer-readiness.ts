@@ -9,6 +9,7 @@ export function managedWorkspaceReadiness(input: {
     deviceConnectionsEnabled: boolean
     activeCaptures: unknown[]
     activeRuns: unknown[]
+    activeCommissioning?: unknown[]
     activeProjectId?: string | null
     activeConversationId?: string | null
     conversation?: Conversation | null
@@ -17,7 +18,7 @@ export function managedWorkspaceReadiness(input: {
 }) {
   const s = input.snapshot
   if (s.deviceConnectionsEnabled !== false) return "PACKAGED_DEVICE_CONNECTIONS_ENABLED"
-  if (s.activeCaptures.length || s.activeRuns.length) return "PACKAGED_HARDWARE_OPERATIONS_ACTIVE"
+  if (s.activeCaptures.length || s.activeRuns.length || s.activeCommissioning?.length) return "PACKAGED_HARDWARE_OPERATIONS_ACTIVE"
   if (s.hostUnavailable || !s.projects.length) return "PACKAGED_PROJECT_NOT_CREATED"
   const p = s.projects[0]!
   // Compare the exact managed child directory on both Windows and Linux.

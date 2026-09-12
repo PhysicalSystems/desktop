@@ -13,15 +13,15 @@ var __export = (target, all) => {
     });
 };
 
-// ../source-harness-opencode/packages/operator-service/src/service.js
+// ../harness-gripper-check/packages/operator-service/src/service.js
 import { createHash as createHash8, randomBytes, randomUUID as randomUUID5 } from "node:crypto";
 import { mkdir as mkdir2, lstat } from "node:fs/promises";
 import path4 from "node:path";
 
-// ../source-harness-opencode/packages/cli/src/harness/experiments/controller.js
+// ../harness-gripper-check/packages/cli/src/harness/experiments/controller.js
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
-// ../source-harness-opencode/packages/cli/src/harness/experiments/fixture.js
+// ../harness-gripper-check/packages/cli/src/harness/experiments/fixture.js
 var experimentFixture = Object.freeze({
   id: "synthetic-alignment-v1",
   name: "Synthetic alignment",
@@ -56,7 +56,7 @@ function runSyntheticTrial({ offsetMm, signal, stepMs }) {
   });
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/experiments/storage.js
+// ../harness-gripper-check/packages/cli/src/harness/experiments/storage.js
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
@@ -180,7 +180,7 @@ function createExperimentStore({ storageDir, sessionId }) {
   return { read, write, release };
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/experiments/controller.js
+// ../harness-gripper-check/packages/cli/src/harness/experiments/controller.js
 var TERMINAL = new Set(["COMPLETED", "STOPPED", "INTERRUPTED", "FAILED"]);
 var PHASES = new Set(["PROPOSED", "READY", "RUNNING", "OUTCOME_UNKNOWN", ...TERMINAL]);
 var MAX_HISTORY = 8;
@@ -614,7 +614,7 @@ function createExperimentController({ sessionId, storageDir, now = Date.now, tri
     }
   };
 }
-// ../source-harness-opencode/packages/cli/src/harness/experiments/tools.js
+// ../harness-gripper-check/packages/cli/src/harness/experiments/tools.js
 var EXPERIMENT_TOOL_ALLOWLIST = Object.freeze([
   "inspect_local_experiment",
   "propose_local_experiment",
@@ -699,10 +699,10 @@ function createExperimentTools({ getController, defineTool = (value) => value })
     }
   }));
 }
-// ../source-harness-opencode/packages/cli/src/harness/workcell-controller.js
+// ../harness-gripper-check/packages/cli/src/harness/workcell-controller.js
 import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
 
-// ../source-harness-opencode/packages/cli/src/auth/redact.js
+// ../harness-gripper-check/packages/cli/src/auth/redact.js
 var SECRET_KEYS = new Set([
   "accesstoken",
   "refreshtoken",
@@ -734,10 +734,10 @@ function safeErrorMessage(error) {
   return redactText(error);
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/execution-controller.js
+// ../harness-gripper-check/packages/cli/src/harness/execution-controller.js
 import { randomUUID as randomUUID3 } from "node:crypto";
 
-// ../source-harness-opencode/packages/cli/src/physical/execution-contracts.js
+// ../harness-gripper-check/packages/cli/src/physical/execution-contracts.js
 import { createHash as createHash3 } from "node:crypto";
 var EXECUTION_STATUS_VERSION = "physicalsystems-execution-status-v1";
 var PHYSICAL_RUN_VERSION = "physicalsystems-run-v1";
@@ -992,7 +992,7 @@ function normalizeExecutionSnapshot(value, expectedDigest) {
   return freeze(value);
 }
 
-// ../source-harness-opencode/packages/cli/src/physical/route-contracts.js
+// ../harness-gripper-check/packages/cli/src/physical/route-contracts.js
 import { createHash as createHash4 } from "node:crypto";
 var PHYSICAL_CAPABILITY_CATALOG_VERSION = "experimental-physical-capability-catalog-v1";
 var PHYSICAL_ROUTE_REQUEST_VERSION = "experimental-physical-route-preview-request-v1";
@@ -1331,7 +1331,7 @@ function physicalRouteReceiptPath(digest2) {
   return `/v2/physical/routes/${routeDigest(digest2).slice("sha256:".length)}`;
 }
 
-// ../source-harness-opencode/packages/cli/src/physical/node-client.js
+// ../harness-gripper-check/packages/cli/src/physical/node-client.js
 var DEFAULT_PHYSICAL_NODE_URL = "http://127.0.0.1:8876";
 var DEFAULT_TIMEOUT_MS = 5000;
 var MAX_RESPONSE_BYTES = 256 * 1024;
@@ -1904,7 +1904,7 @@ function createPhysicalNodeClient({
   });
 }
 
-// ../source-harness-opencode/packages/cli/src/physical/execution-client.js
+// ../harness-gripper-check/packages/cli/src/physical/execution-client.js
 var ROOT = "/v2/physical/execution";
 var MAX_BYTES2 = 2 * 1024 * 1024;
 
@@ -2038,7 +2038,7 @@ function createExecutionClient({ baseUrl, token, fetchImpl = globalThis.fetch } 
   });
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/execution-evidence.js
+// ../harness-gripper-check/packages/cli/src/harness/execution-evidence.js
 var CHECKS = [
   "configuredThresholds",
   "producerContract",
@@ -2115,7 +2115,7 @@ function projectExecutionObservation(observation, { stage, at = null, mode: mode
   };
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/execution-controller.js
+// ../harness-gripper-check/packages/cli/src/harness/execution-controller.js
 var TERMINAL2 = new Set(["VERIFIED_SUCCESS", "FAILED", "CANCELLED", "BLOCKED"]);
 var MAX_READ_AGE = 5000;
 var needsResolution = (run) => !TERMINAL2.has(run.phase) || run.stopStatus === "STOP_UNCONFIRMED";
@@ -2492,7 +2492,613 @@ function createExecutionController({
   };
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/workcell-controller.js
+// ../harness-gripper-check/packages/cli/src/physical/commissioning-client.js
+var GRIPPER_CHECK_VERSION = "physicalsystems-gripper-check-v1";
+var GRIPPER_JOINTS = Object.freeze(["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]);
+var ROOT2 = "/v2/physical/commissioning/gripper";
+var assert = (condition) => {
+  if (!condition)
+    throw new TypeError("Gripper check response failed contract validation");
+};
+var number = (value, minimum = -1e5, maximum = 1e5) => assert(typeof value === "number" && Number.isFinite(value) && value >= minimum && value <= maximum);
+var date = (value) => {
+  executionText(value, 64);
+  assert(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)));
+};
+var optionalText = (value) => {
+  if (value !== null)
+    executionText(value, 512);
+};
+var freeze2 = (value) => {
+  if (value && typeof value === "object") {
+    Object.values(value).forEach(freeze2);
+    Object.freeze(value);
+  }
+  return value;
+};
+var RECOVERY_FIELDS = ["trialNodeSessionId", "recovery", "recoveryClearance", "canInspectRecovery", "canConfirmRecovery"];
+var RECOVERY_BINDING = ["trialId", "trialDigest", "trialNodeSessionId", "nodeSessionId", "configurationDigest", "deviceIdentity"];
+function recoveryBinding(value) {
+  for (const key of ["trialId", "trialNodeSessionId", "nodeSessionId"])
+    executionId(value[key]);
+  executionHash(value.trialDigest);
+  executionHash(value.configurationDigest);
+  executionText(value.deviceIdentity);
+}
+function recoveryReceipt(value) {
+  executionFields(value, ["id", "digest", ...RECOVERY_BINDING, "recoveryDigest", "confirmedAt", "inspectionDigest", "priorRunDigest", "priorRevision"]);
+  executionId(value.id);
+  executionHash(value.digest);
+  recoveryBinding(value);
+  executionHash(value.recoveryDigest);
+  date(value.confirmedAt);
+  executionHash(value.inspectionDigest);
+  executionHash(value.priorRunDigest);
+  assert(Number.isSafeInteger(value.priorRevision) && value.priorRevision > 0);
+  assert(value.digest === executionDigest(value, "digest"));
+  return value;
+}
+var originSession = (value) => value.trialNodeSessionId ?? value.nodeSessionId;
+function recoveryMatches(value, expected) {
+  return Boolean(expected?.trial && expected.configuration && value.trialId === expected.trial.trialId && value.trialDigest === expected.trial.digest && value.trialNodeSessionId === originSession(expected) && value.configurationDigest === expected.configuration.digest && value.deviceIdentity === expected.configuration.deviceIdentity);
+}
+function gripperRecoveryCleared(value, expected = value) {
+  if (value?.trial?.phase !== "OUTCOME_UNKNOWN" || !value.recoveryClearance)
+    return false;
+  recoveryReceipt(value.recoveryClearance);
+  return recoveryMatches(value.recoveryClearance, value) && recoveryMatches(value.recoveryClearance, expected);
+}
+function assertGripperRecoveryMatches(value, expected) {
+  assert(value.trial?.phase === "OUTCOME_UNKNOWN" && expected?.trial && value.configuration && expected.configuration);
+  assert(value.trialNodeSessionId === originSession(expected) && value.configuration.digest === expected.configuration.digest && value.configuration.deviceIdentity === expected.configuration.deviceIdentity);
+  assert(["trialId", "digest", "startPosition", "targetPosition", "maximumDurationSeconds", "approvalExpiresAt"].every((key) => value.trial[key] === expected.trial[key]));
+  return value;
+}
+function normalizeGripperCheck(value) {
+  const recoverySupported = RECOVERY_FIELDS.some((key) => Object.hasOwn(value || {}, key));
+  executionFields(value, ["contractVersion", "nodeSessionId", "configuration", "inspection", "trial", "canInspect", "canPrepare", "canApprove", "canStop", "blockedReason", ...recoverySupported ? RECOVERY_FIELDS : []]);
+  assert(value.contractVersion === GRIPPER_CHECK_VERSION);
+  executionId(value.nodeSessionId);
+  for (const key of ["canInspect", "canPrepare", "canApprove", "canStop"])
+    assert(typeof value[key] === "boolean");
+  optionalText(value.blockedReason);
+  const { configuration: c, inspection: i, trial: t } = value;
+  if (c !== null) {
+    executionFields(c, ["id", "digest", "displayName", "deviceIdentity", "calibrationDigest", "minimum", "maximum", "maximumDelta", "maximumDurationSeconds", "maximumStep", "stepIntervalSeconds", "tolerance"]);
+    executionId(c.id);
+    executionHash(c.digest);
+    executionText(c.displayName);
+    executionText(c.deviceIdentity);
+    executionHash(c.calibrationDigest);
+    for (const key of ["minimum", "maximum", "maximumDelta", "maximumStep", "tolerance"])
+      number(c[key], 0, 100);
+    number(c.maximumDurationSeconds, 0.001, 120);
+    number(c.stepIntervalSeconds, 0.001, 10);
+    assert(c.minimum < c.maximum && c.maximumDelta > 0 && c.maximumStep > 0 && c.tolerance > 0 && c.maximumStep <= c.maximumDelta);
+  }
+  if (i !== null) {
+    executionFields(i, ["id", "digest", "observedAt", "expiresAt", "ready", "positions", "torqueEnabled", "checks", "gripperPosition"]);
+    executionId(i.id);
+    executionHash(i.digest);
+    date(i.observedAt);
+    date(i.expiresAt);
+    assert(Date.parse(i.expiresAt) > Date.parse(i.observedAt));
+    assert(typeof i.ready === "boolean");
+    executionFields(i.positions, GRIPPER_JOINTS);
+    executionFields(i.torqueEnabled, GRIPPER_JOINTS);
+    GRIPPER_JOINTS.forEach((joint) => {
+      if (i.positions[joint] !== null)
+        number(i.positions[joint]);
+      assert(i.torqueEnabled[joint] === null || typeof i.torqueEnabled[joint] === "boolean");
+    });
+    if (i.gripperPosition !== null)
+      number(i.gripperPosition);
+    assert(Array.isArray(i.checks) && i.checks.length <= 64);
+    i.checks.forEach((check2) => {
+      executionFields(check2, ["code", "state", "message"]);
+      executionText(check2.code, 128);
+      assert(["met", "violated", "unknown"].includes(check2.state));
+      executionText(check2.message, 512);
+    });
+    if (i.ready)
+      assert(i.gripperPosition !== null && GRIPPER_JOINTS.every((joint) => i.positions[joint] !== null && i.torqueEnabled[joint] === false) && i.checks.length > 0 && i.checks.every((check2) => check2.state === "met"));
+  }
+  if (t !== null) {
+    executionFields(t, ["trialId", "digest", "phase", "approvalExpiresAt", "startPosition", "targetPosition", "maximumDurationSeconds", "latestPosition", "stopStatus", "message"]);
+    executionId(t.trialId);
+    executionHash(t.digest);
+    assert(["WAITING_FOR_APPROVAL", "RUNNING", "COMPLETED", "STOPPED", "FAILED", "OUTCOME_UNKNOWN"].includes(t.phase));
+    date(t.approvalExpiresAt);
+    number(t.startPosition);
+    number(t.targetPosition, 0, 100);
+    number(t.maximumDurationSeconds, 0.001, 120);
+    if (t.latestPosition !== null)
+      number(t.latestPosition);
+    assert([null, "STOPPING", "STOPPED", "STOP_UNCONFIRMED"].includes(t.stopStatus));
+    optionalText(t.message);
+    if (t.phase === "COMPLETED")
+      assert(t.stopStatus === "STOPPED" && t.latestPosition !== null);
+  }
+  if (value.canPrepare)
+    assert(c !== null && i?.ready === true);
+  if (value.canApprove)
+    assert(c !== null && t?.phase === "WAITING_FOR_APPROVAL" && t.stopStatus === null);
+  if (value.canStop)
+    assert(t !== null);
+  if (recoverySupported) {
+    assert(typeof value.canInspectRecovery === "boolean" && typeof value.canConfirmRecovery === "boolean");
+    if (t)
+      executionId(value.trialNodeSessionId);
+    else
+      assert(value.trialNodeSessionId === null);
+    const offer = value.recovery;
+    if (offer !== null) {
+      executionFields(offer, ["id", "digest", ...RECOVERY_BINDING, "observedAt", "expiresAt", "ready", "positions", "torqueEnabled", "checks"]);
+      executionId(offer.id);
+      executionHash(offer.digest);
+      recoveryBinding(offer);
+      date(offer.observedAt);
+      date(offer.expiresAt);
+      assert(Date.parse(offer.expiresAt) > Date.parse(offer.observedAt) && typeof offer.ready === "boolean");
+      executionFields(offer.positions, GRIPPER_JOINTS);
+      executionFields(offer.torqueEnabled, GRIPPER_JOINTS);
+      GRIPPER_JOINTS.forEach((joint) => {
+        number(offer.positions[joint]);
+        assert(typeof offer.torqueEnabled[joint] === "boolean");
+      });
+      assert(Array.isArray(offer.checks) && offer.checks.length > 0 && offer.checks.length <= 64);
+      offer.checks.forEach((check2) => {
+        executionFields(check2, ["code", "state", "message"]);
+        executionText(check2.code, 128);
+        assert(["met", "violated", "unknown"].includes(check2.state));
+        executionText(check2.message, 512);
+      });
+      if (offer.ready)
+        assert(GRIPPER_JOINTS.every((joint) => offer.torqueEnabled[joint] === false) && offer.checks.every((check2) => check2.state === "met"));
+      assert(offer.digest === executionDigest(offer, "digest") && recoveryMatches(offer, value) && offer.nodeSessionId === value.nodeSessionId && t.phase === "OUTCOME_UNKNOWN");
+    }
+    if (value.recoveryClearance !== null)
+      recoveryReceipt(value.recoveryClearance);
+    if (value.canInspectRecovery || value.canConfirmRecovery)
+      assert(t?.phase === "OUTCOME_UNKNOWN" && c !== null && !gripperRecoveryCleared(value));
+    if (value.canConfirmRecovery)
+      assert(offer?.ready === true);
+  }
+  return freeze2(value);
+}
+var commissioningUnresolved = (status) => Boolean(status?.trial && !gripperRecoveryCleared(status) && (!["COMPLETED", "STOPPED", "FAILED"].includes(status.trial.phase) || status.trial.stopStatus !== "STOPPED"));
+function assertGripperCheckMatches(value, expected) {
+  assert(value.nodeSessionId === expected.nodeSessionId && value.configuration?.digest === expected.configuration?.digest);
+  assert(value.trial && expected.trial && ["trialId", "digest", "startPosition", "targetPosition", "maximumDurationSeconds", "approvalExpiresAt"].every((key) => value.trial[key] === expected.trial[key]));
+  return value;
+}
+
+class CommissioningHttpError extends Error {
+}
+var commissioningFailureMessage = (error, fallback) => error instanceof CommissioningHttpError ? error.message : fallback;
+async function readJson2(response) {
+  assert(response.headers?.get("content-type")?.split(";")[0].trim().toLowerCase() === "application/json");
+  const length = response.headers.get("content-length");
+  assert(length === null || /^[0-9]+$/.test(length) && Number(length) <= 65536);
+  const reader = response.body?.getReader?.();
+  assert(reader);
+  let size = 0;
+  const chunks = [];
+  try {
+    for (;; ) {
+      const { done, value } = await reader.read();
+      if (done)
+        break;
+      size += value.byteLength;
+      assert(size <= 65536);
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  return parseExecutionJson(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
+}
+function createCommissioningClient({ baseUrl, token, fetchImpl = globalThis.fetch } = {}) {
+  const origin = normalizePhysicalNodeUrl(baseUrl);
+  async function request(action, body) {
+    if (typeof token !== "string" || !/^[A-Za-z0-9_-]{32,256}$/.test(token))
+      throw new CommissioningHttpError("Gripper check requires an execution credential saved in the native encrypted credential store.");
+    try {
+      const url = new URL(`${ROOT2}${action ? `/${action}` : ""}`, origin);
+      const response = await fetchImpl(url, {
+        method: body === undefined ? "GET" : "POST",
+        redirect: "error",
+        cache: "no-store",
+        signal: AbortSignal.timeout(action === "inspect" || action.startsWith("recovery/") ? 35000 : 5000),
+        headers: { Accept: "application/json", Authorization: `Bearer ${token}`, ...body === undefined ? {} : { "Content-Type": "application/json" } },
+        ...body === undefined ? {} : { body: JSON.stringify(body) }
+      });
+      assert(!response.redirected && response.type !== "opaqueredirect" && (!response.url || response.url === url.href));
+      if (!response.ok) {
+        await response.body?.cancel?.().catch(() => {});
+        const error = new CommissioningHttpError({
+          401: "The Node rejected the execution credential.",
+          403: "This gripper check request was not permitted.",
+          404: "This Node does not support the gripper check.",
+          501: "This Node does not support the gripper check.",
+          409: "The Node session, inspection or trial changed. Refresh and review its retained state.",
+          422: "The robot did not meet the configured gripper check requirements. Inspect its current state.",
+          503: "Gripper check is unavailable on this Node."
+        }[response.status] || "The gripper check request was not confirmed.");
+        error.status = response.status;
+        throw error;
+      }
+      const status = normalizeGripperCheck(await readJson2(response));
+      if (body && status.nodeSessionId !== body.expectedNodeSessionId)
+        throw new Error("Node session changed");
+      if (body?.trialId && (status.trial?.trialId !== body.trialId || body.trialDigest && status.trial.digest !== body.trialDigest))
+        throw new Error("Trial changed");
+      if (action === "prepare" && (status.configuration?.digest !== body.configurationDigest || status.trial?.targetPosition !== body.targetPosition || status.trial?.phase !== "WAITING_FOR_APPROVAL"))
+        throw new Error("Proposal changed");
+      if (action === "approve" && status.trial.phase === "WAITING_FOR_APPROVAL")
+        throw new Error("Approval was not acknowledged");
+      if (action === "recovery/inspect" && (!status.recovery || status.recovery.nodeSessionId !== body.expectedNodeSessionId))
+        throw new Error("Recovery inspection was not acknowledged");
+      if (action === "recovery/confirm" && (!gripperRecoveryCleared(status) || status.recoveryClearance.nodeSessionId !== body.expectedNodeSessionId || status.recoveryClearance.recoveryDigest !== body.recoveryDigest))
+        throw new Error("Durable recovery clearance was not acknowledged");
+      return status;
+    } catch (error) {
+      if (error instanceof CommissioningHttpError)
+        throw error;
+      throw new Error("Gripper check transport or response is unavailable; no outcome is assumed.");
+    }
+  }
+  return Object.freeze({
+    status: () => request(""),
+    inspect(body) {
+      executionFields(body, ["expectedNodeSessionId"]);
+      executionId(body.expectedNodeSessionId);
+      return request("inspect", body);
+    },
+    prepare(body) {
+      executionFields(body, ["expectedNodeSessionId", "configurationDigest", "inspectionDigest", "targetPosition"]);
+      executionId(body.expectedNodeSessionId);
+      executionHash(body.configurationDigest);
+      executionHash(body.inspectionDigest);
+      number(body.targetPosition, 0, 100);
+      return request("prepare", body);
+    },
+    approve(body) {
+      executionFields(body, ["expectedNodeSessionId", "trialId", "trialDigest", "approved"]);
+      executionId(body.expectedNodeSessionId);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      assert(body.approved === true);
+      return request("approve", body);
+    },
+    stop(body) {
+      executionFields(body, ["expectedNodeSessionId", "trialId", "reason"]);
+      executionId(body.expectedNodeSessionId);
+      executionId(body.trialId);
+      executionText(body.reason, 256);
+      return request("stop", body);
+    },
+    recoveryInspect(body) {
+      executionFields(body, ["expectedNodeSessionId", "trialId", "trialDigest"]);
+      executionId(body.expectedNodeSessionId);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      return request("recovery/inspect", body);
+    },
+    recoveryConfirm(body) {
+      executionFields(body, ["expectedNodeSessionId", "trialId", "trialDigest", "recoveryDigest", "confirmed"]);
+      executionId(body.expectedNodeSessionId);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      executionHash(body.recoveryDigest);
+      assert(body.confirmed === true);
+      return request("recovery/confirm", body);
+    }
+  });
+}
+
+// ../harness-gripper-check/packages/cli/src/harness/commissioning-controller.js
+var COMMISSIONING_MAXIMUM_AGE_MS = 5000;
+function createCommissioningController({ client, initialStatus = null, recoveryOnly = false, canAct = () => true, onChange = () => {}, now = Date.now, pollMs = 1000 } = {}) {
+  let status = initialStatus, available = false, receivedAt = null, message = null, pending = null, stopPending = false;
+  let recoveryStatus = null, recoveryAvailable = false, recoveryReceivedAt = null, recoveryMessage = null;
+  let recoveryRequestStatus = null;
+  const attemptedApprovals = new Set;
+  const attemptedRecoveries = new Set;
+  let disposed = false, timer = null, reading = null, epoch = 0, uncertain = false;
+  const emit = () => {
+    if (!disposed)
+      onChange();
+  };
+  const fresh = () => Boolean(available && receivedAt !== null && now() >= receivedAt && now() - receivedAt < COMMISSIONING_MAXIMUM_AGE_MS);
+  const recoveryFresh = () => Boolean(recoveryAvailable && recoveryReceivedAt !== null && now() >= recoveryReceivedAt && now() - recoveryReceivedAt < COMMISSIONING_MAXIMUM_AGE_MS);
+  const recoveryKey = (value) => `${value.nodeSessionId}:${value.trial?.trialId}:${value.recovery?.digest}`;
+  const active = () => commissioningUnresolved(status);
+  const snapshot = () => ({
+    status: status ? { ...status, canApprove: status.canApprove && !attemptedApprovals.has(`${status.nodeSessionId}:${status.trial?.trialId}`) } : null,
+    fresh: fresh(),
+    available,
+    receivedAt,
+    maximumAgeMs: COMMISSIONING_MAXIMUM_AGE_MS,
+    recoveryStatus: recoveryStatus ? { ...recoveryStatus, canConfirmRecovery: recoveryStatus.canConfirmRecovery && !attemptedRecoveries.has(recoveryKey(recoveryStatus)) } : null,
+    recoveryAvailable,
+    recoveryFresh: recoveryFresh(),
+    recoveryReceivedAt,
+    pending,
+    stopPending,
+    message: status?.trial?.phase === "WAITING_FOR_APPROVAL" && attemptedApprovals.has(`${status.nodeSessionId}:${status.trial.trialId}`) ? "Approval was already submitted. Its delivery is uncertain; request Stop instead of approving again." : recoveryMessage ?? (recoveryAvailable ? recoveryStatus?.blockedReason : message),
+    unresolved: active() || uncertain
+  });
+  const invalidate = (error, fallback) => {
+    available = false;
+    receivedAt = null;
+    message = commissioningFailureMessage(error, fallback);
+  };
+  const invalidateRecovery = () => {
+    ++epoch;
+    recoveryAvailable = false;
+    recoveryReceivedAt = null;
+    emit();
+  };
+  async function cancelRecovery() {
+    const current = recoveryRequestStatus, original = status;
+    invalidateRecovery();
+    if (!current || current.nodeSessionId === original?.nodeSessionId)
+      return;
+    assertGripperRecoveryMatches(current, original);
+    const next = await client.stop({ expectedNodeSessionId: current.nodeSessionId, trialId: current.trial.trialId, reason: "operator-requested-stop" });
+    assertGripperRecoveryMatches(next, original);
+  }
+  const acceptRecovery = (next, expected) => {
+    assertGripperRecoveryMatches(next, expected);
+    recoveryStatus = next;
+    recoveryAvailable = true;
+    recoveryReceivedAt = now();
+    recoveryMessage = next.blockedReason;
+    if (gripperRecoveryCleared(next, expected)) {
+      status = next;
+      available = true;
+      receivedAt = now();
+      uncertain = false;
+    }
+  };
+  const accept = (next) => {
+    if (active()) {
+      const before = status.trial, after = next.trial;
+      assertGripperCheckMatches(next, status);
+      if (before.phase === "OUTCOME_UNKNOWN" && after.phase !== "OUTCOME_UNKNOWN" || before.phase === "RUNNING" && after.phase === "WAITING_FOR_APPROVAL")
+        throw new Error("Unknown trial cannot be silently cleared");
+    }
+    if (status?.trial?.trialId !== next.trial?.trialId || status?.trial?.digest !== next.trial?.digest) {
+      recoveryStatus = recoveryRequestStatus = null;
+      recoveryAvailable = false;
+      recoveryReceivedAt = null;
+      recoveryMessage = null;
+    }
+    if (gripperRecoveryCleared(next, status || next)) {
+      recoveryStatus = next;
+      recoveryAvailable = true;
+      recoveryReceivedAt = now();
+      recoveryMessage = next.blockedReason;
+    }
+    status = next;
+    available = true;
+    receivedAt = now();
+    message = next.blockedReason;
+    uncertain = false;
+  };
+  const schedule = () => {
+    clearTimeout(timer);
+    if (!disposed && (active() || uncertain)) {
+      timer = setTimeout(() => {
+        refresh().finally(schedule);
+      }, pollMs);
+      timer.unref?.();
+    }
+  };
+  const refreshRecovery = (next) => {
+    if (!recoveryAvailable || !recoveryStatus?.recovery)
+      return false;
+    assertGripperRecoveryMatches(next, status);
+    if (next.nodeSessionId !== recoveryStatus.nodeSessionId || !next.recovery || next.recovery.digest !== recoveryStatus.recovery.digest || Date.parse(next.recovery.expiresAt) <= now()) {
+      throw new Error("Recovery evidence changed or expired");
+    }
+    recoveryStatus = next;
+    recoveryReceivedAt = now();
+    recoveryMessage = next.blockedReason;
+    return true;
+  };
+  async function refresh() {
+    if (disposed || reading || pending || stopPending)
+      return reading;
+    if (!client) {
+      invalidate(null, "This host does not provide the gripper check integration.");
+      emit();
+      return;
+    }
+    const revision = epoch;
+    reading = (async () => {
+      try {
+        const next = await client.status();
+        if (!disposed && revision === epoch) {
+          const matchedRecovery = refreshRecovery(next);
+          if (!recoveryOnly && !(matchedRecovery && next.nodeSessionId !== status.nodeSessionId))
+            accept(next);
+        }
+      } catch (error) {
+        if (!disposed && revision === epoch) {
+          if (recoveryAvailable) {
+            recoveryAvailable = false;
+            recoveryReceivedAt = null;
+            recoveryMessage = "Recovery status changed, expired or became unavailable. Check the current robot state again before confirming.";
+          }
+          invalidate(error, "Gripper check status is unavailable. Retain the original trial; no outcome is assumed.");
+        }
+      } finally {
+        reading = null;
+        emit();
+      }
+    })();
+    return reading;
+  }
+  async function action(kind, body) {
+    if (disposed || !client)
+      throw new Error("Gripper check integration is unavailable");
+    if (kind === "refresh") {
+      executionFields(body, []);
+      await refresh();
+      schedule();
+      return snapshot();
+    }
+    if (kind === "stop") {
+      executionFields(body, ["trialId", "reason"]);
+      executionId(body.trialId);
+      if (body.reason !== "operator-requested-stop" || !active() || status.trial.trialId !== body.trialId || stopPending)
+        throw new Error("Request Stop for the exact unresolved gripper trial");
+      const expected = status;
+      stopPending = true;
+      emit();
+      try {
+        const [original, recovery] = await Promise.allSettled([client.stop({ expectedNodeSessionId: expected.nodeSessionId, trialId: expected.trial.trialId, reason: body.reason }), cancelRecovery()]);
+        if (original.status === "rejected")
+          throw original.reason;
+        if (recovery.status === "rejected")
+          throw recovery.reason;
+        if (gripperRecoveryCleared(original.value, expected))
+          throw new Error("Inspect the durable clearance separately; Stop does not acknowledge recovery");
+        accept(original.value);
+      } catch (error) {
+        uncertain = true;
+        recoveryMessage = null;
+        invalidate(error, "Gripper Stop is unconfirmed. Retain the trial and use the independent motor power cutoff.");
+        throw new Error(message);
+      } finally {
+        stopPending = false;
+        emit();
+        schedule();
+      }
+      return snapshot();
+    }
+    if (kind === "recoveryInspect" || kind === "recoveryConfirm") {
+      executionFields(body, ["trialId", "trialDigest", ...kind === "recoveryConfirm" ? ["recoveryDigest", "confirmed"] : []]);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      if (pending || stopPending || !canAct() || !active() || body.trialId !== status.trial.trialId || body.trialDigest !== status.trial.digest)
+        throw new Error("Review recovery for the exact retained gripper trial on its connected owner");
+      const expected = status, current = recoveryStatus;
+      if (kind === "recoveryConfirm") {
+        executionHash(body.recoveryDigest);
+        if (!recoveryFresh() || !current?.canConfirmRecovery || !current.recovery?.ready || Date.parse(current.recovery.expiresAt) <= now() || body.confirmed !== true || body.recoveryDigest !== current.recovery.digest || attemptedRecoveries.has(recoveryKey(current)))
+          throw new Error("Explicitly confirm the exact fresh recovery inspection once");
+        assertGripperRecoveryMatches(current, expected);
+      }
+      const revision2 = ++epoch;
+      pending = kind;
+      recoveryAvailable = false;
+      recoveryReceivedAt = null;
+      recoveryMessage = null;
+      if (kind === "recoveryConfirm")
+        attemptedRecoveries.add(recoveryKey(current));
+      emit();
+      try {
+        let next;
+        if (kind === "recoveryInspect") {
+          const observed = assertGripperRecoveryMatches(await client.status(), expected);
+          if (disposed || revision2 !== epoch || !canAct())
+            return snapshot();
+          recoveryRequestStatus = observed;
+          if (gripperRecoveryCleared(observed, expected))
+            next = observed;
+          else {
+            if (!observed.canInspectRecovery)
+              throw new Error("This Node cannot inspect recovery for the retained trial");
+            next = await client.recoveryInspect({ expectedNodeSessionId: observed.nodeSessionId, trialId: body.trialId, trialDigest: body.trialDigest });
+          }
+        } else {
+          recoveryRequestStatus = current;
+          next = await client.recoveryConfirm({ expectedNodeSessionId: current.nodeSessionId, ...body });
+        }
+        if (!disposed && revision2 === epoch)
+          acceptRecovery(next, expected);
+      } catch (error) {
+        if (revision2 === epoch) {
+          recoveryAvailable = false;
+          recoveryReceivedAt = null;
+          recoveryMessage = commissioningFailureMessage(error, "Recovery was not confirmed. The original outcome and ownership remain retained; inspect recovery status before continuing.");
+          throw new Error(recoveryMessage);
+        }
+      } finally {
+        pending = null;
+        emit();
+        schedule();
+      }
+      return snapshot();
+    }
+    if (pending || stopPending || !fresh() || !canAct())
+      throw new Error("Refresh the connected gripper check and wait for the current operation before acting");
+    let payload;
+    if (kind === "inspect") {
+      executionFields(body, []);
+      if (!status.canInspect || active() || uncertain)
+        throw new Error("Resolve the existing trial before inspecting the gripper");
+      payload = { expectedNodeSessionId: status.nodeSessionId };
+    } else if (kind === "prepare") {
+      executionFields(body, ["configurationDigest", "inspectionDigest", "targetPosition"]);
+      executionHash(body.configurationDigest);
+      executionHash(body.inspectionDigest);
+      const { configuration: c, inspection: i } = status, target2 = body.targetPosition;
+      if (!status.canPrepare || active() || uncertain || !c || !i?.ready || Date.parse(i.expiresAt) <= now() || body.configurationDigest !== c.digest || body.inspectionDigest !== i.digest || typeof target2 !== "number" || !Number.isFinite(target2) || target2 < c.minimum || target2 > c.maximum || Math.abs(target2 - i.gripperPosition) > c.maximumDelta || Math.abs(target2 - i.gripperPosition) <= c.tolerance)
+        throw new Error("Review a fresh inspection and an absolute target inside the configured gripper limits");
+      payload = { expectedNodeSessionId: status.nodeSessionId, ...body };
+    } else if (kind === "approve") {
+      executionFields(body, ["trialId", "trialDigest", "approved"]);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      if (attemptedApprovals.has(`${status.nodeSessionId}:${status.trial?.trialId}`) || !status.canApprove || status.trial?.phase !== "WAITING_FOR_APPROVAL" || status.trial.stopStatus !== null || uncertain || body.approved !== true || body.trialId !== status.trial.trialId || body.trialDigest !== status.trial.digest || Date.parse(status.trial.approvalExpiresAt) <= now())
+        throw new Error("Explicitly approve the exact current unexpired gripper proposal");
+      payload = { expectedNodeSessionId: status.nodeSessionId, ...body };
+    } else
+      throw new Error("Unsupported gripper check action");
+    const revision = ++epoch;
+    pending = kind;
+    if (kind === "approve")
+      attemptedApprovals.add(`${status.nodeSessionId}:${status.trial.trialId}`);
+    emit();
+    try {
+      const next = await client[kind](payload);
+      if (!disposed && revision === epoch)
+        accept(next);
+    } catch (error) {
+      if (revision === epoch) {
+        uncertain = kind === "approve" || kind === "prepare";
+        invalidate(error, "The gripper request was not confirmed. Refresh the exact trial or request Stop; do not repeat the action.");
+        throw new Error(message);
+      }
+    } finally {
+      pending = null;
+      emit();
+      schedule();
+    }
+    return snapshot();
+  }
+  return {
+    snapshot,
+    action,
+    refresh,
+    invalidateRecovery,
+    cancelRecovery,
+    dispose() {
+      disposed = true;
+      ++epoch;
+      clearTimeout(timer);
+    }
+  };
+}
+
+// ../harness-gripper-check/packages/cli/src/harness/workcell-controller.js
 var WORKCELL_VIEW_VERSION = "physicalsystems-workcell-view-v1";
 var WORKCELL_VIEW_MAX_BYTES = 256 * 1024;
 var REQUEST_ERRORS = Object.freeze({
@@ -2536,6 +3142,7 @@ function createWorkcellController({
   modelLabel = () => null,
   cameraClient,
   executionClient,
+  commissioningClient,
   now = () => new Date().toISOString(),
   pollMs = 200,
   inspectSetup,
@@ -2589,6 +3196,7 @@ function createWorkcellController({
         stopCaptureSessionId: stopCaptureSessionId || ownedCaptureSessions.values().next().value || null
       },
       execution: execution.snapshot(),
+      commissioning: commissioning.snapshot(),
       experiments: getExperiments()?.snapshot() || null
     };
     const setup = getSetupView();
@@ -2613,10 +3221,16 @@ function createWorkcellController({
       } catch {}
     }
   };
+  const commissioning = createCommissioningController({
+    client: commissioningClient,
+    canAct: () => !disposed && agent.status !== "working" && !choice3 && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size && !execution.snapshot().activeRuns.length && !execution.snapshot().pending,
+    onChange: emit,
+    now: () => Date.parse(now())
+  });
   const execution = createExecutionController({
     client: executionClient,
     currentRoute: () => workflow?.routeReceipt,
-    canPrepare: () => !disposed && agent.status !== "working" && !choice3 && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size,
+    canPrepare: () => !commissioning.snapshot().unresolved && !commissioning.snapshot().pending && !disposed && agent.status !== "working" && !choice3 && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size,
     onChange: emit,
     now: () => Date.parse(now())
   });
@@ -3025,6 +3639,10 @@ function createWorkcellController({
         throw new Error("This exact preview frame is no longer retained; refresh the view");
       return { bytes: cachedFrame.bytes, contentType: cachedFrame.contentType };
     },
+    async commissioningAction(action, body) {
+      await commissioning.action(action, body);
+      return snapshot();
+    },
     async executionAction(action, body) {
       await execution.action(action, body);
       return snapshot();
@@ -3035,6 +3653,7 @@ function createWorkcellController({
       disposed = true;
       pendingPrompt = null;
       execution.dispose();
+      commissioning.dispose();
       clearTimeout(pollTimer);
       resolveChoice(null);
       listeners.clear();
@@ -3052,7 +3671,7 @@ function createWorkcellController({
     }
   };
 }
-// ../source-harness-opencode/packages/cli/src/physical/setup-contracts.js
+// ../harness-gripper-check/packages/cli/src/physical/setup-contracts.js
 var SETUP_REQUIREMENTS_VERSION = "physicalsystems-setup-requirements-v1";
 var SETUP_REQUIREMENTS_MAX_BYTES = 64 * 1024;
 var SCOPES = [
@@ -3112,9 +3731,9 @@ function timestamp3(value) {
   check2(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19));
   return value;
 }
-function freeze2(value) {
+function freeze3(value) {
   if (value && typeof value === "object") {
-    Object.values(value).forEach(freeze2);
+    Object.values(value).forEach(freeze3);
     Object.freeze(value);
   }
   return value;
@@ -3210,10 +3829,10 @@ function normalizeSetupRequirements(value) {
   executionFields(value.truncation, ["implementationsOmitted", "requirementsOmitted", "bindingsOmitted", "constraintsOmitted"]);
   Object.values(value.truncation).forEach(integer2);
   check2(Buffer.byteLength(JSON.stringify(value)) <= SETUP_REQUIREMENTS_MAX_BYTES);
-  return freeze2(value);
+  return freeze3(value);
 }
 
-// ../source-harness-opencode/packages/cli/src/physical/setup-client.js
+// ../harness-gripper-check/packages/cli/src/physical/setup-client.js
 var PATH = "/v2/physical/setup/requirements";
 var MAX_BYTES3 = 256 * 1024;
 var MESSAGES = Object.freeze({
@@ -3228,7 +3847,7 @@ class SetupReadError extends Error {
   }
 }
 var setupReadFailure = (error) => error instanceof SetupReadError ? error.code : "unavailable";
-async function readJson2(response) {
+async function readJson3(response) {
   if (response.headers?.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json")
     throw new SetupReadError("invalid");
   const length = response.headers.get("content-length");
@@ -3287,7 +3906,7 @@ function createSetupRequirementsClient({ baseUrl, token, fetchImpl = globalThis.
             return Object.freeze({ status: "unsupported", report: null });
           throw new SetupReadError("unavailable");
         }
-        const value = await readJson2(response);
+        const value = await readJson3(response);
         let report;
         try {
           report = normalizeSetupRequirements(value);
@@ -3306,7 +3925,7 @@ function createSetupRequirementsClient({ baseUrl, token, fetchImpl = globalThis.
   });
 }
 
-// ../source-harness-opencode/packages/cli/src/harness/setup-inspection.js
+// ../harness-gripper-check/packages/cli/src/harness/setup-inspection.js
 var MAX_AGE = 5000;
 var MAX_ROWS = 32;
 var MAX_IMPLEMENTATIONS = 16;
@@ -3884,7 +4503,7 @@ function createSetupInspector({ client, requirementsClient, getContext = () => (
     pending?.cancel("disposed");
   } });
 }
-// ../source-harness-opencode/packages/cli/src/harness/setup-view.js
+// ../harness-gripper-check/packages/cli/src/harness/setup-view.js
 function createSetupView({ inspector, getContext, onChange = () => {}, now = Date.now } = {}) {
   let disposed = false;
   let active = null;
@@ -3965,7 +4584,7 @@ function createSetupView({ inspector, getContext, onChange = () => {}, now = Dat
     }
   });
 }
-// ../source-harness-opencode/packages/cli/src/harness/execution-inspection.js
+// ../harness-gripper-check/packages/cli/src/harness/execution-inspection.js
 var MAX_READ_AGE2 = 5000;
 var MAX_KNOWN_RUNS = 128;
 var PIN_IDS = ["capabilityId", "implementationId", "configurationId"];
@@ -4279,7 +4898,7 @@ function createExecutionInspector({ client, getContext = () => ({}), now = Date.
     pending?.cancel("disposed");
   } });
 }
-// ../source-harness-opencode/packages/cli/src/harness/agent-skills.js
+// ../harness-gripper-check/packages/cli/src/harness/agent-skills.js
 import { createHash as createHash6 } from "node:crypto";
 import {
   closeSync as closeSync2,
@@ -4437,7 +5056,7 @@ function createReadAgentSkillTool({ registry, defineTool = (definition) => defin
   });
 }
 
-// ../source-harness-opencode/packages/cli/src/physical/workflow-core.js
+// ../harness-gripper-check/packages/cli/src/physical/workflow-core.js
 var PHYSICAL_DISCOVERY_TOOL = "inspect_physical_system";
 var PHYSICAL_INTENT_TOOL = "plan_physical_workflow";
 var PHYSICAL_CAPABILITIES_TOOL = "inspect_physical_capabilities";
@@ -4825,7 +5444,7 @@ function createPhysicalTools({
     })
   ];
 }
-// ../source-harness-opencode/packages/cli/src/physical/camera-preview-client.js
+// ../harness-gripper-check/packages/cli/src/physical/camera-preview-client.js
 import { createHash as createHash7 } from "node:crypto";
 var ENDPOINT = "/v1/physical/camera-preview";
 var VERSION = "experimental-camera-preview-";
@@ -4838,53 +5457,53 @@ class CameraHttpError extends Error {
 function invalid() {
   throw new TypeError("Camera preview response failed contract validation");
 }
-function assert(value) {
+function assert2(value) {
   if (!value)
     invalid();
 }
 function object4(value) {
-  assert(value && typeof value === "object" && !Array.isArray(value));
+  assert2(value && typeof value === "object" && !Array.isArray(value));
   return value;
 }
 function fields2(value, names, optional = []) {
   object4(value);
-  assert(names.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => names.includes(key) || optional.includes(key)));
+  assert2(names.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => names.includes(key) || optional.includes(key)));
   return value;
 }
 function text3(value, maximum = 256) {
-  assert(typeof value === "string" && value.length > 0 && value.length <= maximum && value.trim() && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value));
+  assert2(typeof value === "string" && value.length > 0 && value.length <= maximum && value.trim() && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value));
   return value;
 }
 function id4(value, maximum = 128) {
-  assert(typeof value === "string" && value.length <= maximum && /^[a-z][a-z0-9-]*$/.test(value));
+  assert2(typeof value === "string" && value.length <= maximum && /^[a-z][a-z0-9-]*$/.test(value));
   return value;
 }
 function digest3(value) {
-  assert(typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value));
+  assert2(typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value));
   return value;
 }
 function integer3(value, maximum = Number.MAX_SAFE_INTEGER) {
-  assert(Number.isSafeInteger(value) && value >= 0 && value <= maximum);
+  assert2(Number.isSafeInteger(value) && value >= 0 && value <= maximum);
   return value;
 }
 function oneOf2(value, options) {
-  assert(options.includes(value));
+  assert2(options.includes(value));
   return value;
 }
 function nullable2(value, normalize) {
   return value === null ? null : normalize(value);
 }
 function ns(value) {
-  assert(typeof value === "string" && /^(0|[1-9][0-9]{0,18})$/.test(value) && BigInt(value) <= 9223372036854775807n);
+  assert2(typeof value === "string" && /^(0|[1-9][0-9]{0,18})$/.test(value) && BigInt(value) <= 9223372036854775807n);
   return value;
 }
 function receiptNs(value) {
-  assert(typeof value === "bigint" || Number.isSafeInteger(value));
+  assert2(typeof value === "bigint" || Number.isSafeInteger(value));
   return ns(String(value));
 }
 function identity2(value) {
   text3(value, 512);
-  assert(/^\/dev\/video[0-9]+$/.test(value) || /^\/dev\/v4l\/by-id\/[^/]+$/.test(value));
+  assert2(/^\/dev\/video[0-9]+$/.test(value) || /^\/dev\/v4l\/by-id\/[^/]+$/.test(value));
   return value;
 }
 function sha(bytes) {
@@ -4904,7 +5523,7 @@ function normalizeCandidate2(value) {
 }
 function normalizeStatus(value, { inventory = false } = {}) {
   fields2(value, ["contractVersion", "state", "captureSessionId", "selectedCandidateId", "latestFrameId", "frameFresh", "frameAgeMs", "staleAfterMs", "errorCode", "observationStatus", "physicalState", "physicalExecutionAuthorized", "rawFramePersisted"], ["availableCameras"]);
-  assert(value.contractVersion === `${VERSION}status-v1` && value.physicalState === "unknown" && value.physicalExecutionAuthorized === false && value.rawFramePersisted === false);
+  assert2(value.contractVersion === `${VERSION}status-v1` && value.physicalState === "unknown" && value.physicalExecutionAuthorized === false && value.rawFramePersisted === false);
   const state2 = oneOf2(value.state, ["idle", "starting", "streaming", "stale", "error", "stopped", "stop-unconfirmed"]);
   const result = {
     phase: state2 === "streaming" ? "live" : state2,
@@ -4920,40 +5539,40 @@ function normalizeStatus(value, { inventory = false } = {}) {
     physicalExecutionAuthorized: false,
     rawFramePersisted: false
   };
-  assert(result.frameFresh === (state2 === "streaming") && result.staleAfterMs === 2000);
-  assert(result.captureSessionId === null === (result.selectedCandidateId === null));
+  assert2(result.frameFresh === (state2 === "streaming") && result.staleAfterMs === 2000);
+  assert2(result.captureSessionId === null === (result.selectedCandidateId === null));
   if (state2 === "idle")
-    assert(result.captureSessionId === null && result.latestFrameId === null);
+    assert2(result.captureSessionId === null && result.latestFrameId === null);
   else
-    assert(result.captureSessionId !== null);
+    assert2(result.captureSessionId !== null);
   if (state2 === "streaming")
-    assert(result.latestFrameId !== null && result.frameAgeMs !== null && result.frameAgeMs < result.staleAfterMs);
+    assert2(result.latestFrameId !== null && result.frameAgeMs !== null && result.frameAgeMs < result.staleAfterMs);
   if (result.latestFrameId !== null)
-    assert(result.latestFrameId.startsWith(`${result.captureSessionId}-`) && result.frameAgeMs !== null);
+    assert2(result.latestFrameId.startsWith(`${result.captureSessionId}-`) && result.frameAgeMs !== null);
   else
-    assert(result.frameAgeMs === null);
+    assert2(result.frameAgeMs === null);
   if (state2 === "stopped")
-    assert(result.latestFrameId === null);
+    assert2(result.latestFrameId === null);
   if (inventory || Object.hasOwn(value, "availableCameras")) {
-    assert(Array.isArray(value.availableCameras) && value.availableCameras.length <= 128);
+    assert2(Array.isArray(value.availableCameras) && value.availableCameras.length <= 128);
     result.availableCameras = value.availableCameras.map(normalizeCandidate2);
-    assert(new Set(result.availableCameras.map((item) => item.candidateId)).size === result.availableCameras.length);
+    assert2(new Set(result.availableCameras.map((item) => item.candidateId)).size === result.availableCameras.length);
   }
   return result;
 }
 function jpegGeometry(bytes) {
-  assert(bytes.length >= 4 && bytes.length <= MAX_JPEG_BYTES && bytes.readUInt16BE(0) === 65496 && bytes.readUInt16BE(bytes.length - 2) === 65497);
+  assert2(bytes.length >= 4 && bytes.length <= MAX_JPEG_BYTES && bytes.readUInt16BE(0) === 65496 && bytes.readUInt16BE(bytes.length - 2) === 65497);
   let offset = 2;
   while (offset + 4 <= bytes.length) {
-    assert(bytes[offset++] === 255);
+    assert2(bytes[offset++] === 255);
     while (bytes[offset] === 255)
       offset += 1;
     const marker = bytes[offset++];
-    assert(marker !== 218 && marker !== 217 && offset + 2 <= bytes.length);
+    assert2(marker !== 218 && marker !== 217 && offset + 2 <= bytes.length);
     const size = bytes.readUInt16BE(offset);
-    assert(size >= 2 && offset + size <= bytes.length);
+    assert2(size >= 2 && offset + size <= bytes.length);
     if ([192, 193, 194, 195, 197, 198, 199, 201, 202, 203, 205, 206, 207].includes(marker)) {
-      assert(size >= 8);
+      assert2(size >= 8);
       return { height: bytes.readUInt16BE(offset + 3), width: bytes.readUInt16BE(offset + 5) };
     }
     offset += size;
@@ -4962,26 +5581,26 @@ function jpegGeometry(bytes) {
 }
 function normalizeObservation(value, packet, status) {
   if (value === null) {
-    assert(packet.analysis === null && status.observationStatus === "not-configured");
+    assert2(packet.analysis === null && status.observationStatus === "not-configured");
     return null;
   }
   fields2(value, ["frameId", "receipt", "routingEvidencePublished"]);
-  assert(value.frameId === packet.frameId && value.routingEvidencePublished === false && packet.analysis !== null);
+  assert2(value.frameId === packet.frameId && value.routingEvidencePublished === false && packet.analysis !== null);
   const receipt = object4(value.receipt);
   const capture = object4(receipt.capture);
   const boundary = object4(receipt.evidenceBoundary);
-  assert(receipt.contractVersion === "experimental-fixed-camera-observation-v1" && receipt.hardwareIdentity === packet.source.hardwareIdentity);
-  assert(capture.sequence === packet.sequence && receiptNs(capture.capturedAtMonotonicNs) === packet.capture.capturedAtMonotonicNs && capture.clockSessionId === packet.capture.clockSessionId && capture.clockDomain === "host-monotonic" && capture.width === packet.source.width && capture.height === packet.source.height && capture.rotationDegrees === packet.preview.rotationDegrees && capture.analysisFrameDigest === packet.analysis.digest && capture.timestampBasis === "host-read-window-start" && capture.sensorExposureAgeBounded === false && capture.rawFramePersisted === false);
+  assert2(receipt.contractVersion === "experimental-fixed-camera-observation-v1" && receipt.hardwareIdentity === packet.source.hardwareIdentity);
+  assert2(capture.sequence === packet.sequence && receiptNs(capture.capturedAtMonotonicNs) === packet.capture.capturedAtMonotonicNs && capture.clockSessionId === packet.capture.clockSessionId && capture.clockDomain === "host-monotonic" && capture.width === packet.source.width && capture.height === packet.source.height && capture.rotationDegrees === packet.preview.rotationDegrees && capture.analysisFrameDigest === packet.analysis.digest && capture.timestampBasis === "host-read-window-start" && capture.sensorExposureAgeBounded === false && capture.rawFramePersisted === false);
   const expires = receiptNs(capture.expiresAtMonotonicNs);
-  assert(BigInt(expires) > BigInt(packet.capture.capturedAtMonotonicNs));
+  assert2(BigInt(expires) > BigInt(packet.capture.capturedAtMonotonicNs));
   oneOf2(receipt.status, ["blocked", "observed-provisional"]);
-  assert(typeof boundary.cameraOpened === "boolean" && boundary.perceptionExecuted === true && boundary.robotOpened === false && boundary.torqueEnabled === false && boundary.jointCommandsSent === 0 && boundary.physicalTaskSuccessProven === false && boundary.rawFramePersisted === false);
+  assert2(typeof boundary.cameraOpened === "boolean" && boundary.perceptionExecuted === true && boundary.robotOpened === false && boundary.torqueEnabled === false && boundary.jointCommandsSent === 0 && boundary.physicalTaskSuccessProven === false && boundary.rawFramePersisted === false);
   if (packet.source.kind === "synthetic")
-    assert(boundary.cameraOpened === false);
+    assert2(boundary.cameraOpened === false);
   const expected = !boundary.cameraOpened ? "simulated" : receipt.status === "blocked" ? "blocked" : "provisional";
-  assert(status.observationStatus === expected || status.observationStatus === "stale");
+  assert2(status.observationStatus === expected || status.observationStatus === "stale");
   if (status.observationStatus !== "stale")
-    assert(BigInt(packet.capture.capturedAtMonotonicNs) + BigInt(status.frameAgeMs) * 1000000n < BigInt(expires));
+    assert2(BigInt(packet.capture.capturedAtMonotonicNs) + BigInt(status.frameAgeMs) * 1000000n < BigInt(expires));
   return {
     frameId: packet.frameId,
     observationDigest: digest3(receipt.observationDigest),
@@ -4994,11 +5613,11 @@ function normalizeObservation(value, packet, status) {
 }
 function normalizePacket(value, status) {
   fields2(value, ["contractVersion", "frameId", "candidateId", "candidateDigest", "captureSessionId", "sequence", "source", "capture", "preview", "analysis", "observation", "physicalExecutionAuthorized"]);
-  assert(value.contractVersion === `${VERSION}packet-v1` && value.physicalExecutionAuthorized === false);
+  assert2(value.contractVersion === `${VERSION}packet-v1` && value.physicalExecutionAuthorized === false);
   const sequence = integer3(value.sequence);
   const session = id4(value.captureSessionId, 64);
   const candidateId = id4(value.candidateId);
-  assert(value.frameId === `${session}-${sequence}` && value.frameId === status.latestFrameId && session === status.captureSessionId && candidateId === status.selectedCandidateId);
+  assert2(value.frameId === `${session}-${sequence}` && value.frameId === status.latestFrameId && session === status.captureSessionId && candidateId === status.selectedCandidateId);
   fields2(value.source, ["kind", "hardwareIdentity", "identityStability", "pixelFormat", "digest", "width", "height"]);
   const source = {
     kind: oneOf2(value.source.kind, ["synthetic", "live-camera"]),
@@ -5009,7 +5628,7 @@ function normalizePacket(value, status) {
     width: integer3(value.source.width, 1920),
     height: integer3(value.source.height, 1080)
   };
-  assert(source.width > 0 && source.height > 0);
+  assert2(source.width > 0 && source.height > 0);
   fields2(value.capture, ["capturedAtMonotonicNs", "clockDomain", "clockSessionId", "timestampBasis", "sensorExposureAgeBounded"]);
   const capture = {
     capturedAtMonotonicNs: ns(value.capture.capturedAtMonotonicNs),
@@ -5018,19 +5637,19 @@ function normalizePacket(value, status) {
     timestampBasis: oneOf2(value.capture.timestampBasis, ["host-read-window-start"]),
     sensorExposureAgeBounded: false
   };
-  assert(value.capture.sensorExposureAgeBounded === false);
+  assert2(value.capture.sensorExposureAgeBounded === false);
   fields2(value.preview, ["contentType", "encoding", "data", "digest", "derivedFromSourceDigest", "width", "height", "rotationDegrees"]);
   const preview = value.preview;
-  assert(preview.contentType === "image/jpeg" && preview.encoding === "base64" && typeof preview.data === "string" && preview.data.length <= 4 * Math.ceil(MAX_JPEG_BYTES / 3) && preview.data.length % 4 === 0 && !/[^A-Za-z0-9+/=]/.test(preview.data));
+  assert2(preview.contentType === "image/jpeg" && preview.encoding === "base64" && typeof preview.data === "string" && preview.data.length <= 4 * Math.ceil(MAX_JPEG_BYTES / 3) && preview.data.length % 4 === 0 && !/[^A-Za-z0-9+/=]/.test(preview.data));
   const jpegBytes = Buffer.from(preview.data, "base64");
-  assert(jpegBytes.toString("base64") === preview.data && sha(jpegBytes) === digest3(preview.digest));
+  assert2(jpegBytes.toString("base64") === preview.data && sha(jpegBytes) === digest3(preview.digest));
   const dimensions = jpegGeometry(jpegBytes);
-  assert(preview.derivedFromSourceDigest === source.digest && preview.width === source.width && preview.height === source.height && dimensions.width === source.width && dimensions.height === source.height);
+  assert2(preview.derivedFromSourceDigest === source.digest && preview.width === source.width && preview.height === source.height && dimensions.width === source.width && dimensions.height === source.height);
   oneOf2(preview.rotationDegrees, [0, 180]);
   let analysis = null;
   if (value.analysis !== null) {
     fields2(value.analysis, ["pixelFormat", "digest", "derivedFromSourceDigest", "rotationDegrees"]);
-    assert(value.analysis.pixelFormat === "hsv8" && value.analysis.derivedFromSourceDigest === source.digest && value.analysis.rotationDegrees === preview.rotationDegrees);
+    assert2(value.analysis.pixelFormat === "hsv8" && value.analysis.derivedFromSourceDigest === source.digest && value.analysis.rotationDegrees === preview.rotationDegrees);
     analysis = { pixelFormat: "hsv8", digest: digest3(value.analysis.digest), derivedFromSourceDigest: source.digest, rotationDegrees: preview.rotationDegrees };
   }
   const result = {
@@ -5053,20 +5672,20 @@ function normalizePacket(value, status) {
 }
 async function readBoundedJson(response, maximum) {
   const reader = response.body?.getReader?.();
-  assert(reader);
+  assert2(reader);
   let size = 0;
   const chunks = [];
   try {
-    assert(response.headers?.get("content-type")?.split(";")[0].trim().toLowerCase() === "application/json");
+    assert2(response.headers?.get("content-type")?.split(";")[0].trim().toLowerCase() === "application/json");
     const length = response.headers.get("content-length");
     if (length !== null)
-      assert(/^[0-9]+$/.test(length) && Number(length) <= maximum);
+      assert2(/^[0-9]+$/.test(length) && Number(length) <= maximum);
     for (;; ) {
       const { done, value } = await reader.read();
       if (done)
         break;
       size += value.byteLength;
-      assert(size <= maximum);
+      assert2(size <= maximum);
       chunks.push(value);
     }
   } catch (error) {
@@ -5078,7 +5697,7 @@ async function readBoundedJson(response, maximum) {
   const raw = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
   return JSON.parse(raw, (_key, value, context) => {
     if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
-      assert(context && /^-?[0-9]+$/.test(context.source));
+      assert2(context && /^-?[0-9]+$/.test(context.source));
       return BigInt(context.source);
     }
     return value;
@@ -5104,7 +5723,7 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
       if (response.redirected || response.type === "opaqueredirect")
         invalid();
       if (response.url)
-        assert(new URL(response.url).href === new URL(path2, origin).href);
+        assert2(new URL(response.url).href === new URL(path2, origin).href);
       if (!response.ok) {
         await response.body?.cancel?.().catch(() => {});
         const status = Number.isInteger(response.status) ? response.status : 503;
@@ -5129,7 +5748,7 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
       const requestedAt = performance.now();
       const value = await request(`${ENDPOINT}/frame`);
       fields2(value, ["contractVersion", "status", "frame"]);
-      assert(value.contractVersion === `${VERSION}frame-v1`);
+      assert2(value.contractVersion === `${VERSION}frame-v1`);
       const status = normalizeStatus(value.status);
       if (!status.frameFresh)
         return { status, frame: null };
@@ -5147,11 +5766,11 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
         observationExpiresAt: frame.observation?.expiresAtMonotonicNs ?? null
       }));
       if (previous?.captureSessionId === frame.captureSessionId) {
-        assert(frame.candidateId === previous.candidateId && frame.candidateDigest === previous.candidateDigest && frame.capture.clockSessionId === previous.capture.clockSessionId && frame.sequence >= previous.sequence && frame.source.hardwareIdentity === previous.source.hardwareIdentity && frame.source.identityStability === previous.source.identityStability && frame.source.kind === previous.source.kind);
+        assert2(frame.candidateId === previous.candidateId && frame.candidateDigest === previous.candidateDigest && frame.capture.clockSessionId === previous.capture.clockSessionId && frame.sequence >= previous.sequence && frame.source.hardwareIdentity === previous.source.hardwareIdentity && frame.source.identityStability === previous.source.identityStability && frame.source.kind === previous.source.kind);
         if (frame.sequence === previous.sequence)
-          assert(fingerprint === previous.fingerprint && status.frameAgeMs >= previous.frameAgeMs);
+          assert2(fingerprint === previous.fingerprint && status.frameAgeMs >= previous.frameAgeMs);
         else
-          assert(BigInt(frame.capture.capturedAtMonotonicNs) > BigInt(previous.capture.capturedAtMonotonicNs));
+          assert2(BigInt(frame.capture.capturedAtMonotonicNs) > BigInt(previous.capture.capturedAtMonotonicNs));
       }
       previous = { ...frame, jpegBytes: undefined, observation: undefined, frameAgeMs: status.frameAgeMs, fingerprint };
       return { status: { ...status, frameAgeMs: status.frameAgeMs + Math.ceil(elapsed) }, frame };
@@ -5160,7 +5779,7 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
       fields2(value, ["candidateId", "expectedCandidateDigest"]);
       const candidateId = id4(value.candidateId);
       const status = normalizeStatus(await request(`${ENDPOINT}:start`, { contractVersion: `${VERSION}start-v1`, candidateId, expectedCandidateDigest: digest3(value.expectedCandidateDigest) }));
-      assert(status.selectedCandidateId === candidateId && !["idle", "stopped"].includes(status.phase));
+      assert2(status.selectedCandidateId === candidateId && !["idle", "stopped"].includes(status.phase));
       previous = null;
       return status;
     },
@@ -5168,21 +5787,21 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
       fields2(value, ["expectedCaptureSessionId"]);
       const expectedCaptureSessionId = id4(value.expectedCaptureSessionId, 64);
       const status = normalizeStatus(await request(`${ENDPOINT}:stop`, { contractVersion: `${VERSION}stop-v1`, expectedCaptureSessionId }));
-      assert(status.captureSessionId === expectedCaptureSessionId && ["stopped", "stop-unconfirmed"].includes(status.phase));
+      assert2(status.captureSessionId === expectedCaptureSessionId && ["stopped", "stop-unconfirmed"].includes(status.phase));
       if (status.phase === "stopped")
         previous = null;
       return status;
     }
   });
 }
-// ../source-harness-opencode/packages/cli/src/harness/workcell-view/view-state.js
+// ../harness-gripper-check/packages/cli/src/harness/workcell-view/view-state.js
 function cameraIsFresh(camera, now = Date.now()) {
   const status = camera?.status;
   const receivedAt = Date.parse(camera?.receivedAt || "");
   const elapsed = now - receivedAt;
   return Boolean(camera?.availability === "available" && camera.frame && camera.previewFrameId && status?.phase === "live" && status.frameFresh === true && Number.isFinite(elapsed) && elapsed >= 0 && Number.isFinite(status.frameAgeMs) && status.frameAgeMs >= 0 && Number.isFinite(status.staleAfterMs) && status.staleAfterMs > 0 && elapsed + status.frameAgeMs < status.staleAfterMs);
 }
-// ../source-harness-opencode/packages/cli/src/auth/secret-store.js
+// ../harness-gripper-check/packages/cli/src/auth/secret-store.js
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path2 from "node:path";
@@ -5350,7 +5969,7 @@ function createNativeSecretStore({ configDir, platform = process.platform, run }
   throw new Error(`Secure TinyEdge credential storage is not configured for ${platform}. ` + "Use Windows DPAPI, Linux Secret Service, or provide a native secret-store adapter.");
 }
 
-// ../source-harness-opencode/packages/desktop/src/connections.js
+// ../harness-gripper-check/packages/desktop/src/connections.js
 var exports_connections = {};
 __export(exports_connections, {
   sshFailure: () => sshFailure,
@@ -5593,7 +6212,7 @@ async function attachSSH(profile, options = {}) {
   }
 }
 
-// ../source-harness-opencode/packages/operator-service/src/tools.js
+// ../harness-gripper-check/packages/operator-service/src/tools.js
 var unavailable = () => {
   throw new Error("A bound service context is required");
 };
@@ -5619,12 +6238,13 @@ var agentToolDefinitions = Object.freeze([
 }));
 var agentToolNames = Object.freeze(agentToolDefinitions.map((tool) => tool.name));
 
-// ../source-harness-opencode/packages/operator-service/src/physical.js
+// ../harness-gripper-check/packages/operator-service/src/physical.js
 function createPublicClients({ endpoint, credential = {}, fetchImpl = globalThis.fetch }) {
   return Object.freeze({
     node: createPhysicalNodeClient({ baseUrl: endpoint, fetchImpl }),
     camera: createCameraPreviewClient({ baseUrl: endpoint, token: credential.cameraToken, fetchImpl }),
     execution: createExecutionClient({ baseUrl: endpoint, token: credential.executionToken, fetchImpl }),
+    commissioning: createCommissioningClient({ baseUrl: endpoint, token: credential.executionToken, fetchImpl }),
     setup: createSetupRequirementsClient({ baseUrl: endpoint, token: credential.executionToken, fetchImpl })
   });
 }
@@ -5679,6 +6299,7 @@ function createPhysicalContext({ clients, experiments, now, onChange, canPrompt,
     workflow,
     cameraClient: clients.camera,
     executionClient: clients.execution,
+    commissioningClient: clients.commissioning,
     now: () => new Date(now()).toISOString(),
     canPrompt,
     sendIntent,
@@ -5707,7 +6328,7 @@ function createPhysicalContext({ clients, experiments, now, onChange, canPrompt,
   });
 }
 
-// ../source-harness-opencode/packages/operator-service/src/service.js
+// ../harness-gripper-check/packages/operator-service/src/service.js
 var ACTIVE = new Set(["READY", "RUNNING", "OUTCOME_UNKNOWN"]);
 var TERMINAL_RUN = new Set(["VERIFIED_SUCCESS", "FAILED", "CANCELLED", "BLOCKED"]);
 var CONTINUATION_TEXT = "Continue the approved synthetic simulation experiment. Run the remaining trials, compare the measurements, and summarize the result.";
@@ -5828,9 +6449,14 @@ async function createOperatorService({
           throw new Error("Invalid continuation binding");
     }
     for (const record of saved.ownership) {
-      if (!ids.has(record.conversationId) || !saved.projects.some((project3) => project3.id === record.projectId) || !["camera", "execution"].includes(record.kind))
+      if (!ids.has(record.conversationId) || !saved.projects.some((project3) => project3.id === record.projectId) || !["camera", "execution", "commissioning"].includes(record.kind))
         throw new Error("Invalid ownership evidence");
       text4(record.nodeId, "Saved Node identity", 512);
+      if (record.kind === "commissioning") {
+        const status = normalizeGripperCheck(record.commissioningStatus);
+        if (status.nodeSessionId !== record.nodeSessionId || status.trial?.trialId !== record.trialId || !commissioningUnresolved(status))
+          throw new Error("Invalid commissioning ownership evidence");
+      }
     }
     fields3(saved.selection, ["projectId", "conversationId"]);
     if (saved.selection.projectId && !saved.projects.some((project3) => project3.id === saved.selection.projectId))
@@ -5842,6 +6468,28 @@ async function createOperatorService({
     throw fail3("STORAGE_INVALID", "Operator metadata is invalid. Preserve the files and open a compatible service; no work was replayed.");
   }
   const serviceId = randomUUID5(), contexts = new Map, links = new Map, tokens = new Map, nodeOwners = new Map, endpointOwners = new Map, listeners = new Set, pendingProjects = new Map;
+  const recoveryControllers = new Map;
+  const recoveryKey = (record) => JSON.stringify([record.projectId, record.conversationId, record.nodeSessionId, record.trialId]);
+  const recoveryView = (record) => {
+    const controller = recoveryControllers.get(recoveryKey(record));
+    const view = controller?.controller.snapshot() || {
+      status: record.commissioningStatus,
+      available: false,
+      fresh: false,
+      receivedAt: null,
+      maximumAgeMs: 5000,
+      recoveryStatus: null,
+      recoveryAvailable: false,
+      recoveryFresh: false,
+      recoveryReceivedAt: null,
+      pending: null,
+      stopPending: false,
+      message: null,
+      unresolved: true
+    };
+    const link = links.get(record.projectId);
+    return link?.status === "connected" && fresh(link.observedAt) && (!controller || controller.generation === project2(record.projectId).generation) ? view : { ...view, recoveryAvailable: false, recoveryFresh: false, recoveryReceivedAt: null };
+  };
   const secrets = secretStore || createNativeSecretStore({ configDir: path4.join(dataDir, "credentials") });
   let closed = false, closing = false, closePromise, storageFailed = false, revision = 0, catalogPending = false, skillTool;
   const project2 = (id5) => saved.projects.find((item) => item.id === id5);
@@ -5859,14 +6507,14 @@ async function createOperatorService({
       throw fail3("STORAGE_UNAVAILABLE", "Operator evidence could not be saved. Work is blocked; retain the files and resolve owned operations.");
     }
   };
-  const unresolved = (view) => Boolean(view?.camera?.pending || view?.camera?.stopPending || view?.camera?.stopUnconfirmed || view?.camera?.stopCaptureSessionId || view?.execution?.pending || view?.execution?.stopPending || [...view?.execution?.activeRuns || [], ...view?.execution?.runs || [], ...view?.execution?.run ? [view.execution.run] : []].some((run) => !TERMINAL_RUN.has(run.phase) || run.stopStatus === "STOP_UNCONFIRMED"));
-  const requiresRecovery = (record) => record.recovered || record.status === "OUTCOME_UNKNOWN" && !(record.kind === "camera" ? record.captureSessionId : record.runId);
+  const unresolved = (view) => Boolean(view?.camera?.pending || view?.camera?.stopPending || view?.camera?.stopUnconfirmed || view?.camera?.stopCaptureSessionId || view?.commissioning?.unresolved || view?.commissioning?.pending || view?.commissioning?.stopPending || view?.execution?.pending || view?.execution?.stopPending || [...view?.execution?.activeRuns || [], ...view?.execution?.runs || [], ...view?.execution?.run ? [view.execution.run] : []].some((run) => !TERMINAL_RUN.has(run.phase) || run.stopStatus === "STOP_UNCONFIRMED"));
+  const requiresRecovery = (record) => record.recovered || record.status === "OUTCOME_UNKNOWN" && !(record.kind === "camera" ? record.captureSessionId : record.kind === "commissioning" ? record.trialId : record.runId);
   const recoveryOwner = (record) => ({
     ...record,
     ...bindingScope(binding(record.conversationId)),
     projectName: project2(record.projectId).name,
     statusUnavailable: true,
-    ...!(record.kind === "camera" ? record.captureSessionId : record.runId) ? {
+    ...!(record.kind === "camera" ? record.captureSessionId : record.kind === "commissioning" ? record.trialId : record.runId) ? {
       error: "The operation acknowledgement did not include an identity. Its outcome is unknown. Inspect the original Node and retain its evidence; another camera or run cannot safely be guessed."
     } : {}
   });
@@ -5891,7 +6539,8 @@ async function createOperatorService({
     const workcell = view && !connected ? {
       ...view,
       camera: { ...view.camera, availability: "unavailable", frame: null, previewFrameId: null, receivedAt: null },
-      execution: { ...view.execution, availability: "unavailable", canPrepare: false, canApprove: false }
+      execution: { ...view.execution, availability: "unavailable", canPrepare: false, canApprove: false },
+      commissioning: view.commissioning ? { ...view.commissioning, available: false, fresh: false, receivedAt: null } : null
     } : view;
     const owners = [...links].flatMap(([id5, link]) => {
       const owner = binding(link.physicalOwner), view2 = link.physical?.workcell.snapshot();
@@ -5972,6 +6621,29 @@ async function createOperatorService({
           ...recoveryOwner(record),
           run: { runId: record.runId, runDigest: record.runDigest, phase: "OUTCOME_UNKNOWN" },
           canStop: Boolean(record.runId && links.get(record.projectId)?.status === "connected")
+        }))
+      ],
+      activeCommissioning: [
+        ...owners.filter(({ view: view2 }) => view2.commissioning?.unresolved).map(({ view: view2, ...owner }) => ({
+          ...owner,
+          statusUnavailable: owner.statusUnavailable || !view2.commissioning.fresh,
+          status: view2.commissioning.status,
+          trialId: view2.commissioning.status?.trial?.trialId || null,
+          nodeSessionId: view2.commissioning.status?.nodeSessionId || null,
+          recoveryStatus: view2.commissioning.recoveryStatus,
+          recoveryView: view2.commissioning,
+          canStop: Boolean(view2.commissioning.status?.trial && !view2.commissioning.stopPending),
+          stopPending: view2.commissioning.stopPending
+        })),
+        ...saved.ownership.filter((record) => requiresRecovery(record) && record.kind === "commissioning").map((record) => ({
+          ...recoveryOwner(record),
+          status: record.commissioningStatus || null,
+          recoveryStatus: recoveryView(record).recoveryStatus,
+          recoveryView: recoveryView(record),
+          trialId: record.trialId || null,
+          nodeSessionId: record.nodeSessionId || null,
+          stopPending: false,
+          canStop: Boolean(record.trialId && record.nodeSessionId && links.get(record.projectId)?.status === "connected")
         }))
       ],
       recoveryOperations: saved.ownership.filter(requiresRecovery).map(recoveryOwner)
@@ -6285,6 +6957,15 @@ async function createOperatorService({
       const pins = Object.fromEntries(["runId", "mode", "capabilityId", "implementationId", "implementationDigest", "configurationId", "configurationDigest", "routeReceiptDigest", "snapshotDigest", "inputs", "approval"].filter((key) => Object.hasOwn(exact2, key)).map((key) => [key, exact2[key]]));
       retained.push({ ...base2, kind: "execution", runId: run.runId, runDigest: run.runDigest, pins, status: run.phase });
     }
+    if (view.commissioning?.status?.trial && view.commissioning.unresolved)
+      retained.push({
+        ...base2,
+        kind: "commissioning",
+        trialId: view.commissioning.status.trial.trialId,
+        nodeSessionId: view.commissioning.status.nodeSessionId,
+        commissioningStatus: { ...view.commissioning.status, ...Object.hasOwn(view.commissioning.status, "recovery") ? { recovery: null, canConfirmRecovery: false } : {} },
+        status: view.commissioning.status.trial.phase
+      });
     if (view.execution.pending && !retained.some((record) => record.projectId === p.id && record.kind === "execution"))
       retained.push({ ...base2, kind: "execution", runId: null, status: "REQUEST_PENDING" });
     if (JSON.stringify(retained) !== JSON.stringify(saved.ownership)) {
@@ -6347,7 +7028,7 @@ async function createOperatorService({
   }
   async function recoveredStop(owner, operation, body) {
     const { p, entry } = owner, link = links.get(p.id);
-    const record = saved.ownership.find((item) => item.recovered && item.projectId === p.id && item.conversationId === entry.id && (operation === "camera.stop" ? item.kind === "camera" && item.captureSessionId === body.expectedCaptureSessionId : item.kind === "execution" && item.runId === body.runId));
+    const record = saved.ownership.find((item) => item.recovered && item.projectId === p.id && item.conversationId === entry.id && (operation === "camera.stop" ? item.kind === "camera" && item.captureSessionId === body.expectedCaptureSessionId : operation === "commissioning.stop" ? item.kind === "commissioning" && item.trialId === body.trialId : item.kind === "execution" && item.runId === body.runId));
     if (!record)
       return null;
     if (!link?.clients || link.status !== "connected" || p.connection.expectedNodeId !== record.nodeId)
@@ -6356,6 +7037,21 @@ async function createOperatorService({
     if (record.kind === "camera") {
       const status = await link.clients.camera.stop({ expectedCaptureSessionId: record.captureSessionId });
       confirmed = status.phase === "stopped" && status.captureSessionId === record.captureSessionId;
+    } else if (record.kind === "commissioning") {
+      const retained = recoveryControllers.get(recoveryKey(record));
+      const [original, cancellation] = await Promise.allSettled([
+        link.clients.commissioning.stop({ expectedNodeSessionId: record.nodeSessionId, trialId: record.trialId, reason: "operator-requested-stop" }),
+        retained?.controller.cancelRecovery()
+      ]);
+      if (original.status === "rejected")
+        throw original.reason;
+      if (cancellation.status === "rejected")
+        throw cancellation.reason;
+      const status = original.value;
+      assertGripperCheckMatches(status, record.commissioningStatus);
+      if (gripperRecoveryCleared(status, record.commissioningStatus))
+        throw fail3("RECOVERY_REQUIRED", "Inspect the durable recovery receipt separately; Stop does not acknowledge clearance");
+      confirmed = status.nodeSessionId === record.nodeSessionId && status.trial?.trialId === record.trialId && status.trial.digest === record.commissioningStatus?.trial?.digest && !commissioningUnresolved(status);
     } else {
       const run = await link.clients.execution.stop(record.runId, { reason: "operator-requested-stop" }, record.pins || { runId: record.runId });
       assertRunMatches(run, { ...record.pins, runId: record.runId });
@@ -6372,6 +7068,76 @@ async function createOperatorService({
     }
     emit();
     return snapshot();
+  }
+  async function recoveredCommissioning(owner, operation, body) {
+    const { p, entry, context } = owner, link = links.get(p.id);
+    const record = saved.ownership.find((item) => requiresRecovery(item) && item.kind === "commissioning" && item.projectId === p.id && item.conversationId === entry.id && item.trialId === body.trialId);
+    if (!record)
+      return null;
+    scope(body, { physical: true, selected: true });
+    if (!link?.clients || p.connection.expectedNodeId !== record.nodeId || body.trialDigest !== record.commissioningStatus?.trial?.digest)
+      throw fail3("RECOVERY_REQUIRED", "Reconnect the exact original Node and review its retained gripper trial");
+    return withContext(context, false, async () => {
+      if (link.mutation)
+        throw fail3("NODE_BUSY", "Another request owns this Node; wait for it to settle before recovery");
+      const token = {};
+      link.mutation = token;
+      link.pendingOwner = entry.id;
+      const key = recoveryKey(record);
+      let retained = recoveryControllers.get(key);
+      if (retained && (retained.generation !== p.generation || retained.client !== link.clients.commissioning)) {
+        retained.controller.dispose();
+        recoveryControllers.delete(key);
+        retained = null;
+      }
+      if (!retained) {
+        const controller = createCommissioningController({
+          client: link.clients.commissioning,
+          initialStatus: record.commissioningStatus,
+          recoveryOnly: true,
+          now,
+          onChange: emit,
+          canAct: () => {
+            try {
+              scope(body, { physical: true, selected: true });
+              return !context.busy && saved.ownership.includes(record) && p.connection.expectedNodeId === record.nodeId;
+            } catch {
+              return false;
+            }
+          }
+        });
+        retained = { controller, generation: p.generation, client: link.clients.commissioning };
+        recoveryControllers.set(key, retained);
+      }
+      const { projectId, conversationId, serverId, sessionId, connectionGeneration, ...payload } = body;
+      try {
+        await retained.controller.action(operation.slice(14), payload);
+        const view = retained.controller.snapshot();
+        if (!view.unresolved && gripperRecoveryCleared(view.status, record.commissioningStatus)) {
+          const before = saved.ownership;
+          if (!before.includes(record))
+            throw fail3("OWNERSHIP_CHANGED", "Retained gripper ownership changed during recovery");
+          saved.ownership = before.filter((item) => item !== record);
+          try {
+            save();
+          } catch (error) {
+            saved.ownership = before;
+            throw error;
+          }
+          retained.controller.dispose();
+          recoveryControllers.delete(key);
+          const physical2 = await physicalContext(owner);
+          await physical2.workcell.commissioningAction("refresh", {});
+        }
+        emit();
+        return snapshot();
+      } finally {
+        if (link.mutation === token) {
+          link.mutation = null;
+          link.pendingOwner = null;
+        }
+      }
+    });
   }
   async function command(name, input = {}) {
     const independent = name.endsWith(".stop") || name === "workcell.camera.frame" || name === "session.agentState";
@@ -6489,7 +7255,7 @@ async function createOperatorService({
         emit();
         return snapshot();
       }
-      const owner = scope(body, { generation: name !== "session.agentState" && name !== "experiment.stop" && name !== "experiment.finish" });
+      const owner = scope(body, { generation: name !== "session.agentState" && name !== "experiment.stop" && name !== "experiment.finish" && name !== "workcell.commissioning.stop" });
       if (name === "session.agentState") {
         fields3(body, ["projectId", "conversationId", "serverId", "sessionId", "connectionGeneration", "busy", "error"], ["serverId", "sessionId", "busy"]);
         if (typeof body.busy !== "boolean")
@@ -6539,7 +7305,7 @@ async function createOperatorService({
       }
       if (name.startsWith("workcell.")) {
         const operation = name.slice(9), stop = operation.endsWith(".stop"), frame = operation === "camera.frame";
-        if (!["refresh", "setup.inspect", "camera.start", "camera.stop", "camera.frame", "execution.refresh", "execution.prepare", "execution.approve", "execution.stop", "execution.select", "execution.receipt", "execution.reconcile"].includes(operation))
+        if (!["refresh", "setup.inspect", "camera.start", "camera.stop", "camera.frame", "execution.refresh", "execution.prepare", "execution.approve", "execution.stop", "execution.select", "execution.receipt", "execution.reconcile", "commissioning.refresh", "commissioning.inspect", "commissioning.prepare", "commissioning.approve", "commissioning.stop", "commissioning.recoveryInspect", "commissioning.recoveryConfirm"].includes(operation))
           throw fail3("UNSUPPORTED_COMMAND", "This workcell action is unsupported");
         if (stop) {
           owner.context.physicalStopEpoch += 1;
@@ -6549,9 +7315,14 @@ async function createOperatorService({
         }
         if (!stop)
           scope(body, { physical: true });
-        const review = ["camera.start", "execution.prepare", "execution.approve"].includes(operation);
+        const review = ["camera.start", "execution.prepare", "execution.approve", "commissioning.inspect", "commissioning.prepare", "commissioning.approve", "commissioning.recoveryInspect", "commissioning.recoveryConfirm"].includes(operation);
         if (review)
           scope(body, { selected: true });
+        if (operation === "commissioning.recoveryInspect" || operation === "commissioning.recoveryConfirm") {
+          const recovered = await recoveredCommissioning(owner, operation, body);
+          if (recovered)
+            return recovered;
+        }
         return await withContext(owner.context, stop || frame, () => withPhysical(owner, stop || frame, async (physical2) => {
           if (review)
             scope(body, { selected: true });
@@ -6582,6 +7353,14 @@ async function createOperatorService({
           }
           if (operation.startsWith("camera."))
             return physical2.workcell.cameraAction(operation.slice(7), payload);
+          if (operation.startsWith("commissioning.") && !stop)
+            scope(body, { physical: true, selected: review });
+          if (operation === "commissioning.approve") {
+            journalPhysical(owner.p, owner.entry, links.get(owner.p.id));
+            save();
+          }
+          if (operation.startsWith("commissioning."))
+            return physical2.workcell.commissioningAction(operation.slice(14), payload);
           if (operation.startsWith("execution."))
             return physical2.workcell.executionAction(operation.slice(10), payload);
           throw fail3("UNSUPPORTED_COMMAND", "This workcell action is unsupported");
@@ -6682,6 +7461,8 @@ async function createOperatorService({
           context.unsubscribe();
           await context.experiments.dispose();
         }
+        for (const retained of recoveryControllers.values())
+          retained.controller.dispose();
         closed = true;
         tokens.clear();
         listeners.clear();

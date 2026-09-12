@@ -113,6 +113,107 @@ export type PhysicalSetup = {
   implementations?: { implementationId?: string; checks?: PhysicalSetupFinding[] }[]
 }
 
+export type PhysicalCommissioningRecovery = {
+  id: string
+  digest: string
+  trialId: string
+  trialDigest: string
+  trialNodeSessionId: string
+  nodeSessionId: string
+  configurationDigest: string
+  deviceIdentity: string
+  observedAt: string
+  expiresAt: string
+  ready: boolean
+  positions: Record<string, number | null>
+  torqueEnabled: Record<string, boolean | null>
+  checks: { code: string; state: "met" | "violated" | "unknown"; message: string }[]
+}
+
+export type PhysicalCommissioningRecoveryClearance = {
+  id: string
+  digest: string
+  trialId: string
+  trialDigest: string
+  trialNodeSessionId: string
+  nodeSessionId: string
+  configurationDigest: string
+  deviceIdentity: string
+  recoveryDigest: string
+  confirmedAt: string
+  inspectionDigest: string
+  priorRunDigest: string
+  priorRevision: number
+}
+
+export type PhysicalCommissioningStatus = {
+  contractVersion: "physicalsystems-gripper-check-v1"
+  nodeSessionId: string
+  configuration: {
+    id: string
+    digest: string
+    displayName: string
+    deviceIdentity: string
+    calibrationDigest: string
+    minimum: number
+    maximum: number
+    maximumDelta: number
+    maximumDurationSeconds: number
+    maximumStep: number
+    stepIntervalSeconds: number
+    tolerance: number
+  } | null
+  inspection: {
+    id: string
+    digest: string
+    observedAt: string
+    expiresAt: string
+    ready: boolean
+    positions: Record<string, number | null>
+    torqueEnabled: Record<string, boolean | null>
+    checks: { code: string; state: "met" | "violated" | "unknown"; message: string }[]
+    gripperPosition: number | null
+  } | null
+  trial: {
+    trialId: string
+    digest: string
+    phase: "WAITING_FOR_APPROVAL" | "RUNNING" | "COMPLETED" | "STOPPED" | "FAILED" | "OUTCOME_UNKNOWN"
+    approvalExpiresAt: string
+    startPosition: number
+    targetPosition: number
+    maximumDurationSeconds: number
+    latestPosition: number | null
+    stopStatus: "STOPPING" | "STOPPED" | "STOP_UNCONFIRMED" | null
+    message: string | null
+  } | null
+  canInspect: boolean
+  canPrepare: boolean
+  canApprove: boolean
+  canStop: boolean
+  blockedReason: string | null
+  trialNodeSessionId?: string | null
+  recovery?: PhysicalCommissioningRecovery | null
+  recoveryClearance?: PhysicalCommissioningRecoveryClearance | null
+  canInspectRecovery?: boolean
+  canConfirmRecovery?: boolean
+}
+
+export type PhysicalCommissioning = {
+  status: PhysicalCommissioningStatus | null
+  recoveryStatus?: PhysicalCommissioningStatus | null
+  recoveryAvailable?: boolean
+  recoveryFresh?: boolean
+  recoveryReceivedAt?: number | null
+  fresh: boolean
+  available: boolean
+  receivedAt: number | null
+  maximumAgeMs: number
+  pending: "refresh" | "inspect" | "prepare" | "approve" | "recoveryInspect" | "recoveryConfirm" | null
+  stopPending: boolean
+  message: string | null
+  unresolved?: boolean
+}
+
 export type PhysicalWorkcell = {
   sessionId?: string
   workflow?: {
@@ -123,6 +224,7 @@ export type PhysicalWorkcell = {
     }
   }
   setup?: PhysicalSetup
+  commissioning?: PhysicalCommissioning
   camera?: {
     availability?: string
     pending?: string | null
@@ -214,6 +316,13 @@ export type PhysicalSnapshot = {
     stopUnconfirmed?: boolean
   })[]
   activeExperiments: (PhysicalOwner & { experiment: PhysicalExperiment })[]
+  activeCommissioning?: (PhysicalOwner & {
+    status: PhysicalCommissioningStatus | null
+    recoveryView?: PhysicalCommissioning
+    trialId: string | null
+    nodeSessionId: string | null
+    stopPending: boolean
+  })[]
   /** Ephemeral response data, never a model-supplied result or authority. */
   commandResult?: {
     continuation?: { accepted: boolean; duplicate?: boolean; requestId: string; error?: string }
@@ -252,6 +361,23 @@ export type PhysicalCommand =
   | ({ type: "experiment.propose"; goal: string; trialLimit: number; requestId: string } & PhysicalScope)
   | ({ type: "experiment.finish" | "experiment.stop"; experimentId: string } & PhysicalScope)
   | ({ type: "workcell.refresh" | "workcell.setup.inspect" | "workcell.execution.refresh" } & PhysicalScope)
+  | ({ type: "workcell.commissioning.refresh" | "workcell.commissioning.inspect" } & PhysicalScope)
+  | ({
+      type: "workcell.commissioning.prepare"
+      configurationDigest: string
+      inspectionDigest: string
+      targetPosition: number
+    } & PhysicalScope)
+  | ({ type: "workcell.commissioning.approve"; trialId: string; trialDigest: string; approved: true } & PhysicalScope)
+  | ({ type: "workcell.commissioning.stop"; trialId: string; reason: "operator-requested-stop" } & PhysicalScope)
+  | ({ type: "workcell.commissioning.recoveryInspect"; trialId: string; trialDigest: string } & PhysicalScope)
+  | ({
+      type: "workcell.commissioning.recoveryConfirm"
+      trialId: string
+      trialDigest: string
+      recoveryDigest: string
+      confirmed: true
+    } & PhysicalScope)
   | ({ type: "workcell.camera.start"; candidateId: string; expectedCandidateDigest: string } & PhysicalScope)
   | ({ type: "workcell.camera.frame"; frameId: string } & PhysicalScope)
   | {

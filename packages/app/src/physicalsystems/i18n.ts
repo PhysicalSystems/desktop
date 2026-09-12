@@ -2,6 +2,62 @@
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
   "physicalsystems.name": "Physical Systems",
+  "physicalsystems.commissioning.title": "Gripper check",
+  "physicalsystems.commissioning.stopState": "Stop status",
+  "physicalsystems.phase.WAITING_FOR_APPROVAL": "Waiting for approval",
+  "physicalsystems.phase.STOPPING": "Stopping",
+  "physicalsystems.phase.met": "Met",
+  "physicalsystems.phase.violated": "Needs attention",
+  "physicalsystems.phase.unknown": "Unverified",
+  "physicalsystems.commissioning.description": "Inspect the connected robot and prepare one bounded gripper movement.",
+  "physicalsystems.commissioning.unavailable":
+    "Connect a Node with a configured gripper check, then refresh to inspect its status.",
+  "physicalsystems.commissioning.stale": "Status is no longer current. Refresh before preparing or approving a check.",
+  "physicalsystems.commissioning.device": "Robot: {{identity}}",
+  "physicalsystems.commissioning.inspect": "Inspect robot without movement",
+  "physicalsystems.commissioning.gripperPosition": "Last measured gripper position: {{position}}%",
+  "physicalsystems.commissioning.joints": "Inspected joint positions and motor power",
+  "physicalsystems.commissioning.jointState": "{{joint}}: {{position}} · {{torque}}",
+  "physicalsystems.commissioning.torqueOn": "Torque enabled",
+  "physicalsystems.commissioning.torqueOff": "Torque disabled",
+  "physicalsystems.commissioning.target": "Target gripper position (%)",
+  "physicalsystems.commissioning.limits":
+    "Configured range: {{minimum}}–{{maximum}}%. Maximum change: {{delta}} percentage points.",
+  "physicalsystems.commissioning.prepare": "Prepare gripper check",
+  "physicalsystems.commissioning.plan": "Gripper: {{start}}% → {{target}}%. Maximum duration: {{seconds}} seconds.",
+  "physicalsystems.commissioning.effect":
+    "This check powers only the gripper motor. The gripper is released after completion or Stop. Keep hands clear of the jaws.",
+  "physicalsystems.commissioning.consent":
+    "I am beside the robot, can cut motor power, and approve this exact gripper check.",
+  "physicalsystems.commissioning.approve": "Approve and run gripper check",
+  "physicalsystems.commissioning.completed":
+    "The gripper check completed. This result does not qualify arm movements or pick-and-place tasks.",
+  "physicalsystems.commissioning.recovery.review": "Review stopped trial",
+  "physicalsystems.commissioning.recovery.reviewInterrupted": "Review interrupted trial",
+  "physicalsystems.commissioning.recovery.interrupted":
+    "Current trial status is unavailable. Check whether the interrupted trial can be recovered.",
+  "physicalsystems.commissioning.recovery.description":
+    "The trial result remains unknown. Check the current robot state before allowing another check.",
+  "physicalsystems.commissioning.recovery.inspect": "Check current robot state",
+  "physicalsystems.commissioning.recovery.checking": "Checking robot state…",
+  "physicalsystems.commissioning.recovery.readOnly":
+    "Recovery checks read the robot without moving it. They do not approve another trial.",
+  "physicalsystems.commissioning.recovery.evidence": "Current robot state",
+  "physicalsystems.commissioning.recovery.expired":
+    "This recovery check has expired. Check the current robot state again.",
+  "physicalsystems.commissioning.recovery.stale":
+    "Recovery status is no longer current. Check the current robot state again.",
+  "physicalsystems.commissioning.recovery.consent":
+    "I reviewed this exact recovery check and understand that the previous trial's outcome remains unknown.",
+  "physicalsystems.commissioning.recovery.confirm": "Confirm recovery",
+  "physicalsystems.commissioning.recovery.confirming": "Confirming recovery…",
+  "physicalsystems.commissioning.recovery.completed": "Recovery completed",
+  "physicalsystems.commissioning.recovery.previous": "Previous recovery",
+  "physicalsystems.commissioning.recovery.next":
+    "The previous trial's outcome remains unknown. Inspect the robot again, then prepare and approve a new gripper check.",
+  "physicalsystems.commissioning.recovery.record": "Recovery record",
+  "physicalsystems.commissioning.recovery.trial": "Trial: {{trial}}",
+  "physicalsystems.commissioning.recovery.confirmedAt": "Recovery confirmed: {{time}}",
   "physicalsystems.settings.colorScheme.description":
     "Choose Light, Dark, or System to follow your computer's appearance.",
   "physicalsystems.credentials.open": "Credentials",

@@ -261,3 +261,522 @@ test("failed first-launch preparation does not automatically retry and can recov
   ])
   expect(fixture.js("window.__fixture.pathname()")).toBe("/server/c2lkZWNhcg==/session/session-created-1")
 })
+
+test("opening simulation Setup never refreshes device commissioning or shows a connection error", async () => {
+  const fixture = await mount()
+  fixture.js(`
+    window.__fixture.state.projects[0].connection.status='connected';
+    window.__fixture.emit();
+    document.querySelector('[data-ps-tab="setup"]').click();
+  `)
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.window.document.querySelector("[data-ps-commissioning]")).toBeNull()
+  expect(fixture.window.document.querySelector('[role="alert"]')).toBeNull()
+  fixture.js(`
+    document.querySelector('[data-ps-tab="devices"]').click();
+    document.querySelector('[data-ps-tab="setup"]').click();
+    window.__fixture.emit(); window.__fixture.emit();
+  `)
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.errors")).toEqual([])
+  expect(fixture.window.document.querySelector('[role="alert"]')).toBeNull()
+})
+
+test.each(["local", "ssh"] as const)(
+  "%s Node commissioning refresh waits for connection and permits explicit retry",
+  async (kind) => {
+    const fixture = await mount()
+    fixture.js(`
+    window.__fixture.state.projects[0].connection.kind=${JSON.stringify(kind)};
+    window.__fixture.emit();
+    document.querySelector('[data-ps-tab="setup"]').click();
+  `)
+    await settle()
+    expect(fixture.js("window.__fixture.calls")).toEqual([])
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-refresh]').disabled")).toBe(true)
+    fixture.js(`
+    window.__fixture.state.projects[0].connection.status='connected';
+    window.__fixture.emit();
+  `)
+    await settle()
+    expect(fixture.js("window.__fixture.calls.map(x=>x.type)")).toEqual(["workcell.commissioning.refresh"])
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-refresh]').disabled")).toBe(false)
+    fixture.js("document.querySelector('[data-ps-commissioning-refresh]').click()")
+    await settle()
+    expect(fixture.js("window.__fixture.calls.map(x=>x.type)")).toEqual([
+      "workcell.commissioning.refresh",
+      "workcell.commissioning.refresh",
+    ])
+    expect(fixture.js("window.__fixture.errors")).toEqual([])
+  },
+)
+
+async function gripperFixture() {
+  const fixture = await mount()
+  fixture.js(`
+    window.__fixture.state.projects[0].connection.kind='local';
+    window.__fixture.state.projects[0].connection.status='connected';
+    window.__fixture.emit({workcell:{commissioning:{
+      available:true,fresh:true,receivedAt:Date.now(),maximumAgeMs:5000,pending:null,stopPending:false,message:null,
+      status:{contractVersion:'physicalsystems-gripper-check-v1',nodeSessionId:'node-a',
+        configuration:{id:'gripper-a',digest:'config-a',displayName:'Gripper fixture',deviceIdentity:'fake-robot',
+          calibrationDigest:'calibration-a',minimum:20,maximum:60,maximumDelta:5,maximumDurationSeconds:4,
+          maximumStep:1,stepIntervalSeconds:0.1,tolerance:0.5},
+        inspection:{id:'inspect-a',digest:'inspection-a',observedAt:new Date().toISOString(),
+          expiresAt:new Date(Date.now()+30000).toISOString(),ready:true,positions:{gripper:30},
+          torqueEnabled:{gripper:false},checks:[],gripperPosition:30},trial:null,
+        canInspect:true,canPrepare:true,canApprove:false,canStop:false,blockedReason:null}
+    }}});
+    document.querySelector('[data-ps-tab="setup"]').click();
+  `)
+  await settle()
+  return fixture
+}
+
+async function gripperProposal(fixture: Awaited<ReturnType<typeof mount>>) {
+  fixture.js(`
+    const view=window.__fixture.state.workcell.commissioning;
+    view.status.trial={trialId:'trial-a',digest:'plan-a',phase:'WAITING_FOR_APPROVAL',
+      approvalExpiresAt:new Date(Date.now()+30000).toISOString(),startPosition:30,targetPosition:33,
+      maximumDurationSeconds:4,latestPosition:null,stopStatus:null,message:null};
+    view.status.canPrepare=false; view.status.canApprove=true; view.status.canStop=true;
+    window.__fixture.emit();
+  `)
+  await settle()
+}
+
+test("gripper Setup does not inspect or move on mount and prepares only a bounded explicit target", async () => {
+  const fixture = await gripperFixture()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  for (const invalid of ["", "70", "36", "30", "30.4"]) {
+    fixture.js(`{const input=document.querySelector('[data-ps-commissioning-target]');
+      input.value=${JSON.stringify(invalid)};input.dispatchEvent(new window.Event('input',{bubbles:true}));}`)
+    await settle()
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-prepare]').disabled")).toBe(true)
+  }
+  fixture.js(`{const input=document.querySelector('[data-ps-commissioning-target]');
+    input.value='33';input.dispatchEvent(new window.Event('input',{bubbles:true}));}`)
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-prepare]').disabled")).toBe(false)
+  fixture.js("document.querySelector('[data-ps-commissioning-prepare]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([
+    {
+      type: "workcell.commissioning.prepare",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      serverId: "sidecar",
+      sessionId: "session-a",
+      connectionGeneration: 7,
+      configurationDigest: "config-a",
+      inspectionDigest: "inspection-a",
+      targetPosition: 33,
+    },
+  ])
+})
+
+test("gripper approval resets on plan, Node session, configuration and freshness changes", async () => {
+  const fixture = await gripperFixture()
+  await gripperProposal(fixture)
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(true)
+  for (const change of [
+    "view.status.trial.digest='plan-b'",
+    "view.status.nodeSessionId='node-b'",
+    "view.status.configuration.digest='config-b'",
+    "view.receivedAt=Date.now()-6000",
+  ]) {
+    fixture.js("document.querySelector('[data-ps-commissioning-consent]').click()")
+    await settle()
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(false)
+    fixture.js(`{const view=window.__fixture.state.workcell.commissioning;${change};window.__fixture.emit()}`)
+    await settle()
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-consent]').checked")).toBe(false)
+    expect(fixture.js("document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(true)
+  }
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  fixture.js(`window.__fixture.state.workcell.commissioning.receivedAt=Date.now();window.__fixture.emit()`)
+  await settle()
+  fixture.js("document.querySelector('[data-ps-commissioning-consent]').click()")
+  await settle()
+  fixture.js("document.querySelector('[data-ps-commissioning-approve]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([
+    {
+      type: "workcell.commissioning.approve",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      serverId: "sidecar",
+      sessionId: "session-a",
+      connectionGeneration: 7,
+      trialId: "trial-a",
+      trialDigest: "plan-b",
+      approved: true,
+    },
+  ])
+})
+
+test("fresh polling preserves consent for the same exact gripper plan", async () => {
+  const fixture = await gripperFixture()
+  await gripperProposal(fixture)
+  fixture.js("document.querySelector('[data-ps-commissioning-consent]').click()")
+  await settle()
+  fixture.js("window.__fixture.state.workcell.commissioning.receivedAt=Date.now();window.__fixture.emit()")
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-consent]').checked")).toBe(true)
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(false)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+})
+
+test("missing commissioning status requests metadata once and explains absent host configuration", async () => {
+  const fixture = await gripperFixture()
+  fixture.js("window.__fixture.state.workcell.commissioning.status=null;window.__fixture.emit()")
+  await settle()
+  fixture.js("window.__fixture.emit();window.__fixture.emit()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls.map(x=>x.type)")).toEqual(["workcell.commissioning.refresh"])
+  fixture.js(`window.__fixture.state.workcell.commissioning.status={
+    contractVersion:'physicalsystems-gripper-check-v1',nodeSessionId:'node-a',configuration:null,
+    inspection:null,trial:null,canInspect:false,canPrepare:false,canApprove:false,canStop:false,
+    blockedReason:'No reviewed gripper configuration is installed on this Node.'};window.__fixture.emit()`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain(
+    "No reviewed gripper configuration is installed on this Node.",
+  )
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-inspect]")).toBeNull()
+})
+
+test("confirmed motor stop does not hide an unknown gripper trial outcome", async () => {
+  const fixture = await gripperFixture()
+  await gripperProposal(fixture)
+  fixture.js(`{
+    const status=window.__fixture.state.workcell.commissioning.status;
+    status.trial.phase='OUTCOME_UNKNOWN';status.trial.stopStatus='STOPPED';
+    window.__fixture.emit({activeCommissioning:[{projectId:'project-a',projectName:'First robot',
+      conversationId:'conversation-a',serverId:'sidecar',sessionId:'session-a',connectionGeneration:7,
+      status,trialId:'trial-a',nodeSessionId:'node-a',canStop:true,stopPending:false}]});
+  }`)
+  await settle()
+  const trial = fixture.window.document.querySelector("[data-ps-commissioning-trial]")!
+  expect(trial.textContent).toContain("Outcome unknown")
+  expect(trial.textContent).toContain("Stop status")
+  expect(trial.textContent).toContain("Stopped")
+  expect(
+    fixture.js(
+      "document.querySelector('[data-ps-stop=\"commissioning:project-a:trial-a\"]').closest('.ps-operation').textContent",
+    ),
+  ).toContain("Outcome unknown")
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-approve]")).toBeNull()
+})
+
+test("gripper inspection violations and expired approvals remain blocked", async () => {
+  const fixture = await gripperFixture()
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.status.inspection.ready=false;
+    view.status.inspection.checks=[{code:'joint-limit',state:'violated',message:'Elbow outside calibration range'}];
+    view.status.canPrepare=false;window.__fixture.emit();
+  }`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("Elbow outside calibration range")
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-prepare]').disabled")).toBe(true)
+  await gripperProposal(fixture)
+  fixture.js(
+    `window.__fixture.state.workcell.commissioning.status.trial.approvalExpiresAt=new Date(0).toISOString();window.__fixture.emit()`,
+  )
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-consent]').disabled")).toBe(true)
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(true)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+})
+
+test("gripper Stop retains original ownership outside the selected conversation and behind its connection gate", async () => {
+  const fixture = await gripperFixture()
+  await gripperProposal(fixture)
+  fixture.js(`{
+    const status=window.__fixture.state.workcell.commissioning.status;
+    status.trial.phase='OUTCOME_UNKNOWN';status.trial.stopStatus='STOP_UNCONFIRMED';
+    window.__fixture.emit({activeCommissioning:[{projectId:'project-a',projectName:'First robot',
+      conversationId:'conversation-a',serverId:'sidecar',sessionId:'session-a',connectionGeneration:7,
+      status,trialId:'trial-a',nodeSessionId:'node-a',canStop:true,stopPending:false}],
+      activeProjectId:'project-b',activeConversationId:'conversation-b',connectionGeneration:9,
+      conversation:window.__fixture.state.projects[1].conversations[0],workcell:null});
+    window.__fixture.gate(false);
+  }`)
+  await settle()
+  expect(fixture.js("!!document.querySelector('[data-ps-stop=\"commissioning:project-a:trial-a\"]')")).toBe(true)
+  fixture.js("document.querySelector('[data-ps-stop=\"commissioning:project-a:trial-a\"]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls.filter(x=>x.type==='workcell.commissioning.stop')")).toEqual([
+    {
+      type: "workcell.commissioning.stop",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      serverId: "sidecar",
+      sessionId: "session-a",
+      connectionGeneration: 7,
+      trialId: "trial-a",
+      reason: "operator-requested-stop",
+    },
+  ])
+})
+
+async function recoveryFixture() {
+  const fixture = await gripperFixture()
+  await gripperProposal(fixture)
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.unresolved=true;
+    view.status.trial.phase='OUTCOME_UNKNOWN';view.status.trial.stopStatus='STOPPED';
+    view.status.trialNodeSessionId='node-a';view.status.canInspect=false;
+    view.status.canPrepare=false;view.status.canApprove=false;view.status.canInspectRecovery=true;
+    window.__fixture.emit({activeCommissioning:[{projectId:'project-a',projectName:'First robot',
+      conversationId:'conversation-a',serverId:'sidecar',sessionId:'session-a',connectionGeneration:7,
+      status:view.status,trialId:'trial-a',nodeSessionId:'node-a',canStop:true,stopPending:false}]});
+  }`)
+  await settle()
+  return fixture
+}
+
+async function recoveryOffer(fixture: Awaited<ReturnType<typeof mount>>) {
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.recoveryAvailable=true;view.recoveryFresh=true;view.recoveryReceivedAt=Date.now();
+    view.recoveryStatus=JSON.parse(JSON.stringify(view.status));
+    view.recoveryStatus.nodeSessionId='node-b';view.recoveryStatus.canConfirmRecovery=true;
+    view.recoveryStatus.recovery={id:'recovery-a',digest:'recovery-digest-a',trialId:'trial-a',
+      trialDigest:'plan-a',trialNodeSessionId:'node-a',nodeSessionId:'node-b',configurationDigest:'config-a',
+      deviceIdentity:'fake-robot',observedAt:new Date().toISOString(),
+      expiresAt:new Date(Date.now()+30000).toISOString(),ready:true,positions:{gripper:30},
+      torqueEnabled:{gripper:false},checks:[{code:'torque-off',state:'met',message:'Every motor is stopped.'}]};
+    window.__fixture.emit();
+  }`)
+  await settle()
+}
+
+test("reviewing an unknown gripper trial opens no device and requests only an explicit recovery inspection", async () => {
+  const fixture = await recoveryFixture()
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-trial]")?.textContent).toContain(
+    "Outcome unknown",
+  )
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-trial]")?.textContent).toContain("Stopped")
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.available=false;view.fresh=false;view.receivedAt=null;
+    window.__fixture.emit();
+  }`)
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-recovery-inspect]').disabled")).toBe(false)
+  fixture.js("document.querySelector('[data-ps-recovery-inspect]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([
+    {
+      type: "workcell.commissioning.recoveryInspect",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      serverId: "sidecar",
+      sessionId: "session-a",
+      connectionGeneration: 7,
+      trialId: "trial-a",
+      trialDigest: "plan-a",
+    },
+  ])
+})
+
+test("recovery confirmation requires exact consent and never prepares or approves a new gripper trial", async () => {
+  const fixture = await recoveryFixture()
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  await recoveryOffer(fixture)
+  expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(true)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  fixture.js("document.querySelector('[data-ps-recovery-consent]').click()")
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(false)
+  fixture.js("document.querySelector('[data-ps-recovery-confirm]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toEqual([
+    {
+      type: "workcell.commissioning.recoveryConfirm",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      serverId: "sidecar",
+      sessionId: "session-a",
+      connectionGeneration: 7,
+      trialId: "trial-a",
+      trialDigest: "plan-a",
+      recoveryDigest: "recovery-digest-a",
+      confirmed: true,
+    },
+  ])
+})
+
+test("recovery consent resets for changed evidence or owner and ordinary polling cannot renew it", async () => {
+  const fixture = await recoveryFixture()
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  for (const change of [
+    "view.recoveryStatus.recovery.digest='another-recovery'",
+    "view.recoveryStatus.recovery.trialDigest='another-trial'",
+    "view.recoveryStatus.recovery.trialNodeSessionId='another-origin'",
+    "view.recoveryStatus.nodeSessionId='another-node-session'",
+    "view.recoveryStatus.configuration.digest='another-configuration'",
+    "view.recoveryStatus.configuration.deviceIdentity='another-robot'",
+    "view.recoveryAvailable=false",
+    "view.recoveryFresh=false",
+    "view.recoveryReceivedAt=Date.now()-6000;view.receivedAt=Date.now();view.fresh=true",
+    "view.recoveryStatus.recovery.expiresAt=new Date(0).toISOString()",
+  ]) {
+    await recoveryOffer(fixture)
+    fixture.js("document.querySelector('[data-ps-recovery-consent]').click()")
+    await settle()
+    expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(false)
+    fixture.js(`{const view=window.__fixture.state.workcell.commissioning;${change};window.__fixture.emit()}`)
+    await settle()
+    expect(fixture.js("document.querySelector('[data-ps-recovery-consent]')?.checked ?? false")).toBe(false)
+    expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]')?.disabled ?? true")).toBe(true)
+    if (change.includes("recoveryReceivedAt"))
+      expect(fixture.window.document.body.textContent).toContain("Recovery status is no longer current.")
+  }
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+})
+
+test("fresh recovery polling preserves exact consent while disconnected or blocked recovery cannot confirm", async () => {
+  const fixture = await recoveryFixture()
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  await recoveryOffer(fixture)
+  fixture.js("document.querySelector('[data-ps-recovery-consent]').click()")
+  await settle()
+  fixture.js("window.__fixture.state.workcell.commissioning.recoveryReceivedAt=Date.now();window.__fixture.emit()")
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-recovery-consent]').checked")).toBe(true)
+  fixture.js("window.__fixture.state.workcell.commissioning.pending='recoveryInspect';window.__fixture.emit()")
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-inspect]")?.textContent).toContain(
+    "Checking robot state",
+  )
+  expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(true)
+  expect(fixture.js("document.querySelector('[data-ps-stop=\"commissioning:project-a:trial-a\"]').disabled")).toBe(
+    false,
+  )
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.pending=null;
+    view.recoveryStatus.recovery.ready=false;
+    view.recoveryStatus.recovery.checks=[{code:'worker',state:'violated',message:'The previous worker has not settled.'}];
+    window.__fixture.emit();
+  }`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("The previous worker has not settled.")
+  expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(true)
+  await recoveryOffer(fixture)
+  fixture.js("window.__fixture.state.projects[0].connection.status='offline';window.__fixture.emit()")
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-recovery-inspect]').disabled")).toBe(true)
+  expect(fixture.js("document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(true)
+  expect(fixture.js("document.querySelector('[data-ps-stop=\"commissioning:project-a:trial-a\"]').disabled")).toBe(
+    false,
+  )
+  fixture.js("window.__fixture.state.projects[0].connection.kind='simulation';window.__fixture.emit()")
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-recovery]")).toBeNull()
+  expect(fixture.window.document.querySelector('[data-ps-stop="commissioning:project-a:trial-a"]')).not.toBeNull()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+})
+
+test("recovery consent cannot follow a changed connection generation or another conversation", async () => {
+  const fixture = await recoveryFixture()
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  await recoveryOffer(fixture)
+  fixture.js("document.querySelector('[data-ps-recovery-consent]').click()")
+  await settle()
+  fixture.js("window.__fixture.emit({connectionGeneration:8})")
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-confirm]")).toBeNull()
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  await settle()
+  expect(fixture.js("document.querySelector('[data-ps-recovery-consent]').checked")).toBe(false)
+  fixture.js("document.querySelector('[data-ps-recovery-consent]').click()")
+  await settle()
+  fixture.js("window.__fixture.route('/server/c2lkZWNhcg==/session/session-b')")
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-confirm]")).toBeNull()
+  expect(fixture.window.document.querySelector('[data-ps-stop="commissioning:project-a:trial-a"]')).not.toBeNull()
+  expect(fixture.js("window.__fixture.calls.filter(x=>x.type.startsWith('workcell.commissioning.'))")).toEqual([])
+})
+
+test("verified recovery is separate from the historical unknown result and cannot authorize another trial", async () => {
+  const fixture = await recoveryFixture()
+  await recoveryOffer(fixture)
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.recoveryStatus.recoveryClearance={id:'clearance-a',digest:'clearance-digest-a',trialId:'trial-a',
+      trialDigest:'plan-a',trialNodeSessionId:'node-a',nodeSessionId:'prior-confirmation-session',
+      configurationDigest:'config-a',deviceIdentity:'fake-robot',recoveryDigest:'recovery-digest-a',
+      confirmedAt:new Date().toISOString(),inspectionDigest:'fresh-check-a',priorRunDigest:'run-digest-a',priorRevision:7};
+    window.__fixture.emit();
+  }`)
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-review]")).not.toBeNull()
+  expect(fixture.window.document.querySelector('[data-ps-stop="commissioning:project-a:trial-a"]')).not.toBeNull()
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.unresolved=false;view.status.canInspect=true;view.status.inspection=null;
+    window.__fixture.emit({activeCommissioning:[]});
+  }`)
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-receipt]")?.textContent).toContain(
+    "Recovery completed",
+  )
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-trial]")?.textContent).toContain(
+    "Outcome unknown",
+  )
+  expect(fixture.window.document.querySelector("[data-ps-recovery-confirm]")).toBeNull()
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-prepare]').disabled")).toBe(true)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.status.recoveryClearance=view.recoveryStatus.recoveryClearance;
+    view.status.trial={...view.status.trial,trialId:'trial-new',digest:'new-plan',
+      phase:'WAITING_FOR_APPROVAL',stopStatus:null,approvalExpiresAt:new Date(Date.now()+30000).toISOString()};
+    view.status.canApprove=true;window.__fixture.emit();
+  }`)
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-receipt]")?.textContent).toContain(
+    "Previous recovery",
+  )
+  expect(fixture.window.document.querySelector("[data-ps-recovery-receipt]")?.textContent).toContain("trial-a")
+  expect(fixture.window.document.querySelector("[data-ps-recovery-review]")).toBeNull()
+  expect(fixture.window.document.querySelector("[data-ps-recovery-inspect]")).toBeNull()
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-consent]').checked")).toBe(false)
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-approve]').disabled")).toBe(true)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+})
+
+test("a retained interrupted owner can review recovery after restart without a live workcell", async () => {
+  const fixture = await recoveryFixture()
+  fixture.js(`{
+    const view=window.__fixture.state.workcell.commissioning;
+    view.status.trial.phase='RUNNING';view.status.trial.stopStatus='STOP_UNCONFIRMED';
+    view.message='The previous Node session is unavailable.';
+    const owner=window.__fixture.state.activeCommissioning[0];
+    owner.statusUnavailable=true;owner.recoveryView=view;
+    window.__fixture.emit({workcell:null});
+  }`)
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-commissioning-trial]")?.textContent).toContain("Running")
+  expect(fixture.window.document.querySelector("[data-ps-recovery-review]")?.textContent).toContain(
+    "Review interrupted trial",
+  )
+  expect(fixture.js("document.querySelector('[data-ps-commissioning-refresh]').disabled")).toBe(true)
+  fixture.js("document.querySelector('[data-ps-recovery-review]').click()")
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("The previous Node session is unavailable.")
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  fixture.js("document.querySelector('[data-ps-recovery-inspect]').click()")
+  await settle()
+  expect(fixture.js("window.__fixture.calls.map(x=>x.type)")).toEqual(["workcell.commissioning.recoveryInspect"])
+  expect(fixture.window.document.querySelector('[data-ps-stop="commissioning:project-a:trial-a"]')).not.toBeNull()
+})
