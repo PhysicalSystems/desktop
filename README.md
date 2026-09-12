@@ -1,148 +1,155 @@
-# Physical Systems Desktop
-
-Physical Systems' desktop operator workspace, built on the OpenCode agent and
-Electron app. Projects, device status, conversation, and scoped experiment
-approval share one workspace. The current candidate is for simulation review;
-hardware operation and public installers are not yet qualified.
-
-- [Development and local review](packages/physicalsystems/README.md)
-- [Qualification evidence and remaining gaps](packages/physicalsystems/QUALIFICATION.md)
-- [Desktop candidate pipeline and publication boundaries](release/README.md)
-- [Protected public publication and website deployment](release/public-publisher.md)
-- [Desktop download availability](https://physicalsystems.ai/download)
-- [Canonical operator service source](https://github.com/PhysicalSystems/physicalsystems)
-
-The OpenCode documentation below is retained for upstream attribution. Its
-installation commands install upstream OpenCode, not Physical Systems Desktop.
-
----
-
 <p align="center">
-  <a href="https://opencode.ai">
-    <picture>
-      <source srcset="packages/console/app/src/asset/logo-ornate-dark.svg" media="(prefers-color-scheme: dark)">
-      <source srcset="packages/console/app/src/asset/logo-ornate-light.svg" media="(prefers-color-scheme: light)">
-      <img src="packages/console/app/src/asset/logo-ornate-light.svg" alt="OpenCode logo">
-    </picture>
+  <a href="https://physicalsystems.ai">
+    <img src="docs/images/physical-systems-mark.png" width="112" alt="Physical Systems">
   </a>
 </p>
-<p align="center">The open source AI coding agent.</p>
+
+<h1 align="center">Physical Systems Desktop</h1>
+
 <p align="center">
-  <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
-  <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
-  <a href="https://github.com/anomalyco/opencode/actions/workflows/publish.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/anomalyco/opencode/publish.yml?style=flat-square&branch=dev" /></a>
+  The open-source agent workspace for physical systems.
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh.md">简体中文</a> |
-  <a href="README.zht.md">繁體中文</a> |
-  <a href="README.ko.md">한국어</a> |
-  <a href="README.de.md">Deutsch</a> |
-  <a href="README.es.md">Español</a> |
-  <a href="README.fr.md">Français</a> |
-  <a href="README.it.md">Italiano</a> |
-  <a href="README.da.md">Dansk</a> |
-  <a href="README.ja.md">日本語</a> |
-  <a href="README.pl.md">Polski</a> |
-  <a href="README.ru.md">Русский</a> |
-  <a href="README.bs.md">Bosanski</a> |
-  <a href="README.ar.md">العربية</a> |
-  <a href="README.no.md">Norsk</a> |
-  <a href="README.br.md">Português (Brasil)</a> |
-  <a href="README.th.md">ไทย</a> |
-  <a href="README.tr.md">Türkçe</a> |
-  <a href="README.uk.md">Українська</a> |
-  <a href="README.bn.md">বাংলা</a> |
-  <a href="README.gr.md">Ελληνικά</a> |
-  <a href="README.vi.md">Tiếng Việt</a>
+  <a href="https://physicalsystems.ai"><img alt="Physical Systems website" src="https://img.shields.io/badge/website-physicalsystems.ai-87e089?style=flat-square&amp;labelColor=20252b"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-87e089?style=flat-square&amp;labelColor=20252b"></a>
 </p>
 
-[![OpenCode Terminal UI](packages/web/src/assets/lander/screenshot.png)](https://opencode.ai)
+<p align="center">
+  <a href="https://physicalsystems.ai">Website</a> ·
+  <a href="https://physicalsystems.ai/download">Download</a> ·
+  <a href="packages/physicalsystems/README.md">Developer guide</a> ·
+  <a href="packages/physicalsystems/QUALIFICATION.md">Qualification status</a>
+</p>
 
----
+![Physical Systems Desktop showing a simulated alignment conversation](docs/images/physical-systems-desktop.png)
 
-### Installation
+Physical Systems Desktop brings projects, agent conversations, device status,
+workcell controls, and experiment approval into one application. It is built on
+the open source [OpenCode](https://github.com/anomalyco/opencode) agent and
+desktop client, with a Physical Systems operator layer that owns the boundary to
+real equipment.
 
-```bash
-# YOLO
-curl -fsSL https://opencode.ai/install | bash
+## What you can do
 
-# Package managers
-npm i -g opencode-ai@latest        # or bun/pnpm/yarn
-scoop install opencode             # Windows
-choco install opencode             # Windows
-brew install anomalyco/tap/opencode # macOS and Linux (recommended, always up to date)
-brew install opencode              # macOS and Linux (official brew formula, updated less)
-sudo pacman -S opencode            # Arch Linux (Stable)
-paru -S opencode-bin               # Arch Linux (Latest from AUR)
-mise use -g opencode               # Any OS
-nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev branch
+- Keep conversations and workcell context together inside a project.
+- Connect a configured Physical Systems Node locally or over SSH.
+- Discover devices and inspect their reported capabilities and setup blockers.
+- Preview an explicitly selected camera from the Devices panel.
+- Ask the agent to inspect a system, plan an approach, and propose an experiment.
+- Review and approve the exact proposed scope before execution.
+- Run synthetic experiments without connecting physical equipment.
+- Continue the same conversation from the desktop and an attached terminal.
+
+The current public release is a preview. See the
+[qualification record](packages/physicalsystems/QUALIFICATION.md) for the exact
+automated, simulated, and native checks that have passed, along with the areas
+that have not been verified on real hardware.
+
+## Install the preview
+
+Download the current Windows or Linux installer from
+[physicalsystems.ai/download](https://physicalsystems.ai/download).
+
+| Platform          | Package     | Notes                                                                       |
+| ----------------- | ----------- | --------------------------------------------------------------------------- |
+| Windows x64       | `.exe`      | The current preview is unsigned, so Windows may warn or block installation. |
+| Ubuntu/Debian x64 | `.deb`      | Recommended Linux package.                                                  |
+| Linux x64         | `.AppImage` | Advanced option with an explicit Ubuntu AppArmor prerequisite.              |
+
+For commands, checksums, removal, and AppImage setup, read the
+[installation guide](release/install-desktop.md). macOS installers are not yet
+published.
+
+The app shows its installed version at the bottom-left of **Settings**. Open
+Settings with <kbd>Ctrl</kbd>+<kbd>,</kbd> on Windows or Linux. Authenticated
+in-app updates remain disabled until the signing and installation lifecycle is
+qualified; use the download page to check for a newer preview.
+
+## How it is structured
+
+```text
+Physical Systems Desktop
+├── OpenCode agent, conversations, providers, models, and terminal
+├── Physical Systems project and workcell interface
+└── Physical Systems operator
+    └── Physical Systems Node
+        └── cameras, robots, compute, and instruments
 ```
 
-> [!TIP]
-> Remove versions older than 0.1.x before installing.
+The renderer receives a narrow, typed view of operator state. The operator owns
+device credentials, operation records, and execution authority. The agent can
+inspect and propose work through reviewed tools, but a proposal or chat message
+does not grant hardware authority.
 
-### Desktop App (BETA)
+The bundled operator is generated from the canonical
+[PhysicalSystems/physicalsystems](https://github.com/PhysicalSystems/physicalsystems)
+repository. Its source revision and artifact hashes are recorded in
+[`packages/physicalsystems/vendor/manifest.json`](packages/physicalsystems/vendor/manifest.json).
 
-OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
+## Safety model
 
-| Platform              | Download                           |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `opencode-desktop-mac-arm64.dmg`   |
-| macOS (Intel)         | `opencode-desktop-mac-x64.dmg`     |
-| Windows               | `opencode-desktop-windows-x64.exe` |
-| Linux                 | `.deb`, `.rpm`, or `.AppImage`     |
+- Creating or selecting a project does not connect a Node or start a capture.
+- A camera opens only after the operator selects it and presses **Start preview**.
+- Basic camera preview does not require robot commissioning.
+- Robot execution uses its own preparation and exact approval boundaries.
+- Stop and recovery remain available independently of an ordinary assistant request.
+- Synthetic experiment results do not establish robot performance or readiness.
 
-```bash
-# macOS (Homebrew)
-brew install --cask opencode-desktop
-# Windows (Scoop)
-scoop bucket add extras; scoop install extras/opencode-desktop
+Do not bypass an approval or ownership check to complete a test. Treat an
+unconfirmed outcome as unresolved and inspect it through the original operation
+owner.
+
+## Development
+
+This repository is the Physical Systems fork of OpenCode. It contains the
+Electron desktop app, SolidJS interface, OpenCode agent runtime, the Physical
+Systems adapter, and a pinned generated operator artifact. It does not contain
+the private Node implementation or device drivers.
+
+The repository pins Bun in `package.json`. Install dependencies from the root:
+
+```sh
+bun install --frozen-lockfile
 ```
 
-#### Installation Directory
+The Physical Systems review build requires explicit operator and model-catalog
+inputs. Follow the [developer build and launch guide](packages/physicalsystems/README.md#developer-build-and-launch)
+instead of the upstream OpenCode launch commands. That workflow uses a dedicated
+data directory and keeps device access disabled for simulation review.
 
-The install script respects the following priority order for the installation path:
+Run checks from the affected package rather than the repository root:
 
-1. `$OPENCODE_INSTALL_DIR` - Custom installation directory
-2. `$XDG_BIN_DIR` - XDG Base Directory Specification compliant path
-3. `$HOME/bin` - Standard user binary directory (if it exists or can be created)
-4. `$HOME/.opencode/bin` - Default fallback
-
-```bash
-# Examples
-OPENCODE_INSTALL_DIR=/usr/local/bin curl -fsSL https://opencode.ai/install | bash
-XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
+```sh
+cd packages/physicalsystems
+bun test src
+bun typecheck
 ```
 
-### Agents
+Additional app, desktop, browser, and release checks are documented in the
+[developer guide](packages/physicalsystems/README.md) and
+[release guide](release/README.md).
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+## Releases
 
-- **build** - Default, full-access agent for development work
-- **plan** - Read-only agent for analysis and code exploration
-  - Denies file edits by default
-  - Asks permission before running bash commands
-  - Ideal for exploring unfamiliar codebases or planning changes
+Desktop releases use a separate version sequence and are built for Windows x64
+and Linux x64. The release pipeline binds installers to an exact source revision,
+qualification record, and SHA-256 inventory before publishing them to
+[PhysicalSystems/physicalsystems releases](https://github.com/PhysicalSystems/physicalsystems/releases).
+The website selects only a reviewed public release.
 
-Also included is a **general** subagent for complex searches and multistep tasks.
-This is used internally and can be invoked using `@general` in messages.
+Read the [release process](release/README.md),
+[public build contract](release/public-build.md), and
+[protected publisher contract](release/public-publisher.md) before changing
+packaging or publication code.
 
-Learn more about [agents](https://opencode.ai/docs/agents).
+## Open source and attribution
 
-### Documentation
+Physical Systems Desktop builds on [OpenCode](https://github.com/anomalyco/opencode).
+Upstream OpenCode code remains under its MIT license and copyright. The
+Physical Systems integration is Apache-2.0. Third-party notices and the generated
+operator's provenance are included with packaged applications.
 
-For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
-
-### Contributing
-
-If you're interested in contributing to OpenCode, please read our [contributing docs](./CONTRIBUTING.md) before submitting a pull request.
-
-### Building on OpenCode
-
-If you are working on a project that's related to OpenCode and is using "opencode" as part of its name, for example "opencode-dashboard" or "opencode-mobile", please add a note to your README to clarify that it is not built by the OpenCode team and is not affiliated with us in any way.
-
----
-
-**Join our community** [Discord](https://discord.gg/opencode) | [X.com](https://x.com/opencode)
+See [`LICENSE`](LICENSE),
+[`packages/physicalsystems/LICENSE`](packages/physicalsystems/LICENSE), and the
+bundled operator [`NOTICE`](packages/physicalsystems/vendor/NOTICE).
