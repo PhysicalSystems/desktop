@@ -106,7 +106,7 @@ export async function createPhysicalHost(dataDir: string) {
   return {
     snapshot: () => last ? Promise.resolve(last) : request("snapshot") as Promise<PhysicalSnapshot>,
     async command(command: PhysicalCommand) {
-      return await request("command", { request: command }, command.type.endsWith(".stop"), command.type === "workcell.commissioning.inspect" ? 40_000 : 6500) as PhysicalSnapshot
+      return await request("command", { request: command }, command.type.endsWith(".stop"), ["workcell.commissioning.inspect", "workcell.commissioning.recoveryInspect", "workcell.commissioning.recoveryConfirm"].includes(command.type) ? 40_000 : 6500) as PhysicalSnapshot
     },
     async configureServer(url: string, password: string) {
       modelServer = { url, password }

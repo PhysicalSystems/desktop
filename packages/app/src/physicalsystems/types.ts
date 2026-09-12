@@ -113,6 +113,39 @@ export type PhysicalSetup = {
   implementations?: { implementationId?: string; checks?: PhysicalSetupFinding[] }[]
 }
 
+export type PhysicalCommissioningRecovery = {
+  id: string
+  digest: string
+  trialId: string
+  trialDigest: string
+  trialNodeSessionId: string
+  nodeSessionId: string
+  configurationDigest: string
+  deviceIdentity: string
+  observedAt: string
+  expiresAt: string
+  ready: boolean
+  positions: Record<string, number | null>
+  torqueEnabled: Record<string, boolean | null>
+  checks: { code: string; state: "met" | "violated" | "unknown"; message: string }[]
+}
+
+export type PhysicalCommissioningRecoveryClearance = {
+  id: string
+  digest: string
+  trialId: string
+  trialDigest: string
+  trialNodeSessionId: string
+  nodeSessionId: string
+  configurationDigest: string
+  deviceIdentity: string
+  recoveryDigest: string
+  confirmedAt: string
+  inspectionDigest: string
+  priorRunDigest: string
+  priorRevision: number
+}
+
 export type PhysicalCommissioningStatus = {
   contractVersion: "physicalsystems-gripper-check-v1"
   nodeSessionId: string
@@ -158,15 +191,24 @@ export type PhysicalCommissioningStatus = {
   canApprove: boolean
   canStop: boolean
   blockedReason: string | null
+  trialNodeSessionId?: string | null
+  recovery?: PhysicalCommissioningRecovery | null
+  recoveryClearance?: PhysicalCommissioningRecoveryClearance | null
+  canInspectRecovery?: boolean
+  canConfirmRecovery?: boolean
 }
 
 export type PhysicalCommissioning = {
   status: PhysicalCommissioningStatus | null
+  recoveryStatus?: PhysicalCommissioningStatus | null
+  recoveryAvailable?: boolean
+  recoveryFresh?: boolean
+  recoveryReceivedAt?: number | null
   fresh: boolean
   available: boolean
   receivedAt: number | null
   maximumAgeMs: number
-  pending: "refresh" | "inspect" | "prepare" | "approve" | null
+  pending: "refresh" | "inspect" | "prepare" | "approve" | "recoveryInspect" | "recoveryConfirm" | null
   stopPending: boolean
   message: string | null
   unresolved?: boolean
@@ -276,6 +318,7 @@ export type PhysicalSnapshot = {
   activeExperiments: (PhysicalOwner & { experiment: PhysicalExperiment })[]
   activeCommissioning?: (PhysicalOwner & {
     status: PhysicalCommissioningStatus | null
+    recoveryView?: PhysicalCommissioning
     trialId: string | null
     nodeSessionId: string | null
     stopPending: boolean
@@ -327,6 +370,14 @@ export type PhysicalCommand =
     } & PhysicalScope)
   | ({ type: "workcell.commissioning.approve"; trialId: string; trialDigest: string; approved: true } & PhysicalScope)
   | ({ type: "workcell.commissioning.stop"; trialId: string; reason: "operator-requested-stop" } & PhysicalScope)
+  | ({ type: "workcell.commissioning.recoveryInspect"; trialId: string; trialDigest: string } & PhysicalScope)
+  | ({
+      type: "workcell.commissioning.recoveryConfirm"
+      trialId: string
+      trialDigest: string
+      recoveryDigest: string
+      confirmed: true
+    } & PhysicalScope)
   | ({ type: "workcell.camera.start"; candidateId: string; expectedCandidateDigest: string } & PhysicalScope)
   | ({ type: "workcell.camera.frame"; frameId: string } & PhysicalScope)
   | {

@@ -474,6 +474,92 @@ test.skipIf(!enabled)(
       ])
       expect(await js("return window.__fixture.errors")).toEqual([])
       await js("document.querySelector('[data-ps-commissioning-trial]').scrollIntoView({block:'center'})")
+      await js(`{
+        window.__fixture.calls.length=0;
+        const view=window.__fixture.state.workcell.commissioning;
+        view.unresolved=true;view.status.trial.phase='OUTCOME_UNKNOWN';view.status.trial.stopStatus='STOPPED';
+        view.status.trialNodeSessionId='node-a';view.status.canApprove=false;view.status.canInspectRecovery=true;
+        window.__fixture.emit({activeCommissioning:[{projectId:'project-a',projectName:'Gripper fixture',
+          conversationId:'conversation-a',serverId:'sidecar',sessionId:'session-a',connectionGeneration:7,
+          status:view.status,trialId:'trial-a',nodeSessionId:'node-a',canStop:true,stopPending:false}]});
+      }`)
+      await until(() => js("return !!document.querySelector('[data-ps-recovery-review]')"))
+      await js("document.querySelector('[data-ps-recovery-review]').click()")
+      expect(await js("return window.__fixture.calls")).toEqual([])
+      await js("document.querySelector('[data-ps-recovery-inspect]').click()")
+      expect(await js("return window.__fixture.calls.map(x=>x.type)")).toEqual([
+        "workcell.commissioning.recoveryInspect",
+      ])
+      await js(`{
+        const view=window.__fixture.state.workcell.commissioning;
+        view.recoveryAvailable=true;view.recoveryFresh=true;view.recoveryReceivedAt=Date.now();
+        view.recoveryStatus=JSON.parse(JSON.stringify(view.status));
+        view.recoveryStatus.nodeSessionId='node-b';view.recoveryStatus.canConfirmRecovery=true;
+        view.recoveryStatus.recovery={id:'recovery-a',digest:'recovery-digest-a',trialId:'trial-a',
+          trialDigest:'plan-a',trialNodeSessionId:'node-a',nodeSessionId:'node-b',configurationDigest:'config-a',
+          deviceIdentity:'fake-robot',observedAt:new Date().toISOString(),
+          expiresAt:new Date(Date.now()+30000).toISOString(),ready:true,positions:{gripper:30},
+          torqueEnabled:{gripper:false},checks:[{code:'torque-off',state:'met',message:'Every motor is stopped.'}]};
+        window.__fixture.emit();
+      }`)
+      await until(() => js("return !!document.querySelector('[data-ps-recovery-consent]')"))
+      expect(await js("return document.querySelector('[data-ps-recovery-confirm]').disabled")).toBe(true)
+      await js("document.querySelector('[data-ps-recovery-consent]').click()")
+      await until(() => js("return !document.querySelector('[data-ps-recovery-confirm]').disabled"))
+      await js("document.querySelector('[data-ps-recovery-confirm]').scrollIntoView({block:'center'})")
+      if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
+        const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
+        await Bun.write(
+          join(process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE, "solid-recovery-review.png"),
+          Buffer.from(screenshot, "base64"),
+        )
+      }
+      await js("document.querySelector('[data-ps-recovery-confirm]').click()")
+      expect(await js("return window.__fixture.calls")).toEqual([
+        {
+          type: "workcell.commissioning.recoveryInspect",
+          projectId: "project-a",
+          conversationId: "conversation-a",
+          serverId: "sidecar",
+          sessionId: "session-a",
+          connectionGeneration: 7,
+          trialId: "trial-a",
+          trialDigest: "plan-a",
+        },
+        {
+          type: "workcell.commissioning.recoveryConfirm",
+          projectId: "project-a",
+          conversationId: "conversation-a",
+          serverId: "sidecar",
+          sessionId: "session-a",
+          connectionGeneration: 7,
+          trialId: "trial-a",
+          trialDigest: "plan-a",
+          recoveryDigest: "recovery-digest-a",
+          confirmed: true,
+        },
+      ])
+      await js(`{
+        const view=window.__fixture.state.workcell.commissioning;
+        view.recoveryStatus.recoveryClearance={id:'clearance-a',digest:'clearance-digest-a',trialId:'trial-a',
+          trialDigest:'plan-a',trialNodeSessionId:'node-a',nodeSessionId:'node-b',configurationDigest:'config-a',
+          deviceIdentity:'fake-robot',recoveryDigest:'recovery-digest-a',confirmedAt:new Date().toISOString(),
+          inspectionDigest:'fresh-check-a',priorRunDigest:'run-digest-a',priorRevision:7};
+        view.unresolved=false;view.status.canInspect=true;view.status.inspection=null;
+        window.__fixture.emit({activeCommissioning:[]});
+      }`)
+      await until(() =>
+        js("return document.querySelector('[data-ps-recovery-receipt]')?.textContent.includes('Recovery completed')"),
+      )
+      expect(
+        await js(
+          "return document.querySelector('[data-ps-commissioning-trial]').textContent.includes('Outcome unknown')",
+        ),
+      ).toBe(true)
+      expect(await js("return document.querySelectorAll('[data-ps-recovery-confirm]').length")).toBe(0)
+      expect(await js("return document.querySelector('[data-ps-commissioning-prepare]').disabled")).toBe(true)
+      expect(await js("return window.__fixture.errors")).toEqual([])
+      await js("document.querySelector('[data-ps-recovery-receipt]').scrollIntoView({block:'center'})")
       if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
         const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
         await Bun.write(

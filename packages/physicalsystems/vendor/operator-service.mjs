@@ -2516,8 +2516,47 @@ var freeze2 = (value) => {
   }
   return value;
 };
+var RECOVERY_FIELDS = ["trialNodeSessionId", "recovery", "recoveryClearance", "canInspectRecovery", "canConfirmRecovery"];
+var RECOVERY_BINDING = ["trialId", "trialDigest", "trialNodeSessionId", "nodeSessionId", "configurationDigest", "deviceIdentity"];
+function recoveryBinding(value) {
+  for (const key of ["trialId", "trialNodeSessionId", "nodeSessionId"])
+    executionId(value[key]);
+  executionHash(value.trialDigest);
+  executionHash(value.configurationDigest);
+  executionText(value.deviceIdentity);
+}
+function recoveryReceipt(value) {
+  executionFields(value, ["id", "digest", ...RECOVERY_BINDING, "recoveryDigest", "confirmedAt", "inspectionDigest", "priorRunDigest", "priorRevision"]);
+  executionId(value.id);
+  executionHash(value.digest);
+  recoveryBinding(value);
+  executionHash(value.recoveryDigest);
+  date(value.confirmedAt);
+  executionHash(value.inspectionDigest);
+  executionHash(value.priorRunDigest);
+  assert(Number.isSafeInteger(value.priorRevision) && value.priorRevision > 0);
+  assert(value.digest === executionDigest(value, "digest"));
+  return value;
+}
+var originSession = (value) => value.trialNodeSessionId ?? value.nodeSessionId;
+function recoveryMatches(value, expected) {
+  return Boolean(expected?.trial && expected.configuration && value.trialId === expected.trial.trialId && value.trialDigest === expected.trial.digest && value.trialNodeSessionId === originSession(expected) && value.configurationDigest === expected.configuration.digest && value.deviceIdentity === expected.configuration.deviceIdentity);
+}
+function gripperRecoveryCleared(value, expected = value) {
+  if (value?.trial?.phase !== "OUTCOME_UNKNOWN" || !value.recoveryClearance)
+    return false;
+  recoveryReceipt(value.recoveryClearance);
+  return recoveryMatches(value.recoveryClearance, value) && recoveryMatches(value.recoveryClearance, expected);
+}
+function assertGripperRecoveryMatches(value, expected) {
+  assert(value.trial?.phase === "OUTCOME_UNKNOWN" && expected?.trial && value.configuration && expected.configuration);
+  assert(value.trialNodeSessionId === originSession(expected) && value.configuration.digest === expected.configuration.digest && value.configuration.deviceIdentity === expected.configuration.deviceIdentity);
+  assert(["trialId", "digest", "startPosition", "targetPosition", "maximumDurationSeconds", "approvalExpiresAt"].every((key) => value.trial[key] === expected.trial[key]));
+  return value;
+}
 function normalizeGripperCheck(value) {
-  executionFields(value, ["contractVersion", "nodeSessionId", "configuration", "inspection", "trial", "canInspect", "canPrepare", "canApprove", "canStop", "blockedReason"]);
+  const recoverySupported = RECOVERY_FIELDS.some((key) => Object.hasOwn(value || {}, key));
+  executionFields(value, ["contractVersion", "nodeSessionId", "configuration", "inspection", "trial", "canInspect", "canPrepare", "canApprove", "canStop", "blockedReason", ...recoverySupported ? RECOVERY_FIELDS : []]);
   assert(value.contractVersion === GRIPPER_CHECK_VERSION);
   executionId(value.nodeSessionId);
   for (const key of ["canInspect", "canPrepare", "canApprove", "canStop"])
@@ -2586,9 +2625,48 @@ function normalizeGripperCheck(value) {
     assert(c !== null && t?.phase === "WAITING_FOR_APPROVAL" && t.stopStatus === null);
   if (value.canStop)
     assert(t !== null);
+  if (recoverySupported) {
+    assert(typeof value.canInspectRecovery === "boolean" && typeof value.canConfirmRecovery === "boolean");
+    if (t)
+      executionId(value.trialNodeSessionId);
+    else
+      assert(value.trialNodeSessionId === null);
+    const offer = value.recovery;
+    if (offer !== null) {
+      executionFields(offer, ["id", "digest", ...RECOVERY_BINDING, "observedAt", "expiresAt", "ready", "positions", "torqueEnabled", "checks"]);
+      executionId(offer.id);
+      executionHash(offer.digest);
+      recoveryBinding(offer);
+      date(offer.observedAt);
+      date(offer.expiresAt);
+      assert(Date.parse(offer.expiresAt) > Date.parse(offer.observedAt) && typeof offer.ready === "boolean");
+      executionFields(offer.positions, GRIPPER_JOINTS);
+      executionFields(offer.torqueEnabled, GRIPPER_JOINTS);
+      GRIPPER_JOINTS.forEach((joint) => {
+        number(offer.positions[joint]);
+        assert(typeof offer.torqueEnabled[joint] === "boolean");
+      });
+      assert(Array.isArray(offer.checks) && offer.checks.length > 0 && offer.checks.length <= 64);
+      offer.checks.forEach((check2) => {
+        executionFields(check2, ["code", "state", "message"]);
+        executionText(check2.code, 128);
+        assert(["met", "violated", "unknown"].includes(check2.state));
+        executionText(check2.message, 512);
+      });
+      if (offer.ready)
+        assert(GRIPPER_JOINTS.every((joint) => offer.torqueEnabled[joint] === false) && offer.checks.every((check2) => check2.state === "met"));
+      assert(offer.digest === executionDigest(offer, "digest") && recoveryMatches(offer, value) && offer.nodeSessionId === value.nodeSessionId && t.phase === "OUTCOME_UNKNOWN");
+    }
+    if (value.recoveryClearance !== null)
+      recoveryReceipt(value.recoveryClearance);
+    if (value.canInspectRecovery || value.canConfirmRecovery)
+      assert(t?.phase === "OUTCOME_UNKNOWN" && c !== null && !gripperRecoveryCleared(value));
+    if (value.canConfirmRecovery)
+      assert(offer?.ready === true);
+  }
   return freeze2(value);
 }
-var commissioningUnresolved = (status) => Boolean(status?.trial && (!["COMPLETED", "STOPPED", "FAILED"].includes(status.trial.phase) || status.trial.stopStatus !== "STOPPED"));
+var commissioningUnresolved = (status) => Boolean(status?.trial && !gripperRecoveryCleared(status) && (!["COMPLETED", "STOPPED", "FAILED"].includes(status.trial.phase) || status.trial.stopStatus !== "STOPPED"));
 function assertGripperCheckMatches(value, expected) {
   assert(value.nodeSessionId === expected.nodeSessionId && value.configuration?.digest === expected.configuration?.digest);
   assert(value.trial && expected.trial && ["trialId", "digest", "startPosition", "targetPosition", "maximumDurationSeconds", "approvalExpiresAt"].every((key) => value.trial[key] === expected.trial[key]));
@@ -2634,7 +2712,7 @@ function createCommissioningClient({ baseUrl, token, fetchImpl = globalThis.fetc
         method: body === undefined ? "GET" : "POST",
         redirect: "error",
         cache: "no-store",
-        signal: AbortSignal.timeout(action === "inspect" ? 35000 : 5000),
+        signal: AbortSignal.timeout(action === "inspect" || action.startsWith("recovery/") ? 35000 : 5000),
         headers: { Accept: "application/json", Authorization: `Bearer ${token}`, ...body === undefined ? {} : { "Content-Type": "application/json" } },
         ...body === undefined ? {} : { body: JSON.stringify(body) }
       });
@@ -2662,6 +2740,10 @@ function createCommissioningClient({ baseUrl, token, fetchImpl = globalThis.fetc
         throw new Error("Proposal changed");
       if (action === "approve" && status.trial.phase === "WAITING_FOR_APPROVAL")
         throw new Error("Approval was not acknowledged");
+      if (action === "recovery/inspect" && (!status.recovery || status.recovery.nodeSessionId !== body.expectedNodeSessionId))
+        throw new Error("Recovery inspection was not acknowledged");
+      if (action === "recovery/confirm" && (!gripperRecoveryCleared(status) || status.recoveryClearance.nodeSessionId !== body.expectedNodeSessionId || status.recoveryClearance.recoveryDigest !== body.recoveryDigest))
+        throw new Error("Durable recovery clearance was not acknowledged");
       return status;
     } catch (error) {
       if (error instanceof CommissioningHttpError)
@@ -2698,21 +2780,42 @@ function createCommissioningClient({ baseUrl, token, fetchImpl = globalThis.fetc
       executionId(body.trialId);
       executionText(body.reason, 256);
       return request("stop", body);
+    },
+    recoveryInspect(body) {
+      executionFields(body, ["expectedNodeSessionId", "trialId", "trialDigest"]);
+      executionId(body.expectedNodeSessionId);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      return request("recovery/inspect", body);
+    },
+    recoveryConfirm(body) {
+      executionFields(body, ["expectedNodeSessionId", "trialId", "trialDigest", "recoveryDigest", "confirmed"]);
+      executionId(body.expectedNodeSessionId);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      executionHash(body.recoveryDigest);
+      assert(body.confirmed === true);
+      return request("recovery/confirm", body);
     }
   });
 }
 
 // ../harness-gripper-check/packages/cli/src/harness/commissioning-controller.js
 var COMMISSIONING_MAXIMUM_AGE_MS = 5000;
-function createCommissioningController({ client, canAct = () => true, onChange = () => {}, now = Date.now, pollMs = 1000 } = {}) {
-  let status = null, available = false, receivedAt = null, message = null, pending = null, stopPending = false;
+function createCommissioningController({ client, initialStatus = null, recoveryOnly = false, canAct = () => true, onChange = () => {}, now = Date.now, pollMs = 1000 } = {}) {
+  let status = initialStatus, available = false, receivedAt = null, message = null, pending = null, stopPending = false;
+  let recoveryStatus = null, recoveryAvailable = false, recoveryReceivedAt = null, recoveryMessage = null;
+  let recoveryRequestStatus = null;
   const attemptedApprovals = new Set;
+  const attemptedRecoveries = new Set;
   let disposed = false, timer = null, reading = null, epoch = 0, uncertain = false;
   const emit = () => {
     if (!disposed)
       onChange();
   };
   const fresh = () => Boolean(available && receivedAt !== null && now() >= receivedAt && now() - receivedAt < COMMISSIONING_MAXIMUM_AGE_MS);
+  const recoveryFresh = () => Boolean(recoveryAvailable && recoveryReceivedAt !== null && now() >= recoveryReceivedAt && now() - recoveryReceivedAt < COMMISSIONING_MAXIMUM_AGE_MS);
+  const recoveryKey = (value) => `${value.nodeSessionId}:${value.trial?.trialId}:${value.recovery?.digest}`;
   const active = () => commissioningUnresolved(status);
   const snapshot = () => ({
     status: status ? { ...status, canApprove: status.canApprove && !attemptedApprovals.has(`${status.nodeSessionId}:${status.trial?.trialId}`) } : null,
@@ -2720,9 +2823,13 @@ function createCommissioningController({ client, canAct = () => true, onChange =
     available,
     receivedAt,
     maximumAgeMs: COMMISSIONING_MAXIMUM_AGE_MS,
+    recoveryStatus: recoveryStatus ? { ...recoveryStatus, canConfirmRecovery: recoveryStatus.canConfirmRecovery && !attemptedRecoveries.has(recoveryKey(recoveryStatus)) } : null,
+    recoveryAvailable,
+    recoveryFresh: recoveryFresh(),
+    recoveryReceivedAt,
     pending,
     stopPending,
-    message: status?.trial?.phase === "WAITING_FOR_APPROVAL" && attemptedApprovals.has(`${status.nodeSessionId}:${status.trial.trialId}`) ? "Approval was already submitted. Its delivery is uncertain; request Stop instead of approving again." : message,
+    message: status?.trial?.phase === "WAITING_FOR_APPROVAL" && attemptedApprovals.has(`${status.nodeSessionId}:${status.trial.trialId}`) ? "Approval was already submitted. Its delivery is uncertain; request Stop instead of approving again." : recoveryMessage ?? (recoveryAvailable ? recoveryStatus?.blockedReason : message),
     unresolved: active() || uncertain
   });
   const invalidate = (error, fallback) => {
@@ -2730,12 +2837,52 @@ function createCommissioningController({ client, canAct = () => true, onChange =
     receivedAt = null;
     message = commissioningFailureMessage(error, fallback);
   };
+  const invalidateRecovery = () => {
+    ++epoch;
+    recoveryAvailable = false;
+    recoveryReceivedAt = null;
+    emit();
+  };
+  async function cancelRecovery() {
+    const current = recoveryRequestStatus, original = status;
+    invalidateRecovery();
+    if (!current || current.nodeSessionId === original?.nodeSessionId)
+      return;
+    assertGripperRecoveryMatches(current, original);
+    const next = await client.stop({ expectedNodeSessionId: current.nodeSessionId, trialId: current.trial.trialId, reason: "operator-requested-stop" });
+    assertGripperRecoveryMatches(next, original);
+  }
+  const acceptRecovery = (next, expected) => {
+    assertGripperRecoveryMatches(next, expected);
+    recoveryStatus = next;
+    recoveryAvailable = true;
+    recoveryReceivedAt = now();
+    recoveryMessage = next.blockedReason;
+    if (gripperRecoveryCleared(next, expected)) {
+      status = next;
+      available = true;
+      receivedAt = now();
+      uncertain = false;
+    }
+  };
   const accept = (next) => {
     if (active()) {
       const before = status.trial, after = next.trial;
       assertGripperCheckMatches(next, status);
       if (before.phase === "OUTCOME_UNKNOWN" && after.phase !== "OUTCOME_UNKNOWN" || before.phase === "RUNNING" && after.phase === "WAITING_FOR_APPROVAL")
         throw new Error("Unknown trial cannot be silently cleared");
+    }
+    if (status?.trial?.trialId !== next.trial?.trialId || status?.trial?.digest !== next.trial?.digest) {
+      recoveryStatus = recoveryRequestStatus = null;
+      recoveryAvailable = false;
+      recoveryReceivedAt = null;
+      recoveryMessage = null;
+    }
+    if (gripperRecoveryCleared(next, status || next)) {
+      recoveryStatus = next;
+      recoveryAvailable = true;
+      recoveryReceivedAt = now();
+      recoveryMessage = next.blockedReason;
     }
     status = next;
     available = true;
@@ -2752,6 +2899,18 @@ function createCommissioningController({ client, canAct = () => true, onChange =
       timer.unref?.();
     }
   };
+  const refreshRecovery = (next) => {
+    if (!recoveryAvailable || !recoveryStatus?.recovery)
+      return false;
+    assertGripperRecoveryMatches(next, status);
+    if (next.nodeSessionId !== recoveryStatus.nodeSessionId || !next.recovery || next.recovery.digest !== recoveryStatus.recovery.digest || Date.parse(next.recovery.expiresAt) <= now()) {
+      throw new Error("Recovery evidence changed or expired");
+    }
+    recoveryStatus = next;
+    recoveryReceivedAt = now();
+    recoveryMessage = next.blockedReason;
+    return true;
+  };
   async function refresh() {
     if (disposed || reading || pending || stopPending)
       return reading;
@@ -2764,11 +2923,20 @@ function createCommissioningController({ client, canAct = () => true, onChange =
     reading = (async () => {
       try {
         const next = await client.status();
-        if (!disposed && revision === epoch)
-          accept(next);
+        if (!disposed && revision === epoch) {
+          const matchedRecovery = refreshRecovery(next);
+          if (!recoveryOnly && !(matchedRecovery && next.nodeSessionId !== status.nodeSessionId))
+            accept(next);
+        }
       } catch (error) {
-        if (!disposed && revision === epoch)
+        if (!disposed && revision === epoch) {
+          if (recoveryAvailable) {
+            recoveryAvailable = false;
+            recoveryReceivedAt = null;
+            recoveryMessage = "Recovery status changed, expired or became unavailable. Check the current robot state again before confirming.";
+          }
           invalidate(error, "Gripper check status is unavailable. Retain the original trial; no outcome is assumed.");
+        }
       } finally {
         reading = null;
         emit();
@@ -2791,17 +2959,79 @@ function createCommissioningController({ client, canAct = () => true, onChange =
       if (body.reason !== "operator-requested-stop" || !active() || status.trial.trialId !== body.trialId || stopPending)
         throw new Error("Request Stop for the exact unresolved gripper trial");
       const expected = status;
-      ++epoch;
       stopPending = true;
       emit();
       try {
-        accept(await client.stop({ expectedNodeSessionId: expected.nodeSessionId, trialId: expected.trial.trialId, reason: body.reason }));
+        const [original, recovery] = await Promise.allSettled([client.stop({ expectedNodeSessionId: expected.nodeSessionId, trialId: expected.trial.trialId, reason: body.reason }), cancelRecovery()]);
+        if (original.status === "rejected")
+          throw original.reason;
+        if (recovery.status === "rejected")
+          throw recovery.reason;
+        if (gripperRecoveryCleared(original.value, expected))
+          throw new Error("Inspect the durable clearance separately; Stop does not acknowledge recovery");
+        accept(original.value);
       } catch (error) {
         uncertain = true;
+        recoveryMessage = null;
         invalidate(error, "Gripper Stop is unconfirmed. Retain the trial and use the independent motor power cutoff.");
         throw new Error(message);
       } finally {
         stopPending = false;
+        emit();
+        schedule();
+      }
+      return snapshot();
+    }
+    if (kind === "recoveryInspect" || kind === "recoveryConfirm") {
+      executionFields(body, ["trialId", "trialDigest", ...kind === "recoveryConfirm" ? ["recoveryDigest", "confirmed"] : []]);
+      executionId(body.trialId);
+      executionHash(body.trialDigest);
+      if (pending || stopPending || !canAct() || !active() || body.trialId !== status.trial.trialId || body.trialDigest !== status.trial.digest)
+        throw new Error("Review recovery for the exact retained gripper trial on its connected owner");
+      const expected = status, current = recoveryStatus;
+      if (kind === "recoveryConfirm") {
+        executionHash(body.recoveryDigest);
+        if (!recoveryFresh() || !current?.canConfirmRecovery || !current.recovery?.ready || Date.parse(current.recovery.expiresAt) <= now() || body.confirmed !== true || body.recoveryDigest !== current.recovery.digest || attemptedRecoveries.has(recoveryKey(current)))
+          throw new Error("Explicitly confirm the exact fresh recovery inspection once");
+        assertGripperRecoveryMatches(current, expected);
+      }
+      const revision2 = ++epoch;
+      pending = kind;
+      recoveryAvailable = false;
+      recoveryReceivedAt = null;
+      recoveryMessage = null;
+      if (kind === "recoveryConfirm")
+        attemptedRecoveries.add(recoveryKey(current));
+      emit();
+      try {
+        let next;
+        if (kind === "recoveryInspect") {
+          const observed = assertGripperRecoveryMatches(await client.status(), expected);
+          if (disposed || revision2 !== epoch || !canAct())
+            return snapshot();
+          recoveryRequestStatus = observed;
+          if (gripperRecoveryCleared(observed, expected))
+            next = observed;
+          else {
+            if (!observed.canInspectRecovery)
+              throw new Error("This Node cannot inspect recovery for the retained trial");
+            next = await client.recoveryInspect({ expectedNodeSessionId: observed.nodeSessionId, trialId: body.trialId, trialDigest: body.trialDigest });
+          }
+        } else {
+          recoveryRequestStatus = current;
+          next = await client.recoveryConfirm({ expectedNodeSessionId: current.nodeSessionId, ...body });
+        }
+        if (!disposed && revision2 === epoch)
+          acceptRecovery(next, expected);
+      } catch (error) {
+        if (revision2 === epoch) {
+          recoveryAvailable = false;
+          recoveryReceivedAt = null;
+          recoveryMessage = commissioningFailureMessage(error, "Recovery was not confirmed. The original outcome and ownership remain retained; inspect recovery status before continuing.");
+          throw new Error(recoveryMessage);
+        }
+      } finally {
+        pending = null;
         emit();
         schedule();
       }
@@ -2858,6 +3088,8 @@ function createCommissioningController({ client, canAct = () => true, onChange =
     snapshot,
     action,
     refresh,
+    invalidateRecovery,
+    cancelRecovery,
     dispose() {
       disposed = true;
       ++epoch;
@@ -6236,6 +6468,28 @@ async function createOperatorService({
     throw fail3("STORAGE_INVALID", "Operator metadata is invalid. Preserve the files and open a compatible service; no work was replayed.");
   }
   const serviceId = randomUUID5(), contexts = new Map, links = new Map, tokens = new Map, nodeOwners = new Map, endpointOwners = new Map, listeners = new Set, pendingProjects = new Map;
+  const recoveryControllers = new Map;
+  const recoveryKey = (record) => JSON.stringify([record.projectId, record.conversationId, record.nodeSessionId, record.trialId]);
+  const recoveryView = (record) => {
+    const controller = recoveryControllers.get(recoveryKey(record));
+    const view = controller?.controller.snapshot() || {
+      status: record.commissioningStatus,
+      available: false,
+      fresh: false,
+      receivedAt: null,
+      maximumAgeMs: 5000,
+      recoveryStatus: null,
+      recoveryAvailable: false,
+      recoveryFresh: false,
+      recoveryReceivedAt: null,
+      pending: null,
+      stopPending: false,
+      message: null,
+      unresolved: true
+    };
+    const link = links.get(record.projectId);
+    return link?.status === "connected" && fresh(link.observedAt) && (!controller || controller.generation === project2(record.projectId).generation) ? view : { ...view, recoveryAvailable: false, recoveryFresh: false, recoveryReceivedAt: null };
+  };
   const secrets = secretStore || createNativeSecretStore({ configDir: path4.join(dataDir, "credentials") });
   let closed = false, closing = false, closePromise, storageFailed = false, revision = 0, catalogPending = false, skillTool;
   const project2 = (id5) => saved.projects.find((item) => item.id === id5);
@@ -6376,12 +6630,16 @@ async function createOperatorService({
           status: view2.commissioning.status,
           trialId: view2.commissioning.status?.trial?.trialId || null,
           nodeSessionId: view2.commissioning.status?.nodeSessionId || null,
+          recoveryStatus: view2.commissioning.recoveryStatus,
+          recoveryView: view2.commissioning,
           canStop: Boolean(view2.commissioning.status?.trial && !view2.commissioning.stopPending),
           stopPending: view2.commissioning.stopPending
         })),
         ...saved.ownership.filter((record) => requiresRecovery(record) && record.kind === "commissioning").map((record) => ({
           ...recoveryOwner(record),
           status: record.commissioningStatus || null,
+          recoveryStatus: recoveryView(record).recoveryStatus,
+          recoveryView: recoveryView(record),
           trialId: record.trialId || null,
           nodeSessionId: record.nodeSessionId || null,
           stopPending: false,
@@ -6705,7 +6963,7 @@ async function createOperatorService({
         kind: "commissioning",
         trialId: view.commissioning.status.trial.trialId,
         nodeSessionId: view.commissioning.status.nodeSessionId,
-        commissioningStatus: view.commissioning.status,
+        commissioningStatus: { ...view.commissioning.status, ...Object.hasOwn(view.commissioning.status, "recovery") ? { recovery: null, canConfirmRecovery: false } : {} },
         status: view.commissioning.status.trial.phase
       });
     if (view.execution.pending && !retained.some((record) => record.projectId === p.id && record.kind === "execution"))
@@ -6780,8 +7038,19 @@ async function createOperatorService({
       const status = await link.clients.camera.stop({ expectedCaptureSessionId: record.captureSessionId });
       confirmed = status.phase === "stopped" && status.captureSessionId === record.captureSessionId;
     } else if (record.kind === "commissioning") {
-      const status = await link.clients.commissioning.stop({ expectedNodeSessionId: record.nodeSessionId, trialId: record.trialId, reason: "operator-requested-stop" });
+      const retained = recoveryControllers.get(recoveryKey(record));
+      const [original, cancellation] = await Promise.allSettled([
+        link.clients.commissioning.stop({ expectedNodeSessionId: record.nodeSessionId, trialId: record.trialId, reason: "operator-requested-stop" }),
+        retained?.controller.cancelRecovery()
+      ]);
+      if (original.status === "rejected")
+        throw original.reason;
+      if (cancellation.status === "rejected")
+        throw cancellation.reason;
+      const status = original.value;
       assertGripperCheckMatches(status, record.commissioningStatus);
+      if (gripperRecoveryCleared(status, record.commissioningStatus))
+        throw fail3("RECOVERY_REQUIRED", "Inspect the durable recovery receipt separately; Stop does not acknowledge clearance");
       confirmed = status.nodeSessionId === record.nodeSessionId && status.trial?.trialId === record.trialId && status.trial.digest === record.commissioningStatus?.trial?.digest && !commissioningUnresolved(status);
     } else {
       const run = await link.clients.execution.stop(record.runId, { reason: "operator-requested-stop" }, record.pins || { runId: record.runId });
@@ -6799,6 +7068,76 @@ async function createOperatorService({
     }
     emit();
     return snapshot();
+  }
+  async function recoveredCommissioning(owner, operation, body) {
+    const { p, entry, context } = owner, link = links.get(p.id);
+    const record = saved.ownership.find((item) => requiresRecovery(item) && item.kind === "commissioning" && item.projectId === p.id && item.conversationId === entry.id && item.trialId === body.trialId);
+    if (!record)
+      return null;
+    scope(body, { physical: true, selected: true });
+    if (!link?.clients || p.connection.expectedNodeId !== record.nodeId || body.trialDigest !== record.commissioningStatus?.trial?.digest)
+      throw fail3("RECOVERY_REQUIRED", "Reconnect the exact original Node and review its retained gripper trial");
+    return withContext(context, false, async () => {
+      if (link.mutation)
+        throw fail3("NODE_BUSY", "Another request owns this Node; wait for it to settle before recovery");
+      const token = {};
+      link.mutation = token;
+      link.pendingOwner = entry.id;
+      const key = recoveryKey(record);
+      let retained = recoveryControllers.get(key);
+      if (retained && (retained.generation !== p.generation || retained.client !== link.clients.commissioning)) {
+        retained.controller.dispose();
+        recoveryControllers.delete(key);
+        retained = null;
+      }
+      if (!retained) {
+        const controller = createCommissioningController({
+          client: link.clients.commissioning,
+          initialStatus: record.commissioningStatus,
+          recoveryOnly: true,
+          now,
+          onChange: emit,
+          canAct: () => {
+            try {
+              scope(body, { physical: true, selected: true });
+              return !context.busy && saved.ownership.includes(record) && p.connection.expectedNodeId === record.nodeId;
+            } catch {
+              return false;
+            }
+          }
+        });
+        retained = { controller, generation: p.generation, client: link.clients.commissioning };
+        recoveryControllers.set(key, retained);
+      }
+      const { projectId, conversationId, serverId, sessionId, connectionGeneration, ...payload } = body;
+      try {
+        await retained.controller.action(operation.slice(14), payload);
+        const view = retained.controller.snapshot();
+        if (!view.unresolved && gripperRecoveryCleared(view.status, record.commissioningStatus)) {
+          const before = saved.ownership;
+          if (!before.includes(record))
+            throw fail3("OWNERSHIP_CHANGED", "Retained gripper ownership changed during recovery");
+          saved.ownership = before.filter((item) => item !== record);
+          try {
+            save();
+          } catch (error) {
+            saved.ownership = before;
+            throw error;
+          }
+          retained.controller.dispose();
+          recoveryControllers.delete(key);
+          const physical2 = await physicalContext(owner);
+          await physical2.workcell.commissioningAction("refresh", {});
+        }
+        emit();
+        return snapshot();
+      } finally {
+        if (link.mutation === token) {
+          link.mutation = null;
+          link.pendingOwner = null;
+        }
+      }
+    });
   }
   async function command(name, input = {}) {
     const independent = name.endsWith(".stop") || name === "workcell.camera.frame" || name === "session.agentState";
@@ -6966,7 +7305,7 @@ async function createOperatorService({
       }
       if (name.startsWith("workcell.")) {
         const operation = name.slice(9), stop = operation.endsWith(".stop"), frame = operation === "camera.frame";
-        if (!["refresh", "setup.inspect", "camera.start", "camera.stop", "camera.frame", "execution.refresh", "execution.prepare", "execution.approve", "execution.stop", "execution.select", "execution.receipt", "execution.reconcile", "commissioning.refresh", "commissioning.inspect", "commissioning.prepare", "commissioning.approve", "commissioning.stop"].includes(operation))
+        if (!["refresh", "setup.inspect", "camera.start", "camera.stop", "camera.frame", "execution.refresh", "execution.prepare", "execution.approve", "execution.stop", "execution.select", "execution.receipt", "execution.reconcile", "commissioning.refresh", "commissioning.inspect", "commissioning.prepare", "commissioning.approve", "commissioning.stop", "commissioning.recoveryInspect", "commissioning.recoveryConfirm"].includes(operation))
           throw fail3("UNSUPPORTED_COMMAND", "This workcell action is unsupported");
         if (stop) {
           owner.context.physicalStopEpoch += 1;
@@ -6976,9 +7315,14 @@ async function createOperatorService({
         }
         if (!stop)
           scope(body, { physical: true });
-        const review = ["camera.start", "execution.prepare", "execution.approve", "commissioning.inspect", "commissioning.prepare", "commissioning.approve"].includes(operation);
+        const review = ["camera.start", "execution.prepare", "execution.approve", "commissioning.inspect", "commissioning.prepare", "commissioning.approve", "commissioning.recoveryInspect", "commissioning.recoveryConfirm"].includes(operation);
         if (review)
           scope(body, { selected: true });
+        if (operation === "commissioning.recoveryInspect" || operation === "commissioning.recoveryConfirm") {
+          const recovered = await recoveredCommissioning(owner, operation, body);
+          if (recovered)
+            return recovered;
+        }
         return await withContext(owner.context, stop || frame, () => withPhysical(owner, stop || frame, async (physical2) => {
           if (review)
             scope(body, { selected: true });
@@ -7117,6 +7461,8 @@ async function createOperatorService({
           context.unsubscribe();
           await context.experiments.dispose();
         }
+        for (const retained of recoveryControllers.values())
+          retained.controller.dispose();
         closed = true;
         tokens.clear();
         listeners.clear();

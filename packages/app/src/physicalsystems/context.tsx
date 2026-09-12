@@ -75,7 +75,13 @@ export function createPhysicalSystems(
       new Promise<never>((_, reject) => {
         timer.id = setTimeout(
           () => reject(new Error(timeout())),
-          request.type === "workcell.commissioning.inspect" ? 45_000 : 8000,
+          [
+            "workcell.commissioning.inspect",
+            "workcell.commissioning.recoveryInspect",
+            "workcell.commissioning.recoveryConfirm",
+          ].includes(request.type)
+            ? 45_000
+            : 8000,
         )
       }),
     ])

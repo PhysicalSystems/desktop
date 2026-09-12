@@ -4,10 +4,13 @@ import { createStore } from "solid-js/store"
 import { useLanguage } from "../context/language"
 import { usePhysicalSystems } from "./context"
 import { Phase } from "./experiments"
+import { CommissioningRecovery } from "./commissioning-recovery"
 import {
   commissioningCanApprove,
   commissioningConsent,
   commissioningFresh,
+  commissioningRecoveryOwner,
+  commissioningRecoveryView,
   commissioningTarget,
 } from "./commissioning-state"
 
@@ -20,7 +23,8 @@ export function GripperCommissioning() {
   // A new IPC snapshot can arrive between timer ticks. Check its receipt
   // against the current clock, otherwise each poll briefly clears consent.
   const now = () => Math.max(Date.now(), state.now)
-  const view = () => physical.state.snapshot?.workcell?.commissioning
+  const view = () =>
+    physical.state.snapshot?.workcell?.commissioning ?? commissioningRecoveryView(physical.state.snapshot)
   const status = () => view()?.status
   const trial = () => status()?.trial
   const fresh = () => commissioningFresh(view(), now())
@@ -29,7 +33,12 @@ export function GripperCommissioning() {
     return (connection?.kind === "local" || connection?.kind === "ssh") && connection.status === "connected"
   }
   const canRefresh = () =>
-    connected() && physical.bound() && !physical.state.unavailable && !physical.state.pending.action
+    connected() &&
+    physical.bound() &&
+    !physical.state.unavailable &&
+    !physical.state.pending.action &&
+    (Boolean(physical.state.snapshot?.workcell?.commissioning) ||
+      !commissioningRecoveryOwner(physical.state.snapshot)?.recoveryView)
   const available = () => connected() && physical.bound() && !physical.state.unavailable && fresh()
   const target = () => commissioningTarget(view(), state.target, now())
   const consent = () => commissioningConsent(physical.state.snapshot)
@@ -267,6 +276,7 @@ export function GripperCommissioning() {
           </section>
         )}
       </Show>
+      <CommissioningRecovery />
     </section>
   )
 }
