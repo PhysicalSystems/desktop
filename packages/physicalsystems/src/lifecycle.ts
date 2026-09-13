@@ -7,6 +7,7 @@ export function createShutdownCoordinator(options: {
   stopServers(): Promise<unknown>
   finish(intent: ShutdownIntent): void
   blocked(error: unknown): void
+  updateUncertain?(error: unknown): boolean
 }) {
   let preparing: Promise<boolean> | undefined
   let prepared = false
@@ -16,6 +17,7 @@ export function createShutdownCoordinator(options: {
   let relaunch = false
   let updating = false
   let updateScheduled = false
+  let updateUnconfirmed = false
 
   // The installer schedules exit itself, after the same cleanup used by quit.
   function prepare(): Promise<boolean> {
@@ -37,17 +39,18 @@ export function createShutdownCoordinator(options: {
 
   return {
     prepare,
-    update(launch: () => void): Promise<boolean> {
+    update(launch: () => void | Promise<void>): Promise<boolean> {
       // A regular shutdown cannot become an installer handoff midway through.
-      if (requesting || complete || updating || updateScheduled) return Promise.resolve(false)
+      if (requesting || complete || updating || updateScheduled || updateUnconfirmed) return Promise.resolve(false)
       updating = true
       return (async () => {
         try {
           if (!await prepare()) return false
-          launch()
+          await launch()
           updateScheduled = true
           return true
         } catch (error) {
+          if (options.updateUncertain?.(error)) updateUnconfirmed = true
           options.blocked(error)
           return false
         } finally {
@@ -55,11 +58,16 @@ export function createShutdownCoordinator(options: {
         }
       })()
     },
+    clearUpdateUncertainty() {
+      if (updating) return false
+      updateUnconfirmed = false
+      return true
+    },
     request(intent: ShutdownIntent): Promise<boolean> {
       if (complete) return Promise.resolve(true)
-      // During cleanup/launch the installer owns exit. After synchronous launch,
+      // During cleanup/launch the installer owns exit. After confirmed handoff,
       // permit its deferred quit, but never schedule a competing old-app relaunch.
-      if (updating || (updateScheduled && intent === "relaunch")) return Promise.resolve(false)
+      if (updating || updateUnconfirmed || (updateScheduled && intent === "relaunch")) return Promise.resolve(false)
       if (intent === "relaunch") relaunch = true
       if (pending) return pending
       if (requesting) return Promise.resolve(false)

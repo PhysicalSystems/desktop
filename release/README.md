@@ -126,7 +126,7 @@ Public release remains blocked until the applicable evidence and infrastructure 
 - Verify the declared desktop/operator/Node compatibility and canonical operator source/provenance. Declared or unverified compatibility must not be advertised as tested hardware support.
 - Run the implemented public build/native-qualification producer with the selected policy and provision the release credentials. The publisher consumes its independently anchored evidence and publishes exact bytes without rebuilding; it cannot qualify or promote an internal candidate.
 
-The first public preview should retain manual updates until installation lifecycle checks pass. Any later in-app updater must use owned feeds, verify the expected publisher, prohibit automatic downgrade, and respect confirmed shutdown/operation ownership. A desktop update must never silently restart a hardware session or upgrade its Node service. This candidate workflow neither enables nor qualifies in-app updates.
+The first public preview should retain manual updates until installation lifecycle checks pass. In-app updates must use owned feeds, prohibit automatic downgrade, and respect confirmed shutdown/operation ownership. The signed updater must verify the expected publisher; the separately reviewed [unsigned preview installer path](../packages/desktop/PREVIEW_UPDATES.md) instead verifies the official selected release and installer hashes, discloses the unsigned Windows policy, and requires its own native installation qualification. A desktop update must never silently restart a hardware session or upgrade its Node service. This candidate workflow neither enables nor qualifies in-app updates.
 
 ## Website download integration
 

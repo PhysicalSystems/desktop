@@ -987,6 +987,10 @@ export const dict = {
   "settings.updates.row.check.title": "Check for updates",
   "settings.updates.row.check.description": "Manually check for updates and install if available",
   "settings.updates.action.checkNow": "Check now",
+  "settings.updates.action.update": "Update",
+  "settings.updates.action.attention": "Update needs attention",
+  "settings.updates.action.recover": "Check installation",
+  "settings.updates.preview.description": "Download the latest preview and confirm installation. The app will close after its local services have stopped.",
   "settings.updates.action.checking": "Checking...",
   "settings.updates.action.download": "Download update",
   "settings.updates.toast.failed.description":
