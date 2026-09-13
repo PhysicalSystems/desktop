@@ -363,7 +363,7 @@ $duplicate=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,101,$true)
             cwd: root,
             env: environment,
             shell: false,
-            windowsHide: true,
+            windowsHide: false,
             encoding: "utf8",
             maxBuffer: 8192,
             timeout: deadline.timeout,
