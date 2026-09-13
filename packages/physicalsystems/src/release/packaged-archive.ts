@@ -49,7 +49,11 @@ export function openPackagedArchive(desktopManifest: string, archive: string) {
       const desktopRequire = createRequire(desktopManifest)
       const builderRequire = createRequire(desktopRequire.resolve("electron-builder/package.json"))
       const appBuilderRequire = createRequire(builderRequire.resolve("app-builder-lib/package.json"))
-      return appBuilderRequire("@electron/asar") as Extractor
+      const reader = appBuilderRequire("@electron/asar") as Extractor & { uncache: (archive: string) => boolean }
+      // Installers replace app.asar at the same path. The pinned reader caches
+      // headers by path, so a fresh inspection must discard the previous offsets.
+      reader.uncache(archive)
+      return reader
     } catch {
       throw new Error("PACKAGED_ARCHIVE_DEPENDENCY_UNAVAILABLE")
     }

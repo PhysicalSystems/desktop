@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, expect, test } from "bun:test"
 import { createRequire } from "node:module"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, win32 } from "node:path"
 import { Script } from "node:vm"
@@ -87,6 +87,32 @@ test("reads a real packaged ASAR and top-level metadata with the host path seman
   expect(reader.read("out/main/index.js").toString()).toBe("synthetic fixture main")
   expect(reader.json("package.json")).toEqual({ version: "0.1.0-beta.1" })
   expect(reader.json("out/legal/manifest.json")).toEqual({ scope: "synthetic fixture" })
+})
+
+test("reopens replaced installer archives using current headers through baseline and target upgrades", async () => {
+  const root = await mkdtemp(join(tmpdir(), "physical-packaged-archive-upgrade-"))
+  roots.push(root)
+  const versions = [
+    { name: "target", version: "0.1.0-beta.7", padding: 32 },
+    { name: "baseline", version: "0.0.0-beta.1", padding: 4096 },
+  ]
+  for (const item of versions) {
+    const source = join(root, item.name)
+    await mkdir(join(source, "out/legal"), { recursive: true })
+    // Distinct file sizes and header offsets reproduce actual rebuilt packages.
+    await writeFile(join(source, "aaa-padding"), "x".repeat(item.padding))
+    await writeFile(join(source, "package.json"), JSON.stringify({ version: item.version }))
+    await writeFile(join(source, "out/legal/desktop-release-inputs.json"), JSON.stringify({ version: item.version }))
+    await finished(await asar.createPackage(source, join(root, `${item.name}.asar`)))
+  }
+  const installed = join(root, "app.asar")
+  for (const item of [versions[0]!, versions[1]!, versions[0]!, versions[1]!]) {
+    await copyFile(join(root, `${item.name}.asar`), installed)
+    const reader = openPackagedArchive(desktopManifest, installed)
+    expect(reader.json("package.json")).toEqual({ version: item.version })
+    expect(reader.json("out/legal/desktop-release-inputs.json")).toEqual({ version: item.version })
+    expect(reader.read("aaa-padding").length).toBe(item.padding)
+  }
 })
 
 test("archive and malformed metadata failures expose only specific authored qualification codes", async () => {
