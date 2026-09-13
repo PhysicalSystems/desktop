@@ -6,6 +6,8 @@ accessibility tree, or arbitrary exception text is ever emitted by this helper.
 """
 
 import ctypes
+import csv
+import io
 import json
 import os
 import pathlib
@@ -14,9 +16,12 @@ import re
 import select
 import signal
 import stat
+import struct
+import subprocess
 import sys
 import termios
 import time
+import zlib
 
 
 class QualificationError(Exception):
@@ -288,6 +293,196 @@ def find_dialog_button(applications, pid, version, choice, roles, observation=No
     return matches[0] if matches else None
 
 
+LINUX_CONFIRMATION_DETAIL = ("Ubuntu will ask for permission to install the downloaded package. "
+    "Physical Systems will stop its local services before installation and restart after the package manager "
+    "confirms the new version. Stop any physical operation before continuing.")
+
+
+def dialog_ocr_point(tsv, width, height, version, choice):
+    """Recognize the entire public dialog, deriving a button point from its text.
+
+    No fuzzy matching, guessed coordinates, focus cycling or unrelated pixels.
+    In particular an unexpected dialog is never saved to an uploaded screenshot.
+    """
+    require(isinstance(tsv, str) and len(tsv) <= 65536 and 200 <= width <= 1600 and 80 <= height <= 1000,
+            "NATIVE_DIALOG_OCR_INVALID")
+    rows = list(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
+    require(len(rows) <= 256, "NATIVE_DIALOG_OCR_INVALID")
+    words = []
+    for row in rows:
+        if row.get("level") != "5":
+            continue
+        try:
+            left, top, w, h = [int(row[key]) for key in ("left", "top", "width", "height")]
+            confidence = float(row["conf"])
+            text = row["text"]
+        except (KeyError, TypeError, ValueError):
+            raise QualificationError("NATIVE_DIALOG_OCR_INVALID")
+        require(isinstance(text, str) and text and 0 <= left < width and 0 <= top < height
+                and 0 < w <= width - left and 0 < h <= height - top and 75 <= confidence <= 100,
+                "NATIVE_DIALOG_OCR_MISMATCH")
+        words.append((text, left, top, w, h))
+    expected = ("Install Physical Systems " + version + "? " + LINUX_CONFIRMATION_DETAIL + " Install update Later").split()
+    require([word[0] for word in words] == expected, "NATIVE_DIALOG_OCR_MISMATCH")
+    install, update, later = words[-3:]
+    require(install[1] + install[3] < update[1] and update[1] + update[3] + 16 < later[1]
+            and max(x[2] for x in words[:-3]) + 4 < min(x[2] for x in words[-3:])
+            and min(x[2] for x in words[-3:]) > height // 2
+            and max(x[2] for x in words[-3:]) - min(x[2] for x in words[-3:]) <= 6,
+            "NATIVE_DIALOG_OCR_MISMATCH")
+    # Use the middle of a recognized word, wholly inside the intended button.
+    target = later if choice == "later" else update
+    return (target[1] + target[3] // 2, target[2] + target[4] // 2)
+
+
+def find_x11_dialog(windows, pid):
+    require(len(windows) <= 64, "NATIVE_DIALOG_TREE_LIMIT")
+    matches = [window for window in windows if window["pid"] == pid and window["title"] == "Update Ready"
+               and window["dialog"] and window["viewable"]]
+    require(len(matches) <= 1, "NATIVE_DIALOG_AMBIGUOUS")
+    return matches[0] if matches else None
+
+
+class X11DialogBackend:
+    """An owned X11 window only; never the desktop, global pointer, or keyboard."""
+
+    def __init__(self):
+        try:
+            from Xlib import X, display, error, protocol
+            self.X, self.error, self.protocol = X, error, protocol
+            self.display = display.Display()
+            self.root = self.display.screen().root
+        except (ImportError, OSError):
+            raise QualificationError("NATIVE_X11_UNAVAILABLE")
+
+    def close(self):
+        self.display.close()
+
+    def snapshot(self, window, pid):
+        owner = window.get_full_property(self.display.intern_atom("_NET_WM_PID"), self.X.AnyPropertyType)
+        if owner is None or owner.format != 32 or list(owner.value) != [pid]:
+            return None
+        # Read titles only after matching the owned main process.
+        title = window.get_wm_name()
+        types = window.get_full_property(self.display.intern_atom("_NET_WM_WINDOW_TYPE"), self.X.AnyPropertyType)
+        geometry, attributes = window.get_geometry(), window.get_attributes()
+        position = self.root.translate_coords(window, 0, 0)
+        return {"id": window.id, "pid": pid, "title": title,
+                "dialog": types is not None and types.format == 32
+                    and list(types.value) == [self.display.intern_atom("_NET_WM_WINDOW_TYPE_DIALOG")],
+                "viewable": attributes.map_state == self.X.IsViewable,
+                "width": geometry.width, "height": geometry.height, "depth": geometry.depth,
+                "visual": attributes.visual, "x": position.x, "y": position.y}
+
+    def windows(self, pid):
+        result, pending, count = [], [(self.root, 0)], 0
+        while pending:
+            parent, depth = pending.pop()
+            children = parent.query_tree().children
+            count += len(children)
+            require(count <= 512, "NATIVE_DIALOG_TREE_LIMIT")
+            for window in children:
+                try:
+                    snapshot = self.snapshot(window, pid)
+                    if snapshot is not None:
+                        result.append(snapshot)
+                    # A window manager may reparent the application's toplevel.
+                    if depth < 1:
+                        pending.append((window, depth + 1))
+                except self.error.BadWindow:
+                    continue
+        return result
+
+    def current(self, snapshot):
+        try:
+            return self.snapshot(self.display.create_resource_object("window", snapshot["id"]), snapshot["pid"])
+        except self.error.BadWindow:
+            return None
+
+    def capture(self, snapshot):
+        width, height = snapshot["width"], snapshot["height"]
+        require(200 <= width <= 1600 and 80 <= height <= 1000, "NATIVE_DIALOG_CAPTURE_INVALID")
+        # Xvfb's specified 24-bit TrueColor surface. Fail closed on another
+        # visual instead of interpreting an unknown pixel format. XGetImage
+        # reads this exact window; there is no root-window screenshot.
+        formats = [item for item in self.display.display.info.pixmap_formats if item.depth == 24]
+        visuals = [item for depth in self.display.screen().allowed_depths for item in depth.visuals
+                   if item.visual_id == snapshot["visual"]]
+        require(snapshot["depth"] == 24 and self.display.display.info.image_byte_order == self.X.LSBFirst
+                and len(formats) == 1 and formats[0].bits_per_pixel == 32 and formats[0].scanline_pad == 32
+                and len(visuals) == 1 and (visuals[0].red_mask, visuals[0].green_mask, visuals[0].blue_mask)
+                    == (0xFF0000, 0xFF00, 0xFF), "NATIVE_DIALOG_CAPTURE_INVALID")
+        window = self.display.create_resource_object("window", snapshot["id"])
+        data = window.get_image(0, 0, width, height, self.X.ZPixmap, 0xFFFFFFFF).data
+        require(len(data) == width * height * 4, "NATIVE_DIALOG_CAPTURE_INVALID")
+        pixels = bytearray()
+        for row in range(height):
+            pixels.append(0)
+            for offset in range(row * width * 4, (row + 1) * width * 4, 4):
+                pixels.extend((data[offset + 2], data[offset + 1], data[offset]))
+        def chunk(kind, value):
+            return struct.pack(">I", len(value)) + kind + value + struct.pack(">I", zlib.crc32(kind + value))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b""))
+
+    def ocr(self, png):
+        require(len(png) <= 2000000, "NATIVE_DIALOG_CAPTURE_INVALID")
+        try:
+            result = subprocess.run(["/usr/bin/tesseract", "stdin", "stdout", "-l", "eng", "--psm", "6", "tsv"],
+                                    input=png, capture_output=True, timeout=8,
+                                    env={"PATH": "/usr/bin:/bin", "LC_ALL": "C.UTF-8", "OMP_THREAD_LIMIT": "1"})
+        except (OSError, subprocess.TimeoutExpired):
+            raise QualificationError("NATIVE_DIALOG_OCR_FAILED")
+        require(result.returncode == 0 and len(result.stdout) <= 65536, "NATIVE_DIALOG_OCR_FAILED")
+        return result.stdout.decode("utf-8", errors="strict")
+
+    def send(self, snapshot, kind, point):
+        X = self.X
+        window = self.display.create_resource_object("window", snapshot["id"])
+        common = {"time": X.CurrentTime, "root": self.root, "window": window, "child": X.NONE,
+                  "root_x": snapshot["x"] + point[0], "root_y": snapshot["y"] + point[1],
+                  "event_x": point[0], "event_y": point[1], "state": X.Button1Mask if kind == "release" else 0}
+        constructors = {"enter": self.protocol.event.EnterNotify, "motion": self.protocol.event.MotionNotify,
+                        "press": self.protocol.event.ButtonPress, "release": self.protocol.event.ButtonRelease}
+        detail = ({"mode": X.NotifyNormal, "detail": X.NotifyAncestor, "flags": 3} if kind == "enter" else
+                  {"same_screen": 1, "detail": X.NotifyNormal if kind == "motion" else 1})
+        failures = []
+        # A zero event mask delivers to this window's creator even when GTK uses
+        # XI2. No propagation, XTest, focus changes, or global pointer movement.
+        window.send_event(constructors[kind](**common, **detail), event_mask=0, propagate=False,
+                          onerror=lambda *args: failures.append(True))
+        self.display.sync()
+        require(not failures, "NATIVE_DIALOG_ACTION_FAILED")
+
+
+def click_x11_confirmation(backend, config, start_time, identity=process_identity):
+    pid = config["applicationPid"]
+    require(identity(pid) == start_time, "APPLICATION_IDENTITY_CHANGED")
+    window = find_x11_dialog(backend.windows(pid), pid)
+    if window is None:
+        return False
+    require(backend.current(window) == window, "NATIVE_DIALOG_WINDOW_CHANGED")
+    png = backend.capture(window)
+    point = dialog_ocr_point(backend.ocr(png), window["width"], window["height"], config["version"], config["choice"])
+    require(identity(pid) == start_time and backend.current(window) == window, "NATIVE_DIALOG_WINDOW_CHANGED")
+    # Persist only exact public confirmation copy, before any authentication.
+    screenshot = pathlib.Path(config["root"]) / ("native-dialog-" + config["choice"] + ".png")
+    descriptor = os.open(screenshot, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(png)
+    for kind in ("enter", "motion", "press", "release"):
+        require(identity(pid) == start_time and backend.current(window) == window, "NATIVE_DIALOG_WINDOW_CHANGED")
+        backend.send(window, kind, point)
+        time.sleep(0.05)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        current = backend.current(window)
+        if current is None or not current["viewable"]:
+            return True
+        time.sleep(0.05)
+    raise QualificationError("NATIVE_DIALOG_ACTION_FAILED")
+
+
 def click_confirmation(config, start_time):
     require(config.get("choice") in ("later", "install") and isinstance(config.get("version"), str)
             and re.fullmatch(r"\d+\.\d+\.\d+-beta\.\d+", config["version"]), "NATIVE_DIALOG_INPUT_INVALID")
@@ -303,6 +498,8 @@ def click_confirmation(config, start_time):
     deadline = time.monotonic() + 45
     observation = {}
     context = GLib.MainContext.default()
+    x11 = X11DialogBackend()
+    last_ocr_failure = None
     while time.monotonic() < deadline:
         # Registry child changes are delivered through GLib. This helper polls
         # instead of running Atspi.event_main(), so dispatch pending events to
@@ -331,11 +528,26 @@ def click_confirmation(config, start_time):
             require(process_identity(config["applicationPid"]) == start_time, "APPLICATION_IDENTITY_CHANGED")
             require(action.do_action(clicks[0]), "NATIVE_DIALOG_ACTION_FAILED")
             emit("clicked", action=config["choice"], method="at-spi")
+            x11.close()
             return
+        try:
+            if click_x11_confirmation(x11, config, start_time):
+                emit("clicked", action=config["choice"], method="x11-ocr")
+                x11.close()
+                return
+        except QualificationError as error:
+            # A newly mapped GTK dialog can precede its first complete paint.
+            # Retry recognition only; input errors are never retried.
+            if str(error) != "NATIVE_DIALOG_OCR_MISMATCH":
+                raise
+            last_ocr_failure = error
         time.sleep(0.1)
     # Authored categories/counts only. No title, message, PID, path, accessibility
     # tree, or unrelated application's content is returned to the CI report.
     emit("diagnostic", data=observation)
+    x11.close()
+    if last_ocr_failure:
+        raise last_ocr_failure
     raise QualificationError("NATIVE_DIALOG_NOT_FOUND")
 
 

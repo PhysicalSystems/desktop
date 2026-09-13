@@ -101,6 +101,13 @@ owned Polkit agent with a temporary runner account. Neither test replaces the
 update feed, bypasses the application confirmation, or manually launches the
 target to manufacture restart evidence.
 
+Native confirmation automation stays bound to the owned app process and exact
+version question. Windows verifies the real command-link controls when its
+accessibility provider does not expose them as ordinary buttons. Ubuntu first
+uses AT-SPI; for GTK dialogs absent from that tree, it recognizes the exact public
+question and button labels in the app-owned X11 window before sending events only
+to that window. Neither path uses global keyboard or pointer input.
+
 After observing that public target close normally, a separate manual phase checks
 the exact attempt journal left by the real update. It installs the private newer
 fixture, verifies that installation preserved the journal, and explicitly launches
@@ -116,5 +123,7 @@ setting and normal target closure, and reports the manual startup acknowledgemen
 separately from the actual in-app update. It is separate from release
 qualification: the current beta.7 target predates the new journal acknowledgement
 code, and the test does not exercise native interrupted-installation recovery or
-complete conversation/credential migration. Profiles, passwords, packages and raw
-app logs are not uploaded.
+complete conversation/credential migration. Ubuntu can also retain the two
+app-owned confirmation images after exact public-text verification and before
+authentication. Profiles, passwords, packages, arbitrary screenshots and raw app
+logs are not uploaded.

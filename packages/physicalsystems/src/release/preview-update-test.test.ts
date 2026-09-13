@@ -414,7 +414,11 @@ test("native updater CI is explicit, source-gated, disposable and cannot upload 
   expect(JSON.stringify(job)).not.toContain("secrets.")
   const uploads = job.steps.filter((step) => step.uses?.startsWith("actions/upload-artifact@"))
   expect(uploads).toHaveLength(1)
-  expect(uploads[0]!.with?.path).toBe("${{ steps.prepare.outputs.root }}/result.json")
+  expect(String(uploads[0]!.with?.path).trim().split("\n")).toEqual([
+    "${{ steps.prepare.outputs.root }}/result.json",
+    "${{ steps.prepare.outputs.root }}/native-dialog-later.png",
+    "${{ steps.prepare.outputs.root }}/native-dialog-install.png",
+  ])
   expect(job.steps.find((step) => step.run?.includes("dbus-run-session"))?.run).toContain("xvfb-run -a bun")
   expect(job.steps.filter((step) => step.run?.includes("preview-update-native.mjs"))).toHaveLength(2)
 })

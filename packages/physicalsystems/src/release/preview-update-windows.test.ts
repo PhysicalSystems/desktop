@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test"
 import { ChildProcess, execFile } from "node:child_process"
 import { PassThrough } from "node:stream"
+import { gunzipSync } from "node:zlib"
 import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { join, win32 } from "node:path"
 import {
@@ -9,6 +10,7 @@ import {
   createPreviewUpdateWindowsTransport,
   capturePreviewUpdateWindowsShutdown,
   previewUpdateWindowsExecutableReady,
+  previewUpdateWindowsArguments,
   readPreviewUpdateWindowsObservation,
   previewUpdateWindowsScript,
   previewUpdateWindowsTime,
@@ -284,8 +286,14 @@ test("production native ownership rejects unmarked or local contexts, and timest
   const before = Date.now()
   const time = (BigInt(previewUpdateWindowsTime()) - 621355968000000000n) / 10000n
   expect(time >= BigInt(before) && time <= BigInt(Date.now())).toBe(true)
-  const encoded = Buffer.from(previewUpdateWindowsScript, "utf16le").toString("base64")
-  expect(encoded.length + 1024).toBeLessThan(32767)
+  const command = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+  const args = previewUpdateWindowsArguments(command)
+  expect(command.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3).toBeLessThan(32767)
+  const bootstrap = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+  const compressed = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(bootstrap)?.[1]
+  expect(compressed).toBeDefined()
+  expect(gunzipSync(Buffer.from(compressed!, "base64")).toString("utf8")).toBe(previewUpdateWindowsScript)
+  expect(() => previewUpdateWindowsArguments("X".repeat(32768))).toThrow("UNCONFIRMED")
 })
 
 test("NSIS replacement waits on missing owned paths while still rejecting links, escapes and unreadable ancestors", async () => {

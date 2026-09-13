@@ -4,7 +4,11 @@ import { lstat, readFile, realpath } from "node:fs/promises"
 import { win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { verifyWindowsVersionInfo } from "./qualification"
-import { createWindowsReviewRequestTransport, windowsReviewNativeEnvironment } from "./windows-review-native"
+import {
+  createWindowsReviewRequestTransport,
+  windowsReviewNativeEnvironment,
+  windowsReviewScriptBootstrap,
+} from "./windows-review-native"
 import { windowsAppShutdownNative, windowsAppShutdownSnapshot } from "./windows-app-shutdown-native"
 
 export type PreviewUpdateWindowsApplication = {
@@ -52,6 +56,7 @@ const nativePhases = [
   "dialog-buttons",
   "dialog-button-state",
   "dialog-pattern",
+  "dialog-native-buttons",
   "dialog-owner-recheck",
   "invoke",
   "close",
@@ -76,6 +81,23 @@ const booleanFields = [
   "buttonOffscreen",
   "invokePattern",
   "dialogHandleOwned",
+  "nativeCommandLinks",
+  "nativeInstallFound",
+  "nativeInstallOwned",
+  "nativeInstallChild",
+  "nativeInstallClass",
+  "nativeInstallStyle",
+  "nativeInstallText",
+  "nativeInstallEnabled",
+  "nativeInstallVisible",
+  "nativeLaterFound",
+  "nativeLaterOwned",
+  "nativeLaterChild",
+  "nativeLaterClass",
+  "nativeLaterStyle",
+  "nativeLaterText",
+  "nativeLaterEnabled",
+  "nativeLaterVisible",
 ] as const
 type NativeObservation = { phase: string } & Partial<Record<(typeof countFields)[number], number>> &
   Partial<Record<(typeof booleanFields)[number], boolean>>
@@ -186,6 +208,62 @@ function validated(input: Request): Request {
 export function previewUpdateWindowsTime() {
   return (BigInt(Date.now()) * 10000n + 621355968000000000n).toString()
 }
+
+/** Electron 42's custom TaskDialog buttons use IDs 100/101 and command-link
+ * styles, which the managed legacy Button proxy does not consistently expose.
+ * Read only those two native controls; never accept a caller-provided label,
+ * class, message ID or action ID. BM_CLICK targets the actual verified control.
+ */
+export const previewUpdateWindowsCommandLinks = String.raw`
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class PreviewUpdateCommandLink {
+  [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr parent, int id);
+  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+  [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint id);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool IsWindowEnabled(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder name, int count);
+  [DllImport("user32.dll", EntryPoint="GetWindowLongW")] static extern int GetStyle(IntPtr h, int index);
+  [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode)] static extern IntPtr ReadText(IntPtr h, uint message, IntPtr count, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
+  [DllImport("user32.dll", SetLastError=true)] static extern bool PostMessage(IntPtr h, uint message, IntPtr w, IntPtr l);
+  public sealed class Facts {
+    public IntPtr Handle;
+    public bool Found, Owned, Child, ClassMatches, StyleMatches, TextMatches, Enabled, Visible;
+    public bool Ready { get {return Found && Owned && Child && ClassMatches && StyleMatches && TextMatches && Enabled && Visible;} }
+  }
+  public static Facts Read(IntPtr dialog, uint pid, int id) {
+    if(dialog==IntPtr.Zero || pid==0 || (id!=100 && id!=101)) throw new InvalidOperationException();
+    var result=new Facts(); uint dialogPid=0, buttonPid=0;
+    GetWindowThreadProcessId(dialog,out dialogPid);
+    if(dialogPid!=pid) return result;
+    result.Handle=GetDlgItem(dialog,id); result.Found=result.Handle!=IntPtr.Zero;
+    if(!result.Found) return result;
+    GetWindowThreadProcessId(result.Handle,out buttonPid);
+    result.Owned=buttonPid==pid;
+    result.Child=IsChild(dialog,result.Handle) && GetAncestor(result.Handle,2)==dialog && GetDlgCtrlID(result.Handle)==id;
+    if(!result.Owned || !result.Child) return result;
+    var name=new StringBuilder(128); int length=GetClassName(result.Handle,name,name.Capacity);
+    result.ClassMatches=length>0 && length<127 && String.Equals(name.ToString(),"Button",StringComparison.OrdinalIgnoreCase);
+    int style=GetStyle(result.Handle,-16) & 15;
+    result.StyleMatches=style==14 || style==15;
+    var text=new StringBuilder(128); UIntPtr read;
+    if(ReadText(result.Handle,0x000D,new IntPtr(text.Capacity),text,2,500,out read)!=IntPtr.Zero && read.ToUInt64()<127)
+      result.TextMatches=String.Equals(text.ToString(),id==100?"Install update":"Later",StringComparison.Ordinal);
+    result.Enabled=IsWindowEnabled(dialog) && IsWindowEnabled(result.Handle);
+    result.Visible=IsWindowVisible(dialog) && IsWindowVisible(result.Handle);
+    return result;
+  }
+  public static void Click(IntPtr dialog, uint pid, int id, IntPtr expected) {
+    var current=Read(dialog,pid,id);
+    if(!current.Ready || current.Handle!=expected || !PostMessage(current.Handle,0x00F5,IntPtr.Zero,IntPtr.Zero))
+      throw new InvalidOperationException();
+  }
+}
+`
 
 /** Fixed native code is also exposed for an inert hosted Windows syntax fixture.
  * It does not enumerate command lines or accept script text from the caller. */
@@ -316,17 +394,38 @@ function Confirm-App($requestValue){
   $later=@($controls | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.Name -ceq 'Later'})
   $script:diagnostics.installButtons=[Math]::Min(257,$install.Count)
   $script:diagnostics.laterButtons=[Math]::Min(257,$later.Count)
-  if($message.Count -ne 1 -or $install.Count -ne 1 -or $later.Count -ne 1){throw 'dialog'}
-  if($requestValue.action -ceq 'Later'){$button=$later[0]}elseif($requestValue.action -ceq 'Install update'){$button=$install[0]}else{throw 'action'}
-  $script:phase='dialog-button-state'
-  $script:diagnostics.buttonOwned=$button.Current.ProcessId -eq $requestValue.application.pid
-  $script:diagnostics.buttonEnabled=$button.Current.IsEnabled
-  $script:diagnostics.buttonOffscreen=$button.Current.IsOffscreen
-  if(!$script:diagnostics.buttonOwned -or !$script:diagnostics.buttonEnabled -or $script:diagnostics.buttonOffscreen){throw 'button'}
-  $script:phase='dialog-pattern'
-  $pattern=$null
-  $script:diagnostics.invokePattern=$button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)
-  if(!$script:diagnostics.invokePattern){throw 'pattern'}
+  if($message.Count -ne 1){throw 'dialog'}
+  $native=$install.Count -eq 0 -and $later.Count -eq 0
+  $script:diagnostics.nativeCommandLinks=$native
+  if($native){
+    $script:phase='dialog-native-buttons'
+    Add-Type -TypeDefinition @'
+${previewUpdateWindowsCommandLinks}
+'@
+    $dialogHandle=[IntPtr]$dialog.Current.NativeWindowHandle
+    $nativeInstall=[PreviewUpdateCommandLink]::Read($dialogHandle,[uint32]$requestValue.application.pid,100)
+    $nativeLater=[PreviewUpdateCommandLink]::Read($dialogHandle,[uint32]$requestValue.application.pid,101)
+    foreach($entry in @(@{name='nativeInstall';value=$nativeInstall},@{name='nativeLater';value=$nativeLater})){
+      foreach($field in @('Found','Owned','Child','Enabled','Visible')){$script:diagnostics[$entry.name+$field]=$entry.value.$field}
+      $script:diagnostics[$entry.name+'Class']=$entry.value.ClassMatches
+      $script:diagnostics[$entry.name+'Style']=$entry.value.StyleMatches
+      $script:diagnostics[$entry.name+'Text']=$entry.value.TextMatches
+    }
+    if(!$nativeInstall.Ready -or !$nativeLater.Ready){throw 'command-link'}
+    if($requestValue.action -ceq 'Later'){$nativeButton=$nativeLater;$nativeId=101}elseif($requestValue.action -ceq 'Install update'){$nativeButton=$nativeInstall;$nativeId=100}else{throw 'action'}
+  } else {
+    if($install.Count -ne 1 -or $later.Count -ne 1){throw 'dialog'}
+    if($requestValue.action -ceq 'Later'){$button=$later[0]}elseif($requestValue.action -ceq 'Install update'){$button=$install[0]}else{throw 'action'}
+    $script:phase='dialog-button-state'
+    $script:diagnostics.buttonOwned=$button.Current.ProcessId -eq $requestValue.application.pid
+    $script:diagnostics.buttonEnabled=$button.Current.IsEnabled
+    $script:diagnostics.buttonOffscreen=$button.Current.IsOffscreen
+    if(!$script:diagnostics.buttonOwned -or !$script:diagnostics.buttonEnabled -or $script:diagnostics.buttonOffscreen){throw 'button'}
+    $script:phase='dialog-pattern'
+    $pattern=$null
+    $script:diagnostics.invokePattern=$button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)
+    if(!$script:diagnostics.invokePattern){throw 'pattern'}
+  }
   $null=Require-App $requestValue.application
   $script:phase='dialog-owner-recheck'
   [uint32]$dialogPid=0
@@ -334,7 +433,7 @@ function Confirm-App($requestValue){
   $script:diagnostics.dialogHandleOwned=$dialogPid -eq $requestValue.application.pid
   if(!$script:diagnostics.dialogHandleOwned){throw 'changed'}
   $script:phase='invoke'
-  ([Windows.Automation.InvokePattern]$pattern).Invoke()
+  if($native){[PreviewUpdateCommandLink]::Click([IntPtr]$dialog.Current.NativeWindowHandle,[uint32]$requestValue.application.pid,$nativeId,$nativeButton.Handle)}else{([Windows.Automation.InvokePattern]$pattern).Invoke()}
   return @{status='invoked';action=$requestValue.action}
 }
 switch -CaseSensitive ($request.operation) {
@@ -362,6 +461,19 @@ switch -CaseSensitive ($request.operation) {
 $script:phase='output'
 [Console]::Out.Write((ConvertTo-Json -InputObject $result -Compress -Depth 6))
 `
+
+export function previewUpdateWindowsArguments(executable: string) {
+  const args = [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Mta",
+    "-EncodedCommand",
+    Buffer.from(windowsReviewScriptBootstrap(previewUpdateWindowsScript), "utf16le").toString("base64"),
+  ]
+  if (executable.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3 >= 32767) throw failure()
+  return args
+}
 
 /** Pure transport seam: only a supplied executor can perform an operation.
  * Production callers use the guarded factory below and retain one owner. */
@@ -570,15 +682,7 @@ export async function createPreviewUpdateWindowsNative(input: { env: NodeJS.Proc
     throw failure()
   const environment = windowsReviewNativeEnvironment(input.env, input.root)
   const command = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-  const args = [
-    "-NoLogo",
-    "-NoProfile",
-    "-NonInteractive",
-    "-Mta",
-    "-EncodedCommand",
-    Buffer.from(previewUpdateWindowsScript, "utf16le").toString("base64"),
-  ]
-  if (command.length * 2 + args.reduce((sum, arg) => sum + arg.length + 3, 0) + 3 >= 32767) throw failure()
+  const args = previewUpdateWindowsArguments(command)
   const native = createPreviewUpdateWindowsTransport((deadline, complete) =>
     execFile(
       command,

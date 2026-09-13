@@ -42,7 +42,7 @@ export async function startPreviewUpdatePolkitAgent(
   return { ready: helper.ready, authenticated: helper.completed, stop: helper.stop }
 }
 
-/** Invoke a real accessible native button; this does not use CDP or synthesize app IPC. */
+/** Invoke a real owned native button; this does not use CDP or synthesize app IPC. */
 export async function clickPreviewUpdateLinuxConfirmation(
   input: NativeInput & { choice: "later" | "install" },
   dependencies: Dependencies = {},
@@ -53,7 +53,7 @@ export async function clickPreviewUpdateLinuxConfirmation(
   try {
     await helper.completed
     await helper.closed
-    return { action: input.choice, method: "at-spi" as const }
+    return { action: input.choice, method: helper.method() }
   } finally {
     await helper.stop()
   }
@@ -171,6 +171,7 @@ function startHelper(
   let ended = false
   let registered = false
   let observed = false
+  let method: "at-spi" | "x11-ocr" | undefined
   let diagnostic: PreviewUpdateLinuxDialogDiagnostic | undefined
   let failure: Error | undefined
   let buffer = ""
@@ -222,8 +223,9 @@ function startHelper(
           "action" in event &&
           event.action === input.choice &&
           "method" in event &&
-          event.method === "at-spi"
+          (event.method === "at-spi" || event.method === "x11-ocr")
         ) {
+          method = event.method
           observed = true
           ready.resolve()
           completed.resolve()
@@ -274,6 +276,10 @@ function startHelper(
     ready: ready.promise,
     completed: completed.promise,
     closed: closed.promise,
+    method() {
+      if (!method) throw new Error("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+      return method
+    },
     stop() {
       return (cleanup ??= (async () => {
         stopping = true
@@ -363,6 +369,12 @@ const nativeFailureCodes = new Set([
   "NATIVE_DIALOG_ACTION_AMBIGUOUS",
   "NATIVE_DIALOG_ACTION_FAILED",
   "NATIVE_DIALOG_NOT_FOUND",
+  "NATIVE_X11_UNAVAILABLE",
+  "NATIVE_DIALOG_WINDOW_CHANGED",
+  "NATIVE_DIALOG_CAPTURE_INVALID",
+  "NATIVE_DIALOG_OCR_INVALID",
+  "NATIVE_DIALOG_OCR_MISMATCH",
+  "NATIVE_DIALOG_OCR_FAILED",
   "INVALID_NATIVE_HELPER_INPUT",
   "INVALID_NATIVE_HELPER_MODE",
   "NATIVE_HELPER_FAILED",

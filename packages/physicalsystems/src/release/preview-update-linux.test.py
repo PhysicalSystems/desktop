@@ -9,6 +9,8 @@ import time
 import sys
 import unittest
 import json
+import tempfile
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("preview_update_linux", pathlib.Path(__file__).with_name("preview-update-linux.py"))
@@ -164,6 +166,108 @@ class DialogTests(unittest.TestCase):
         self.assertTrue(callable(Atspi.Accessible.get_action_iface))
         self.assertTrue(callable(Atspi.Action.do_action))
         self.assertTrue(callable(Atspi.set_timeout))
+
+
+class X11DialogTests(unittest.TestCase):
+    version = "0.1.0-beta.7"
+
+    def tsv(self, version=None):
+        tokens = ("Install Physical Systems " + (version or self.version) + "? " + native.LINUX_CONFIRMATION_DETAIL).split()
+        lines = ["level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext"]
+        left, top, line, index = 10, 10, 1, 0
+        for text in tokens:
+            width = len(text) * 7
+            if left + width > 880:
+                left, top, line = 10, top + 20, line + 1
+            index += 1
+            lines.append(f"5\t1\t1\t1\t{line}\t{index}\t{left}\t{top}\t{width}\t12\t99\t{text}")
+            left += width + 8
+        for i, (text, left, width) in enumerate((("Install", 100, 42), ("update", 150, 42), ("Later", 600, 35))):
+            lines.append(f"5\t1\t1\t1\t20\t{i+1}\t{left}\t250\t{width}\t12\t99\t{text}")
+        return "\n".join(lines) + "\n"
+
+    def window(self, **changes):
+        return {"id": 123, "pid": 42, "title": "Update Ready", "dialog": True, "viewable": True,
+                "width": 900, "height": 300, "depth": 24, "visual": 33, "x": 20, "y": 30, **changes}
+
+    def test_exact_public_copy_determines_each_button_text_center(self):
+        self.assertEqual(native.dialog_ocr_point(self.tsv(), 900, 300, self.version, "install"), (171, 256))
+        self.assertEqual(native.dialog_ocr_point(self.tsv(), 900, 300, self.version, "later"), (617, 256))
+
+    def test_ocr_refuses_wrong_version_unknown_text_duplicate_buttons_low_confidence_and_bad_geometry(self):
+        original = self.tsv()
+        cases = [self.tsv("0.1.0-beta.8"), original.replace("\tUbuntu\n", "\tPrivate\n"),
+                 original + original.splitlines()[-1] + "\n", original.replace("\t99\tLater", "\t74\tLater"),
+                 original.replace("\t600\t250\t35\t", "\t890\t250\t35\t"),
+                 original.replace("\t600\t250\t35\t", "\t20\t250\t35\t")]
+        for tsv in cases:
+            with self.subTest(tsv=tsv[-100:]), self.assertRaisesRegex(native.QualificationError, "OCR_MISMATCH"):
+                native.dialog_ocr_point(tsv, 900, 300, self.version, "install")
+        with self.assertRaisesRegex(native.QualificationError, "OCR_INVALID"):
+            native.dialog_ocr_point(original, 2000, 300, self.version, "install")
+
+    def test_window_selection_requires_owned_exact_title_dialog_type_and_one_visible_match(self):
+        for change in ({"pid": 43}, {"title": "Other"}, {"dialog": False}, {"viewable": False}):
+            self.assertIsNone(native.find_x11_dialog([self.window(**change)], 42))
+        expected = self.window()
+        self.assertEqual(native.find_x11_dialog([self.window(pid=43), expected], 42), expected)
+        with self.assertRaisesRegex(native.QualificationError, "AMBIGUOUS"):
+            native.find_x11_dialog([expected, self.window(id=124)], 42)
+
+    def backend(self, **changes):
+        case = self
+        class Backend:
+            def __init__(self):
+                self.events, self.reads = [], 0
+                self.fail = changes.get("fail")
+            def windows(self, pid): return changes.get("windows", [case.window()])
+            def current(self, window):
+                self.reads += 1
+                if self.events and self.events[-1][0] == "release": return None
+                if self.reads == changes.get("change_on_read"): return case.window(pid=43)
+                return case.window()
+            def capture(self, window): return b"owned exact dialog PNG boundary"
+            def ocr(self, png): return changes.get("tsv", case.tsv())
+            def send(self, window, kind, point):
+                if kind == self.fail: raise native.QualificationError("NATIVE_DIALOG_ACTION_FAILED")
+                self.events.append((kind, point))
+        return Backend()
+
+    def invoke(self, backend, root, choice="install", identity=lambda pid: "123"):
+        with patch.object(native.time, "sleep", lambda _: None):
+            return native.click_x11_confirmation(backend, {"root": root, "applicationPid": 42,
+                "version": self.version, "choice": choice}, "123", identity)
+
+    def test_only_scoped_enter_motion_press_release_and_pre_auth_owned_screenshot(self):
+        for choice, point in (("install", (171, 256)), ("later", (617, 256))):
+            with tempfile.TemporaryDirectory() as root:
+                backend = self.backend()
+                self.assertTrue(self.invoke(backend, root, choice))
+                self.assertEqual(backend.events, [(kind, point) for kind in ("enter", "motion", "press", "release")])
+                screenshot = pathlib.Path(root) / ("native-dialog-" + choice + ".png")
+                self.assertEqual(screenshot.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(screenshot.read_bytes(), b"owned exact dialog PNG boundary")
+
+    def test_unknown_or_ambiguous_dialog_never_saves_screenshot_or_sends_input(self):
+        for changes in ({"tsv": self.tsv("0.1.0-beta.8")}, {"windows": [self.window(), self.window(id=124)]}):
+            with tempfile.TemporaryDirectory() as root:
+                backend = self.backend(**changes)
+                with self.assertRaises(native.QualificationError): self.invoke(backend, root)
+                self.assertEqual(backend.events, [])
+                self.assertEqual(list(pathlib.Path(root).iterdir()), [])
+
+    def test_identity_or_window_change_and_input_failure_stop_before_next_event(self):
+        for change, expected in (({"change_on_read": 4}, ["enter"]), ({"fail": "press"}, ["enter", "motion"])):
+            with tempfile.TemporaryDirectory() as root:
+                backend = self.backend(**change)
+                with self.assertRaises(native.QualificationError): self.invoke(backend, root)
+                self.assertEqual([event[0] for event in backend.events], expected)
+        with tempfile.TemporaryDirectory() as root:
+            backend = self.backend()
+            with self.assertRaisesRegex(native.QualificationError, "IDENTITY_CHANGED"):
+                self.invoke(backend, root, identity=lambda _: "new process start time")
+            self.assertEqual(backend.events, [])
+            self.assertEqual(list(pathlib.Path(root).iterdir()), [])
 
 
 if __name__ == "__main__":

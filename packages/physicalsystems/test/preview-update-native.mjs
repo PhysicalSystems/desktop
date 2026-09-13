@@ -272,6 +272,7 @@ try {
       "TARGET_DEBUG_ENDPOINT_UNCONFIRMED",
     )
     cdp = await connectRenderer(debug)
+    await wait(() => cdp.evaluate("Boolean(window.api?.storeGet)"), 90000, "TARGET_RENDERER_UNAVAILABLE")
     if ((await cdp.evaluate("window.api.storeGet('opencode.settings','preview-updater-test')")) !== nonce)
       throw Error("PREVIEW_UPDATE_TARGET_SETTING_UNCONFIRMED")
   }

@@ -165,13 +165,18 @@ native("confirmation requires matching native action plus successful helper exit
       )) as typeof spawn,
   })
   for (const choice of ["later", "install"] as const) {
-    await expect(
-      clickPreviewUpdateLinuxConfirmation(
-        { ...f, choice },
-        inert({ event: "clicked", action: choice, method: "at-spi" }),
-      ),
-    ).resolves.toEqual({ action: choice, method: "at-spi" })
+    for (const method of ["at-spi", "x11-ocr"] as const) {
+      await expect(
+        clickPreviewUpdateLinuxConfirmation({ ...f, choice }, inert({ event: "clicked", action: choice, method })),
+      ).resolves.toEqual({ action: choice, method })
+    }
   }
+  await expect(
+    clickPreviewUpdateLinuxConfirmation(
+      { ...f, choice: "install" },
+      inert({ event: "clicked", action: "install", method: "global-keyboard" }),
+    ),
+  ).rejects.toThrow("OUTPUT_INVALID")
   await expect(
     clickPreviewUpdateLinuxConfirmation(
       { ...f, choice: "install" },
@@ -310,7 +315,7 @@ test.skipIf(process.platform !== "linux")(
       child.once("close", resolve)
       child.once("error", reject)
     })
-    expect(output).toContain("Ran 12 tests")
+    expect(output).toContain("Ran 18 tests")
     expect(code).toBe(0)
   },
 )
