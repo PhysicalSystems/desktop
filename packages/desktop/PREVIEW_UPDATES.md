@@ -68,3 +68,36 @@ installation, restart, journal acknowledgement and retained user data on both
 platforms. Exercise native cancellation and interrupted-installation recovery.
 The current unsigned preview is not signed-updater qualification, and the
 existing stable updater gate stays disabled.
+
+## Disposable native updater test
+
+The manual **Desktop source checks** workflow has a `preview_updater_test` option
+for Windows 2025 and Ubuntu 24.04 hosted runners. Supply `updater_test_history` as
+the complete desktop version history, including drafts, in the form
+`{"complete":true,"versions":["0.1.0-beta.7","0.1.0-beta.6","0.1.0-beta.4","0.1.0-beta.2"]}`.
+Read the current release history before dispatching; this example is not an
+authoritative history snapshot.
+
+This builds the selected committed source as an explicitly unpublished
+`0.1.0-beta.1` fixture. The lower version allows the new updater to discover the
+existing public release through its unchanged production HTTPS flow. Both input
+records carry the test purpose, and public production, qualification and
+collection reject it. The workflow does not reserve a release, publish an
+installer, change the website, or alter the public version sequence.
+
+On each fresh runner, the test installs the fixture once, opens its actual
+titlebar Update button, checks the verified download, chooses **Later** in the
+real native dialog, then confirms installation. Windows uses the original
+interactive NSIS installer and observes its actual restarted process. Ubuntu
+uses the application's real `pkexec dpkg` request and authenticates through an
+owned Polkit agent with a temporary runner account. Neither test replaces the
+update feed, bypasses the application confirmation, or manually launches the
+target to manufacture restart evidence.
+
+The retained `result.json` identifies exact source, versions, installer hashes,
+completed stages and a fixed failure code. It verifies one preserved renderer
+setting and normal target closure. It is separate from release qualification:
+the current beta.7 target predates the new journal acknowledgement code, and the
+test does not exercise native interrupted-installation recovery or complete
+conversation/credential migration. Profiles, passwords, packages and raw app
+logs are not uploaded.

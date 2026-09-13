@@ -97,6 +97,8 @@ export function preparePublicProducerInputs(input: {
   expectedInputsSha256: string
 }) {
   const policy = validatePublicProducerPolicy(input.policy, input.expectedPolicySha256, input.sourceRevision)
+  if (input.release.upgradeLab === "unreleased-updater-test-only")
+    throw new PublicProducerError("Unreleased updater test inputs cannot enter the public producer")
   if (
     !/^[a-f0-9]{64}$/.test(input.expectedInputsSha256) ||
     input.release.sha256 !== input.expectedInputsSha256 ||

@@ -1,0 +1,333 @@
+// SPDX-License-Identifier: Apache-2.0
+import { expect, test } from "bun:test"
+import { ChildProcess, execFile } from "node:child_process"
+import { PassThrough } from "node:stream"
+import { mkdtemp, realpath, rm } from "node:fs/promises"
+import { join, win32 } from "node:path"
+import {
+  createPreviewUpdateWindowsNative,
+  createPreviewUpdateWindowsTransport,
+  previewUpdateWindowsExecutableReady,
+  previewUpdateWindowsScript,
+  previewUpdateWindowsTime,
+  type PreviewUpdateWindowsApplication,
+} from "./preview-update-windows"
+import { requireDisposablePublicRunner } from "./public-qualification"
+import { createWindowsReviewRequestTransport, windowsReviewNativeEnvironment } from "./windows-review-native"
+
+const baseline: PreviewUpdateWindowsApplication = {
+  pid: 50,
+  creationTime: "639249130000000000",
+  executable: "C:\\runner\\test\\install\\Physical Systems.exe",
+  version: "0.1.0-beta.1",
+  ownerSid: "S-1-5-21-123-456-789-1001",
+  sessionId: 1,
+  windowHandle: "12345",
+}
+const observation = {
+  executable: baseline.executable,
+  version: baseline.version,
+  after: "639249129999999999",
+}
+const observed = () => ({
+  status: "observed",
+  application: { ...baseline },
+  versionInfo: { ProductName: "Physical Systems", FileVersion: baseline.version, ProductVersion: "0.1.0.0" },
+})
+
+function fixture() {
+  const calls: {
+    child: ChildProcess
+    input: string
+    timeout: number
+    complete(error: unknown, stdout: string, stderr: string): void
+    unreferenced: boolean
+  }[] = []
+  const native = createPreviewUpdateWindowsTransport((options, complete) => {
+    const child = new ChildProcess()
+    Object.defineProperties(child, {
+      stdin: { value: new PassThrough() },
+      stdout: { value: new PassThrough() },
+      stderr: { value: new PassThrough() },
+    })
+    const call = { child, complete, timeout: options.timeout, input: "", unreferenced: false }
+    child.stdin!.on("data", (data) => {
+      call.input += data.toString()
+    })
+    child.unref = () => {
+      call.unreferenced = true
+    }
+    calls.push(call)
+    return child
+  }, 20)
+  return {
+    calls,
+    native,
+    reply(value: unknown) {
+      calls.at(-1)!.complete(null, JSON.stringify(value), "")
+      calls.at(-1)!.child.emit("close", 0)
+    },
+  }
+}
+
+test("an observed process binds fresh creation, path, preview version and native PE version metadata", async () => {
+  const f = fixture()
+  const result = f.native.observe(observation)
+  expect(JSON.parse(f.calls[0]!.input)).toEqual({ ...observation, operation: "observe" })
+  expect(f.calls[0]!.timeout).toBe(12000)
+  let settled = false
+  void result.then(() => {
+    settled = true
+  })
+  f.calls[0]!.complete(null, JSON.stringify(observed()), "")
+  await Promise.resolve()
+  expect(settled).toBe(false)
+  f.calls[0]!.child.emit("close", 0)
+  expect(await result).toEqual(baseline)
+
+  const next = f.native.observe({ ...observation, version: "0.1.0-beta.7", previousPid: baseline.pid })
+  f.reply({
+    ...observed(),
+    application: { ...baseline, pid: 60, version: "0.1.0-beta.7" },
+    versionInfo: { ...observed().versionInfo, FileVersion: "0.1.0-beta.7" },
+  })
+  expect((await next)?.pid).toBe(60)
+})
+
+test("no visible matching process is waiting, while malformed/foreign/stale observations fail closed", async () => {
+  const f = fixture()
+  const waiting = f.native.observe(observation)
+  f.reply({ status: "waiting" })
+  expect(await waiting).toBeUndefined()
+  const invalid: unknown[] = [
+    { status: "waiting", raw: "PRIVATE" },
+    { status: "observed", application: baseline },
+    { ...observed(), application: { ...baseline, pid: 0 } },
+    { ...observed(), application: { ...baseline, executable: "C:\\foreign\\Physical Systems.exe" } },
+    { ...observed(), application: { ...baseline, creationTime: observation.after } },
+    { ...observed(), application: { ...baseline, version: "0.1.0-beta.7" } },
+    { ...observed(), application: { ...baseline, ownerSid: "S-1-5-18" } },
+    { ...observed(), application: { ...baseline, sessionId: 0 } },
+    { ...observed(), application: { ...baseline, windowHandle: "0" } },
+    { ...observed(), application: { ...baseline, commandLine: "PRIVATE" } },
+    { ...observed(), versionInfo: { ...observed().versionInfo, FileVersion: "0.1.0-beta.2" } },
+    { ...observed(), versionInfo: { ...observed().versionInfo, ProductName: "Physical Systems Candidate" } },
+    { ...observed(), versionInfo: { ...observed().versionInfo, ProductVersion: "0.1.0-beta.1" } },
+  ]
+  for (const output of invalid) {
+    const result = f.native.observe(observation)
+    f.reply(output)
+    await expect(result).rejects.toThrow()
+  }
+  const reused = f.native.observe({ ...observation, previousPid: baseline.pid })
+  f.reply(observed())
+  await expect(reused).rejects.toThrow("UNCONFIRMED")
+})
+
+test("confirmation uses only the exact requested native action and normal close makes no exit claim", async () => {
+  const f = fixture()
+  for (const action of ["Later", "Install update"] as const) {
+    const input = { application: baseline, version: "0.1.0-beta.7", action }
+    const waiting = f.native.confirm(input)
+    f.reply({ status: "waiting" })
+    expect(await waiting).toBe("waiting")
+    const confirmation = f.native.confirm(input)
+    expect(JSON.parse(f.calls.at(-1)!.input)).toEqual({ ...input, operation: "confirm" })
+    f.reply({ status: "invoked", action })
+    expect(await confirmation).toBe("invoked")
+  }
+  const other = fixture()
+  const wrongAction = other.native.confirm({ application: baseline, version: "0.1.0-beta.7", action: "Later" })
+  other.reply({ status: "invoked", action: "Install update" })
+  await expect(wrongAction).rejects.toThrow("UNCONFIRMED")
+  await expect(other.native.close({ application: baseline })).rejects.toThrow("UNCONFIRMED")
+  expect(other.calls).toHaveLength(1)
+  const close = f.native.close({ application: baseline })
+  expect(JSON.parse(f.calls.at(-1)!.input)).toEqual({ operation: "close", application: baseline })
+  f.reply({ status: "close-requested" })
+  expect(await close).toBeUndefined()
+  const running = f.native.exited({ application: baseline })
+  f.reply({ status: "running" })
+  expect(await running).toBe(false)
+  const exited = f.native.exited({ application: baseline })
+  f.reply({ status: "exited" })
+  expect(await exited).toBe(true)
+  const uncertain = f.native.exited({ application: baseline })
+  f.reply({ status: "waiting" })
+  await expect(uncertain).rejects.toThrow("UNCONFIRMED")
+})
+
+test("invalid requests do not dispatch native code or allow shell/script/path arguments", async () => {
+  const f = fixture()
+  for (const changed of [
+    { executable: "C:\\runner\\test\\..\\Physical Systems.exe" },
+    { executable: "C:\\runner\\test\\Physical Systems.exe:stream" },
+    { executable: "\\\\server\\test\\Physical Systems.exe" },
+    { executable: "C:\\runner\\test \\Physical Systems.exe" },
+    { executable: "C:\\runner\\test\\Other.exe" },
+    { after: "1e20" },
+    { after: "3155378976000000000" },
+    { previousPid: NaN },
+    { version: "0.1.0-beta.01" },
+    { version: "0.1.0-beta.9007199254740992" },
+    { version: "0.1.0" },
+    { script: "PRIVATE" },
+  ])
+    await expect(f.native.observe({ ...observation, ...changed })).rejects.toThrow("UNCONFIRMED")
+  await expect(
+    f.native.confirm({ application: { ...baseline, pid: -1 }, version: "0.1.0-beta.7", action: "Later" }),
+  ).rejects.toThrow("UNCONFIRMED")
+  await expect(
+    f.native.confirm({ application: baseline, version: "0.1.0-beta.7", action: "arbitrary" as "Later" }),
+  ).rejects.toThrow("UNCONFIRMED")
+  expect(f.calls).toHaveLength(0)
+})
+
+test("native errors are authored and unconfirmed helper exit permanently prevents another native action", async () => {
+  const f = fixture()
+  const failed = f.native.confirm({ application: baseline, version: "0.1.0-beta.7", action: "Install update" })
+  f.calls[0]!.complete({ code: 1, message: "PRIVATE ERROR" }, "PRIVATE STDOUT", "PRIVATE STDERR")
+  f.calls[0]!.child.emit("close", 1)
+  const error = await failed.catch((value: unknown) => value)
+  expect(error).toBeInstanceOf(Error)
+  expect(String(error)).not.toContain("PRIVATE")
+
+  for (const phase of ["dialog", "PRIVATE TRAP"]) {
+    const f = fixture()
+    const unreadable = f.native.observe(observation)
+    f.reply({ status: "unreadable", phase })
+    await expect(unreadable).rejects.toThrow(`UNCONFIRMED:${phase === "dialog" ? "dialog" : "unknown"}`)
+  }
+
+  const owner = fixture()
+  const uncertain = owner.native.confirm({ application: baseline, version: "0.1.0-beta.7", action: "Install update" })
+  owner.calls[0]!.complete(null, '{"status":"invoked","action":"Install update"}', "")
+  await expect(uncertain).rejects.toThrow("UNCONFIRMED")
+  expect(owner.calls[0]!.unreferenced).toBe(true)
+  expect(owner.calls[0]!.child.stdin!.destroyed).toBe(true)
+  owner.calls[0]!.child.emit("close", 0)
+  await expect(owner.native.close({ application: baseline })).rejects.toThrow("UNCONFIRMED")
+  await expect(owner.native.observe(observation)).rejects.toThrow("UNCONFIRMED")
+  expect(owner.calls).toHaveLength(1)
+})
+
+test("production native ownership rejects unmarked or local contexts, and timestamps share native UTC tick units", async () => {
+  await expect(createPreviewUpdateWindowsNative({ env: {}, root: "C:\\owned" })).rejects.toThrow(
+    "REQUIRES_DISPOSABLE_TEST",
+  )
+  await expect(
+    createPreviewUpdateWindowsNative({ env: { ...process.env, PHYSICALSYSTEMS_UPDATER_TEST: "0" }, root: "C:\\owned" }),
+  ).rejects.toThrow("REQUIRES_DISPOSABLE_TEST")
+  const before = Date.now()
+  const time = (BigInt(previewUpdateWindowsTime()) - 621355968000000000n) / 10000n
+  expect(time >= BigInt(before) && time <= BigInt(Date.now())).toBe(true)
+  const encoded = Buffer.from(previewUpdateWindowsScript, "utf16le").toString("base64")
+  expect(encoded.length + 1024).toBeLessThan(32767)
+})
+
+test("NSIS replacement waits on missing owned paths while still rejecting links, escapes and unreadable ancestors", async () => {
+  const files = {
+    inspect: async (path: string) => ({
+      file: path === baseline.executable,
+      directory: path !== baseline.executable,
+      symbolicLink: false,
+    }),
+    canonical: async (path: string) => path,
+  }
+  const missing = () => {
+    throw Object.assign(Error("PRIVATE"), { code: "ENOENT" })
+  }
+  expect(await previewUpdateWindowsExecutableReady(baseline.executable, "C:\\runner", files)).toBe(true)
+  expect(
+    await previewUpdateWindowsExecutableReady(baseline.executable, "C:\\runner", {
+      ...files,
+      inspect: async (path) => (path.includes("\\install") ? missing() : files.inspect(path)),
+    }),
+  ).toBe(false)
+  expect(
+    await previewUpdateWindowsExecutableReady(baseline.executable, "C:\\runner", {
+      ...files,
+      canonical: async (path) => (path === baseline.executable ? missing() : path),
+    }),
+  ).toBe(false)
+  for (const mode of ["link", "escape", "permission", "directory"] as const) {
+    const boundary = previewUpdateWindowsExecutableReady(baseline.executable, "C:\\runner", {
+      inspect: async (path) => {
+        if (path === baseline.executable) return missing()
+        if (mode === "permission") throw Object.assign(Error("PRIVATE"), { code: "EACCES" })
+        return { file: false, directory: mode !== "directory", symbolicLink: mode === "link" }
+      },
+      canonical: async (path) => (mode === "escape" ? "C:\\foreign" : path),
+    })
+    await expect(boundary).rejects.toThrow("UNCONFIRMED")
+  }
+  await expect(
+    previewUpdateWindowsExecutableReady("C:\\foreign\\Physical Systems.exe", "C:\\runner", files),
+  ).rejects.toThrow("UNCONFIRMED")
+})
+
+const hostedWindows =
+  process.platform === "win32" &&
+  process.env.CI === "true" &&
+  process.env.GITHUB_ACTIONS === "true" &&
+  process.env.RUNNER_ENVIRONMENT === "github-hosted" &&
+  process.env.RUNNER_OS === "Windows" &&
+  process.env.GITHUB_REPOSITORY === "PhysicalSystems/desktop"
+test.skipIf(!hostedWindows)(
+  "hosted Windows parses the exact fixed script and loads native UI Automation without invoking a control",
+  async () => {
+    const root = await mkdtemp(join(await realpath(process.env.RUNNER_TEMP!), "preview-update-syntax-"))
+    await requireDisposablePublicRunner(process.env, root)
+    const environment = windowsReviewNativeEnvironment(process.env, root)
+    const command = win32.join(environment.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    const script = String.raw`
+$ErrorActionPreference='Stop'
+$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
+[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+trap {[Console]::Out.Write('{"status":"unreadable"}');exit 1}
+$request=ConvertFrom-Json -InputObject ([Console]::In.ReadLine())
+$tokens=$null;$errors=$null
+$null=[Management.Automation.Language.Parser]::ParseInput($request.script,[ref]$tokens,[ref]$errors)
+if($errors.Count -ne 0){throw 'syntax'}
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+if(![Windows.Automation.AutomationElement] -or ![Windows.Automation.InvokePattern]){throw 'types'}
+[Console]::Out.Write('{"syntax":true,"uiAutomation":true,"noNativeActions":true}')
+`
+    let safe = false
+    const native = createWindowsReviewRequestTransport<{ script: string }>(
+      (deadline, complete) =>
+        execFile(
+          command,
+          [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Mta",
+            "-EncodedCommand",
+            Buffer.from(script, "utf16le").toString("base64"),
+          ],
+          {
+            cwd: root,
+            env: environment,
+            shell: false,
+            windowsHide: true,
+            encoding: "utf8",
+            maxBuffer: 8192,
+            timeout: deadline.timeout,
+          },
+          complete,
+        ),
+      () => 12000,
+    )
+    try {
+      const result = await native({ script: previewUpdateWindowsScript })
+      safe = true
+      expect(result).toEqual({ syntax: true, uiAutomation: true, noNativeActions: true })
+    } finally {
+      if (safe) await rm(root, { recursive: true, force: true })
+    }
+  },
+  20000,
+)
