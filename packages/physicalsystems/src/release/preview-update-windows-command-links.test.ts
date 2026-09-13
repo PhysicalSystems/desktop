@@ -32,8 +32,11 @@ const fixture = String.raw`
 namespace PreviewUpdateFixture {
   using System;
   using System.Diagnostics;
+  using System.Collections.Generic;
   using System.Runtime.InteropServices;
+  using System.Text;
   using System.Threading;
+  using System.Windows.Automation;
   public static class TaskDialog {
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
     struct Activation {
@@ -75,16 +78,100 @@ namespace PreviewUpdateFixture {
     [DllImport("comctl32.dll", CharSet=CharSet.Unicode)] static extern int TaskDialogIndirect(ref Config config, out int button, out int radio, out bool verification);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
+    delegate bool EnumChild(IntPtr window, IntPtr data);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr window, EnumChild callback, IntPtr data);
+    [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr window);
+    [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr window);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr window, uint flags);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern int GetClassName(IntPtr window, StringBuilder name, int count);
+    [DllImport("user32.dll", EntryPoint="GetWindowLongW")] static extern int GetStyle(IntPtr window, int index);
+    [DllImport("user32.dll", EntryPoint="SendMessageTimeoutW", CharSet=CharSet.Unicode)] static extern IntPtr ReadNativeText(IntPtr window, uint message, IntPtr count, StringBuilder text, uint flags, uint timeout, out UIntPtr result);
     static IntPtr dialog;
     static volatile bool timedOut, nativeFailed;
     static int selected;
     static readonly Callback notify = OnNotification;
     public static string Phase = "start";
     public static PreviewUpdateCommandLink.Facts InstallFacts, LaterFacts;
+    public sealed class UiaFact {
+      public string Name;
+      public int Type;
+      public bool Invoke, Enabled, Offscreen, HasHwnd, Owned;
+    }
+    public sealed class NativeFact {
+      public string Class, Name, Id;
+      public int Style;
+      public bool Owned, Child;
+    }
+    public static UiaFact[] Uia=new UiaFact[0];
+    public static NativeFact[] Native=new NativeFact[0];
+    public static int UiaCount, NativeCount;
+    public static bool DiagnosticOwned, UiaFailed, NativeFailed;
+    static string NameCategory(string name) {
+      if(name=="Install update") return "install";
+      if(name=="Later") return "later";
+      if(name=="Install Physical Systems 0.1.0-beta.7 now?") return "message";
+      return "other";
+    }
+    static void InspectUia(AutomationElement parent, uint pid, int depth, List<UiaFact> rows) {
+      if(depth>=16 || UiaCount>=64) return;
+      var walker=TreeWalker.RawViewWalker;
+      var child=walker.GetFirstChild(parent);
+      while(child!=null && UiaCount<64) {
+        UiaCount++;
+        if(rows.Count<16) {
+          var current=child.Current;
+          object pattern;
+          rows.Add(new UiaFact {
+            Name=NameCategory(current.Name), Type=current.ControlType.Id,
+            Invoke=child.TryGetCurrentPattern(InvokePattern.Pattern,out pattern),
+            Enabled=current.IsEnabled, Offscreen=current.IsOffscreen,
+            HasHwnd=current.NativeWindowHandle!=0, Owned=current.ProcessId==pid
+          });
+        }
+        InspectUia(child,pid,depth+1,rows);
+        child=walker.GetNextSibling(child);
+      }
+    }
+    static void Diagnose(IntPtr window, uint pid) {
+      uint owner;
+      DiagnosticOwned=window!=IntPtr.Zero && window==Window() &&
+        GetWindowThreadProcessId(window,out owner)!=0 && owner==pid;
+      if(!DiagnosticOwned) return;
+      var nativeRows=new List<NativeFact>();
+      try {
+        EnumChildWindows(window,delegate(IntPtr child, IntPtr data) {
+          if(NativeCount>=64) return false;
+          NativeCount++;
+          if(nativeRows.Count>=16) return true;
+          uint childPid; GetWindowThreadProcessId(child,out childPid);
+          var name=new StringBuilder(128);
+          GetClassName(child,name,name.Capacity);
+          string nativeClass=name.ToString();
+          string classCategory=String.Equals(nativeClass,"Button",StringComparison.OrdinalIgnoreCase)?"Button":
+            String.Equals(nativeClass,"DirectUIHWND",StringComparison.OrdinalIgnoreCase)?"DirectUIHWND":
+            String.Equals(nativeClass,"CtrlNotifySink",StringComparison.OrdinalIgnoreCase)?"CtrlNotifySink":"other";
+          var text=new StringBuilder(128); UIntPtr read;
+          bool textRead=ReadNativeText(child,0x000D,new IntPtr(text.Capacity),text,2,100,out read)!=IntPtr.Zero;
+          int id=GetDlgCtrlID(child);
+          nativeRows.Add(new NativeFact {
+            Class=classCategory,
+            Name=textRead?NameCategory(text.ToString()):"other", Id=id==100?"100":id==101?"101":"other",
+            Style=GetStyle(child,-16)&15, Owned=childPid==pid,
+            Child=IsChild(window,child) && GetAncestor(child,2)==window
+          });
+          return true;
+        },IntPtr.Zero);
+      } catch { NativeFailed=true; }
+      Native=nativeRows.ToArray();
+      var uiaRows=new List<UiaFact>();
+      try { InspectUia(AutomationElement.FromHandle(window),pid,0,uiaRows); }
+      catch { UiaFailed=true; }
+      Uia=uiaRows.ToArray();
+    }
     static int OnNotification(IntPtr window, uint message, UIntPtr w, IntPtr l, IntPtr data) {
       if(message==0) Interlocked.Exchange(ref dialog,window); // TDN_CREATED
       if(message==5) Interlocked.Exchange(ref dialog,IntPtr.Zero); // TDN_DESTROYED
-      if(message==4 && w.ToUInt64()>=10000) { // TDN_TIMER
+      if(message==4 && w.ToUInt64()>=20000) { // TDN_TIMER; includes bounded failure diagnostics.
         timedOut=true;
         PostMessage(window,0x0010,IntPtr.Zero,IntPtr.Zero);
       }
@@ -130,6 +217,8 @@ namespace PreviewUpdateFixture {
       if(choice!=100 && choice!=101) throw new InvalidOperationException();
       timedOut=false; nativeFailed=false; selected=0;
       InstallFacts=null; LaterFacts=null;
+      Uia=new UiaFact[0]; Native=new NativeFact[0]; UiaCount=0; NativeCount=0;
+      DiagnosticOwned=false; UiaFailed=false; NativeFailed=false;
       uint pid=(uint)Process.GetCurrentProcess().Id;
       var thread=new Thread(delegate() { Show(manifest); });
       thread.IsBackground=true;
@@ -149,8 +238,10 @@ namespace PreviewUpdateFixture {
           }
           Thread.Sleep(25);
         }
-        if(nativeFailed || install==null || later==null || !install.Ready || !later.Ready || install.Handle==later.Handle)
+        if(nativeFailed || install==null || later==null || !install.Ready || !later.Ready || install.Handle==later.Handle) {
+          Diagnose(window,pid);
           throw new InvalidOperationException();
+        }
         Phase="ownership";
         if(PreviewUpdateCommandLink.Read(window,UInt32.MaxValue,101).Ready) throw new InvalidOperationException();
         bool rejected=false;
@@ -201,11 +292,21 @@ trap {
     $phase=[PreviewUpdateFixture.TaskDialog]::Phase
     $diagnostics.install=Read-FixtureFacts ([PreviewUpdateFixture.TaskDialog]::InstallFacts)
     $diagnostics.later=Read-FixtureFacts ([PreviewUpdateFixture.TaskDialog]::LaterFacts)
+    $diagnostics.owned=[PreviewUpdateFixture.TaskDialog]::DiagnosticOwned
+    $diagnostics.uia=@([PreviewUpdateFixture.TaskDialog]::Uia)
+    $diagnostics.native=@([PreviewUpdateFixture.TaskDialog]::Native)
+    $diagnostics.uiaCount=[PreviewUpdateFixture.TaskDialog]::UiaCount
+    $diagnostics.nativeCount=[PreviewUpdateFixture.TaskDialog]::NativeCount
+    $diagnostics.uiaFailed=[PreviewUpdateFixture.TaskDialog]::UiaFailed
+    $diagnostics.nativeFailed=[PreviewUpdateFixture.TaskDialog]::NativeFailed
   }
   [Console]::Out.Write((ConvertTo-Json -InputObject @{status='failed';phase=$phase;diagnostics=$diagnostics} -Compress -Depth 4));exit 0
 }
 $request=ConvertFrom-Json -InputObject ([Console]::In.ReadLine())
-Add-Type -TypeDefinition $request.source
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
+Add-Type -TypeDefinition $request.source -ReferencedAssemblies @('System.dll','System.Core.dll',[Windows.Automation.AutomationElement].Assembly.Location,[Windows.Automation.AutomationIdentifier].Assembly.Location,[Windows.Rect].Assembly.Location)
 $later=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,101)
 $install=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,100)
 [int[]]$selected=@($later,$install)
