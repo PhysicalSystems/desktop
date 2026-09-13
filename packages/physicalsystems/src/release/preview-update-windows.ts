@@ -5,6 +5,7 @@ import { win32 } from "node:path"
 import { requireDisposablePublicRunner } from "./public-qualification"
 import { verifyWindowsVersionInfo } from "./qualification"
 import { createWindowsReviewRequestTransport, windowsReviewNativeEnvironment } from "./windows-review-native"
+import { windowsAppShutdownNative, windowsAppShutdownSnapshot } from "./windows-app-shutdown-native"
 
 export type PreviewUpdateWindowsApplication = {
   pid: number
@@ -42,11 +43,65 @@ const nativePhases = [
   "version",
   "window",
   "dialog",
+  "dialog-assemblies",
+  "dialog-window-query",
+  "dialog-window-match",
+  "dialog-identity",
+  "dialog-controls",
+  "dialog-message",
+  "dialog-buttons",
+  "dialog-button-state",
+  "dialog-pattern",
+  "dialog-owner-recheck",
   "invoke",
   "close",
   "exit",
   "output",
 ]
+const countFields = [
+  "ownedWindows",
+  "matchingDialogs",
+  "controls",
+  "messageMatches",
+  "messageTexts",
+  "installButtons",
+  "laterButtons",
+] as const
+const booleanFields = [
+  "dialogOwned",
+  "dialogEnabled",
+  "dialogOffscreen",
+  "buttonOwned",
+  "buttonEnabled",
+  "buttonOffscreen",
+  "invokePattern",
+  "dialogHandleOwned",
+] as const
+type NativeObservation = { phase: string } & Partial<Record<(typeof countFields)[number], number>> &
+  Partial<Record<(typeof booleanFields)[number], boolean>>
+function nativeObservation(phase: unknown, counts: unknown): Readonly<NativeObservation> {
+  const result: NativeObservation = {
+    phase: typeof phase === "string" && nativePhases.includes(phase) ? phase : "unknown",
+  }
+  if (object(counts)) {
+    for (const field of countFields) {
+      const value = counts[field]
+      if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 257) result[field] = value
+    }
+    for (const field of booleanFields) if (typeof counts[field] === "boolean") result[field] = counts[field]
+  }
+  return Object.freeze(result)
+}
+
+/** Only authored phase IDs and bounded counts/booleans may enter CI receipts. */
+export function readPreviewUpdateWindowsObservation(error: unknown) {
+  try {
+    if (!object(error) || !object(error.previewUpdateWindowsObservation)) return
+    return nativeObservation(error.previewUpdateWindowsObservation.phase, error.previewUpdateWindowsObservation)
+  } catch {
+    return
+  }
+}
 const pid = (value: unknown): value is number =>
   typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 0xffffffff
 const ticks = (value: unknown): value is string =>
@@ -141,7 +196,8 @@ $env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules')
 [Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $script:phase='input'
-trap {[Console]::Out.Write((ConvertTo-Json -InputObject @{status='unreadable';phase=$script:phase} -Compress));exit 0}
+$script:diagnostics=@{}
+trap {[Console]::Out.Write((ConvertTo-Json -InputObject @{status='unreadable';phase=$script:phase;diagnostics=$script:diagnostics} -Compress -Depth 4));exit 0}
 $raw=[Console]::In.ReadLine()
 if(!$raw -or $raw.Length -gt 8192){throw 'input'}
 $request=ConvertFrom-Json -InputObject $raw
@@ -227,32 +283,56 @@ function Observe-App($requestValue){
 }
 function Confirm-App($requestValue){
   $null=Require-App $requestValue.application
-  $script:phase='dialog'
+  $script:phase='dialog-assemblies'
   Add-Type -AssemblyName UIAutomationClient
   Add-Type -AssemblyName UIAutomationTypes
+  $script:phase='dialog-window-query'
   $condition=[Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$requestValue.application.pid)
   $windows=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Children,$condition)
+  $script:diagnostics.ownedWindows=[Math]::Min(257,$windows.Count)
   if($windows.Count -gt 16){throw 'bounds'}
+  $script:phase='dialog-window-match'
   $dialogs=@($windows | Where-Object {$_.Current.Name -ceq 'Update Ready'})
+  $script:diagnostics.matchingDialogs=[Math]::Min(257,$dialogs.Count)
   if($dialogs.Count -eq 0){return @{status='waiting'}}
   if($dialogs.Count -ne 1){throw 'ambiguous'}
   $dialog=$dialogs[0]
-  if($dialog.Current.ProcessId -ne $requestValue.application.pid -or !$dialog.Current.IsEnabled -or $dialog.Current.IsOffscreen){throw 'dialog'}
+  $script:phase='dialog-identity'
+  $script:diagnostics.dialogOwned=$dialog.Current.ProcessId -eq $requestValue.application.pid
+  $script:diagnostics.dialogEnabled=$dialog.Current.IsEnabled
+  $script:diagnostics.dialogOffscreen=$dialog.Current.IsOffscreen
+  if(!$script:diagnostics.dialogOwned -or !$script:diagnostics.dialogEnabled -or $script:diagnostics.dialogOffscreen){throw 'dialog'}
+  $script:phase='dialog-controls'
   $controls=$dialog.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+  $script:diagnostics.controls=[Math]::Min(257,$controls.Count)
   if($controls.Count -gt 128){throw 'bounds'}
-  $message=@($controls | Where-Object {$_.Current.Name -ceq ('Install Physical Systems '+$requestValue.version+'?')})
+  $script:phase='dialog-message'
+  $messageMatches=@($controls | Where-Object {$_.Current.Name -ceq ('Install Physical Systems '+$requestValue.version+'?')})
+  $script:diagnostics.messageMatches=[Math]::Min(257,$messageMatches.Count)
+  $message=@($messageMatches | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Text})
+  $script:diagnostics.messageTexts=[Math]::Min(257,$message.Count)
+  $script:phase='dialog-buttons'
   $install=@($controls | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.Name -ceq 'Install update'})
   $later=@($controls | Where-Object {$_.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $_.Current.Name -ceq 'Later'})
+  $script:diagnostics.installButtons=[Math]::Min(257,$install.Count)
+  $script:diagnostics.laterButtons=[Math]::Min(257,$later.Count)
   if($message.Count -ne 1 -or $install.Count -ne 1 -or $later.Count -ne 1){throw 'dialog'}
   if($requestValue.action -ceq 'Later'){$button=$later[0]}elseif($requestValue.action -ceq 'Install update'){$button=$install[0]}else{throw 'action'}
-  if($button.Current.ProcessId -ne $requestValue.application.pid -or !$button.Current.IsEnabled -or $button.Current.IsOffscreen){throw 'button'}
+  $script:phase='dialog-button-state'
+  $script:diagnostics.buttonOwned=$button.Current.ProcessId -eq $requestValue.application.pid
+  $script:diagnostics.buttonEnabled=$button.Current.IsEnabled
+  $script:diagnostics.buttonOffscreen=$button.Current.IsOffscreen
+  if(!$script:diagnostics.buttonOwned -or !$script:diagnostics.buttonEnabled -or $script:diagnostics.buttonOffscreen){throw 'button'}
+  $script:phase='dialog-pattern'
   $pattern=$null
-  if(!$button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){throw 'pattern'}
+  $script:diagnostics.invokePattern=$button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)
+  if(!$script:diagnostics.invokePattern){throw 'pattern'}
   $null=Require-App $requestValue.application
-  $script:phase='dialog'
+  $script:phase='dialog-owner-recheck'
   [uint32]$dialogPid=0
   $null=[PreviewUpdateWindow]::GetWindowThreadProcessId([IntPtr]$dialog.Current.NativeWindowHandle,[ref]$dialogPid)
-  if($dialogPid -ne $requestValue.application.pid){throw 'changed'}
+  $script:diagnostics.dialogHandleOwned=$dialogPid -eq $requestValue.application.pid
+  if(!$script:diagnostics.dialogHandleOwned){throw 'changed'}
   $script:phase='invoke'
   ([Windows.Automation.InvokePattern]$pattern).Invoke()
   return @{status='invoked';action=$requestValue.action}
@@ -297,8 +377,10 @@ export function createPreviewUpdateWindowsTransport(
     const value = await request(checked)
     if (!object(value)) throw failure()
     if (value.status === "unreadable") {
-      const phase = typeof value.phase === "string" && nativePhases.includes(value.phase) ? value.phase : "unknown"
-      throw Error(`PREVIEW_UPDATE_WINDOWS_UNCONFIRMED:${phase}`)
+      const observation = nativeObservation(value.phase, value.diagnostics)
+      throw Object.assign(Error(`PREVIEW_UPDATE_WINDOWS_UNCONFIRMED:${observation.phase}`), {
+        previewUpdateWindowsObservation: observation,
+      })
     }
     if (checked.operation === "observe") {
       if (value.status === "waiting" && keys(value, ["status"])) return { status: "waiting" }
@@ -408,6 +490,60 @@ export async function previewUpdateWindowsExecutableReady(
   return !missing
 }
 
+/** Retain only the process generations present before confirmation/close. The
+ * final query cannot adopt the later installer into this departure assertion.
+ * This grants observation authority only, never permission to signal a PID. */
+export async function capturePreviewUpdateWindowsShutdown(
+  input: { application: PreviewUpdateWindowsApplication },
+  query: Awaited<ReturnType<typeof windowsAppShutdownNative>>,
+) {
+  const expected = application(input.application)
+  const unreadable = () => Error("PREVIEW_UPDATE_WINDOWS_SHUTDOWN_UNCONFIRMED")
+  const read = async (pids?: number[]) => {
+    const result = await query({ rootPid: expected.pid, ...(pids ? { pids } : {}) }).catch(() => {
+      throw unreadable()
+    })
+    if (result.quiescence !== "confirmed") throw unreadable()
+    const snapshot = windowsAppShutdownSnapshot(result.snapshot)
+    if (snapshot.status !== "COMPLETE" || snapshot.processes.some((row) => !row.birth || !row.executable))
+      throw unreadable()
+    return snapshot.processes
+  }
+  const initial = await read()
+  const retained = new Map(initial.map((row) => [row.pid, row]))
+  const root = retained.get(expected.pid)
+  if (
+    !root ||
+    root.birth !== expected.creationTime ||
+    root.executable!.toLowerCase() !== expected.executable.toLowerCase()
+  )
+    throw unreadable()
+  const selected = new Set([expected.pid])
+  for (let count = -1; count !== selected.size; ) {
+    count = selected.size
+    for (const row of initial) if (selected.has(row.parent)) selected.add(row.pid)
+  }
+  if (
+    initial.some((row) => {
+      if (row.pid === expected.pid) return false
+      const parent = retained.get(row.parent)
+      return (
+        !selected.has(row.pid) ||
+        !parent ||
+        BigInt(row.birth!) < BigInt(parent.birth!) ||
+        BigInt(row.birth!) < BigInt(root.birth!)
+      )
+    })
+  )
+    throw unreadable()
+  const pids = [...retained.keys()].sort((a, b) => a - b)
+  return async () => {
+    const final = await read(pids)
+    if (final.some((row) => !retained.has(row.pid))) throw unreadable()
+    return !final.some((row) => row.birth === retained.get(row.pid)!.birth)
+  }
+}
+
 /** Test-only native ownership; never available on a workstation or release job. */
 export async function createPreviewUpdateWindowsNative(input: { env: NodeJS.ProcessEnv; root: string }) {
   if (
@@ -459,11 +595,16 @@ export async function createPreviewUpdateWindowsNative(input: { env: NodeJS.Proc
       complete,
     ),
   )
+  const shutdown = await windowsAppShutdownNative(input.env, input.root)
   const temporary = (await realpath(input.env.RUNNER_TEMP!)).toLowerCase()
   const owned = async (path: string) => {
     if (!(await previewUpdateWindowsExecutableReady(path, temporary))) throw failure()
   }
   return {
+    async captureShutdown(request: { application: PreviewUpdateWindowsApplication }) {
+      await owned(request.application.executable)
+      return capturePreviewUpdateWindowsShutdown(request, shutdown)
+    },
     async observe(request: Observe) {
       if (!(await previewUpdateWindowsExecutableReady(request.executable, temporary))) return undefined
       return native.observe(request)

@@ -80,10 +80,17 @@ authoritative history snapshot.
 
 This builds the selected committed source as an explicitly unpublished
 `0.1.0-beta.1` fixture. The lower version allows the new updater to discover the
-existing public release through its unchanged production HTTPS flow. Both input
-records carry the test purpose, and public production, qualification and
+existing public release through its unchanged production HTTPS flow. Both baseline
+input records carry the test purpose, and public production, qualification and
 collection reject it. The workflow does not reserve a release, publish an
 installer, change the website, or alter the public version sequence.
+
+The same clean source and complete history also produce a separate private
+startup-acknowledgement fixture through ordinary next-version allocation, such as
+`0.1.0-beta.8` after beta.7. Its version is derived from the supplied history, not
+hardcoded or reserved. It uses normal public build inputs with publication
+disabled and remains inside the disposable runner; no producer, qualification,
+collection or publication command consumes it.
 
 On each fresh runner, the test installs the fixture once, opens its actual
 titlebar Update button, checks the verified download, chooses **Later** in the
@@ -94,10 +101,20 @@ owned Polkit agent with a temporary runner account. Neither test replaces the
 update feed, bypasses the application confirmation, or manually launches the
 target to manufacture restart evidence.
 
+After observing that public target close normally, a separate manual phase checks
+the exact attempt journal left by the real update. It installs the private newer
+fixture, verifies that installation preserved the journal, and explicitly launches
+the new code on the same profile. The test then observes automatic startup
+acknowledgement clearing that attempt and verifies the retained setting. It does
+not call Check installation or force another update check to clear the journal.
+This phase proves manual-install startup acknowledgement; it does not claim an
+in-app update to the private newer version or interrupted-installation recovery.
+
 The retained `result.json` identifies exact source, versions, installer hashes,
 completed stages and a fixed failure code. It verifies one preserved renderer
-setting and normal target closure. It is separate from release qualification:
-the current beta.7 target predates the new journal acknowledgement code, and the
-test does not exercise native interrupted-installation recovery or complete
-conversation/credential migration. Profiles, passwords, packages and raw app
-logs are not uploaded.
+setting and normal target closure, and reports the manual startup acknowledgement
+separately from the actual in-app update. It is separate from release
+qualification: the current beta.7 target predates the new journal acknowledgement
+code, and the test does not exercise native interrupted-installation recovery or
+complete conversation/credential migration. Profiles, passwords, packages and raw
+app logs are not uploaded.

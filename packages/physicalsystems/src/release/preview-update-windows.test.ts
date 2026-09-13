@@ -7,7 +7,9 @@ import { join, win32 } from "node:path"
 import {
   createPreviewUpdateWindowsNative,
   createPreviewUpdateWindowsTransport,
+  capturePreviewUpdateWindowsShutdown,
   previewUpdateWindowsExecutableReady,
+  readPreviewUpdateWindowsObservation,
   previewUpdateWindowsScript,
   previewUpdateWindowsTime,
   type PreviewUpdateWindowsApplication,
@@ -211,6 +213,67 @@ test("native errors are authored and unconfirmed helper exit permanently prevent
   expect(owner.calls).toHaveLength(1)
 })
 
+test("native confirmation failure diagnostics contain only authored phases, bounded counts and boolean observations", async () => {
+  const f = fixture()
+  const result = f.native.confirm({ application: baseline, version: "0.1.0-beta.7", action: "Later" })
+  f.reply({
+    status: "unreadable",
+    phase: "dialog-buttons",
+    diagnostics: {
+      ownedWindows: 2,
+      matchingDialogs: 1,
+      controls: 12,
+      messageMatches: 2,
+      messageTexts: 1,
+      installButtons: 0,
+      laterButtons: 1,
+      dialogOwned: true,
+      dialogEnabled: true,
+      dialogOffscreen: false,
+      buttonEnabled: "PRIVATE",
+      invokePattern: "PRIVATE",
+      rawLabels: ["PRIVATE"],
+      executable: "PRIVATE",
+    },
+  })
+  const error = await result.catch((value: unknown) => value)
+  expect(readPreviewUpdateWindowsObservation(error)).toEqual({
+    phase: "dialog-buttons",
+    ownedWindows: 2,
+    matchingDialogs: 1,
+    controls: 12,
+    messageMatches: 2,
+    messageTexts: 1,
+    installButtons: 0,
+    laterButtons: 1,
+    dialogOwned: true,
+    dialogEnabled: true,
+    dialogOffscreen: false,
+  })
+  expect(JSON.stringify(error)).not.toContain("PRIVATE")
+  expect(
+    readPreviewUpdateWindowsObservation({
+      previewUpdateWindowsObservation: {
+        phase: "PRIVATE",
+        ownedWindows: -1,
+        matchingDialogs: 258,
+        controls: Infinity,
+        messageTexts: 1.5,
+        installButtons: "1",
+        invokePattern: true,
+        rawLabels: "PRIVATE",
+      },
+    }),
+  ).toEqual({ phase: "unknown", invokePattern: true })
+  expect(
+    readPreviewUpdateWindowsObservation({
+      get previewUpdateWindowsObservation() {
+        throw Error("PRIVATE")
+      },
+    }),
+  ).toBeUndefined()
+})
+
 test("production native ownership rejects unmarked or local contexts, and timestamps share native UTC tick units", async () => {
   await expect(createPreviewUpdateWindowsNative({ env: {}, root: "C:\\owned" })).rejects.toThrow(
     "REQUIRES_DISPOSABLE_TEST",
@@ -264,6 +327,96 @@ test("NSIS replacement waits on missing owned paths while still rejecting links,
   await expect(
     previewUpdateWindowsExecutableReady("C:\\foreign\\Physical Systems.exe", "C:\\runner", files),
   ).rejects.toThrow("UNCONFIRMED")
+})
+
+type ShutdownQuery = Parameters<typeof capturePreviewUpdateWindowsShutdown>[1]
+type ShutdownReply = Awaited<ReturnType<ShutdownQuery>>
+const shutdownRows = [
+  { pid: baseline.pid, parent: 20, birth: baseline.creationTime, executable: baseline.executable },
+  { pid: 51, parent: baseline.pid, birth: "639249130000000010", executable: baseline.executable },
+  { pid: 52, parent: 51, birth: "639249130000000020", executable: "C:\\runner\\test\\install\\resources\\runtime.exe" },
+]
+const shutdownReply = (processes = shutdownRows): ShutdownReply => ({
+  snapshot: { status: "COMPLETE", processes },
+  quiescence: "confirmed",
+})
+function shutdownFixture(replies: ShutdownReply[]) {
+  const calls: Parameters<ShutdownQuery>[0][] = []
+  const query: ShutdownQuery = async (input) => {
+    calls.push(input)
+    const result = replies.shift()
+    if (!result) throw Error("PRIVATE NATIVE ERROR")
+    return result
+  }
+  return { query, calls }
+}
+
+test("shutdown capture retains exact generations and polls only that PID set, excluding a later installer", async () => {
+  const f = shutdownFixture([
+    shutdownReply(),
+    shutdownReply([shutdownRows[1]!]),
+    shutdownReply([{ ...shutdownRows[1]!, birth: "639249130000000099" }]),
+  ])
+  const departed = await capturePreviewUpdateWindowsShutdown({ application: baseline }, f.query)
+  expect(f.calls).toEqual([{ rootPid: baseline.pid }])
+  expect(await departed()).toBe(false)
+  expect(await departed()).toBe(true)
+  expect(f.calls.slice(1)).toEqual([
+    { rootPid: baseline.pid, pids: [50, 51, 52] },
+    { rootPid: baseline.pid, pids: [50, 51, 52] },
+  ])
+  const empty = shutdownFixture([shutdownReply(), shutdownReply([])])
+  expect(await (await capturePreviewUpdateWindowsShutdown({ application: baseline }, empty.query))()).toBe(true)
+})
+
+test("shutdown capture rejects incomplete, foreign-root and stale numeric ancestry without an absence claim", async () => {
+  const invalid: ShutdownReply[] = [
+    { snapshot: { status: "UNREADABLE", processes: [] }, quiescence: "confirmed" },
+    { ...shutdownReply(), quiescence: "unconfirmed" },
+    shutdownReply([]),
+    shutdownReply([{ ...shutdownRows[0]!, birth: "639249130000000001" }]),
+    shutdownReply([{ ...shutdownRows[0]!, executable: "C:\\foreign\\Physical Systems.exe" }]),
+    {
+      ...shutdownReply(),
+      snapshot: { status: "COMPLETE", processes: [shutdownRows[0]!, { ...shutdownRows[1]!, birth: undefined }] },
+    },
+    {
+      ...shutdownReply(),
+      snapshot: { status: "COMPLETE", processes: [shutdownRows[0]!, { ...shutdownRows[1]!, executable: undefined }] },
+    },
+    shutdownReply([shutdownRows[0]!, { ...shutdownRows[1]!, parent: 999 }]),
+    shutdownReply([shutdownRows[0]!, { ...shutdownRows[1]!, birth: "639249129999999999" }]),
+    shutdownReply([shutdownRows[0]!, shutdownRows[0]!]),
+  ]
+  for (const value of invalid) {
+    const f = shutdownFixture([value])
+    await expect(capturePreviewUpdateWindowsShutdown({ application: baseline }, f.query)).rejects.toThrow(
+      "SHUTDOWN_UNCONFIRMED",
+    )
+    expect(f.calls).toHaveLength(1)
+  }
+  const f = shutdownFixture([])
+  await expect(capturePreviewUpdateWindowsShutdown({ application: baseline }, f.query)).rejects.toThrow(
+    "SHUTDOWN_UNCONFIRMED",
+  )
+})
+
+test("shutdown final reads require complete metadata and keep any retained generation present even if its path changes", async () => {
+  const changed = shutdownFixture([
+    shutdownReply(),
+    shutdownReply([{ ...shutdownRows[1]!, executable: "C:\\changed\\runtime.exe" }]),
+  ])
+  expect(await (await capturePreviewUpdateWindowsShutdown({ application: baseline }, changed.query))()).toBe(false)
+  for (const invalid of [
+    { snapshot: { status: "UNREADABLE", processes: [] }, quiescence: "confirmed" },
+    { ...shutdownReply([]), quiescence: "unconfirmed" },
+    { ...shutdownReply(), snapshot: { status: "COMPLETE", processes: [{ ...shutdownRows[1]!, birth: undefined }] } },
+    shutdownReply([{ ...shutdownRows[1]!, pid: 60 }]),
+  ] satisfies ShutdownReply[]) {
+    const f = shutdownFixture([shutdownReply(), invalid])
+    const departed = await capturePreviewUpdateWindowsShutdown({ application: baseline }, f.query)
+    await expect(departed()).rejects.toThrow("SHUTDOWN_UNCONFIRMED")
+  }
 })
 
 const hostedWindows =

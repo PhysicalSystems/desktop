@@ -8,6 +8,7 @@ import threading
 import time
 import sys
 import unittest
+import json
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("preview_update_linux", pathlib.Path(__file__).with_name("preview-update-linux.py"))
@@ -135,6 +136,22 @@ class DialogTests(unittest.TestCase):
         dialog.children.extend(Accessible("x", "label") for _ in range(129))
         with self.assertRaisesRegex(native.QualificationError, "TREE_LIMIT"):
             self.find([app])
+
+    def test_diagnostic_contains_only_owned_window_categories_and_counts(self):
+        app, dialog, *_ = self.fixture()
+        unrelated, *_ = self.fixture(pid=98765)
+        unrelated.name = "private unrelated application"
+        dialog.name = "private unexpected dialog text"
+        observation = {}
+        roles = {**self.roles, "names": {"dialog": "dialog"}}
+        self.assertIsNone(native.find_dialog_button([unrelated, app], 42, "0.1.0-beta.7", "install", roles, observation))
+        self.assertEqual(observation, {"applications": 2, "ownedApplications": 1, "windows": [
+            {"role": "dialog", "name": "other", "message": False, "install": 0, "later": 0}]})
+        self.assertNotIn("private", json.dumps(observation))
+        self.assertNotIn("98765", json.dumps(observation))
+        dialog.name = "Update Ready"
+        self.assertIsNotNone(native.find_dialog_button([app], 42, "0.1.0-beta.7", "install", roles, observation))
+        self.assertEqual(observation["windows"], [{"role": "dialog", "name": "update-title", "message": True, "install": 1, "later": 1}])
 
     def test_optional_hosted_accessibility_api_is_available(self):
         try:

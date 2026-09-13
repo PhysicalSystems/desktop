@@ -5,7 +5,11 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { clickPreviewUpdateLinuxConfirmation, startPreviewUpdatePolkitAgent } from "./preview-update-linux"
+import {
+  clickPreviewUpdateLinuxConfirmation,
+  startPreviewUpdatePolkitAgent,
+  PreviewUpdateLinuxError,
+} from "./preview-update-linux"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -245,6 +249,51 @@ native("Python entrypoint independently refuses local execution before touching 
   expect(output).not.toContain("private")
 })
 
+native("native dialog failure retains only schema-checked count/category diagnostics", async () => {
+  const f = await fixture()
+  const diagnostic = {
+    applications: 2,
+    ownedApplications: 1,
+    windows: [{ role: "frame" as const, name: "other" as const, message: false, install: 0, later: 0 }],
+  }
+  for (const data of [
+    diagnostic,
+    { ...diagnostic, privateTitle: "must-never-be-retained" },
+    { ...diagnostic, windows: [{ ...diagnostic.windows[0], name: "private title" }] },
+  ]) {
+    const events = [
+      { event: "diagnostic", data },
+      { event: "failed", code: "NATIVE_DIALOG_NOT_FOUND" },
+    ]
+      .map((event) => JSON.stringify(event) + "\n")
+      .join("")
+    const error = await clickPreviewUpdateLinuxConfirmation(
+      { ...f, choice: "later" },
+      {
+        spawn: ((_: string, _args: string[], options: Parameters<typeof spawn>[2]) =>
+          spawn(
+            process.execPath,
+            [
+              "-e",
+              `process.stdin.resume(); process.stdin.once('end',()=>{process.stdout.write(${JSON.stringify(events)});process.exitCode=1})`,
+            ],
+            options,
+          )) as typeof spawn,
+      },
+    ).catch((error: unknown) => error)
+    expect(error).toBeInstanceOf(PreviewUpdateLinuxError)
+    if (!(error instanceof PreviewUpdateLinuxError)) throw new Error("unexpected helper error")
+    if (data === diagnostic) {
+      expect(error.message).toBe("PREVIEW_UPDATE_NATIVE_DIALOG_NOT_FOUND")
+      expect(error.nativeDialog).toEqual(diagnostic)
+    } else {
+      expect(error.message).toBe("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+      expect(error.nativeDialog).toBeUndefined()
+    }
+    expect(JSON.stringify(error)).not.toContain("private")
+  }
+})
+
 test.skipIf(process.platform !== "linux")(
   "Python prompt and accessible-dialog boundaries run without any native side effects",
   async () => {
@@ -261,7 +310,7 @@ test.skipIf(process.platform !== "linux")(
       child.once("close", resolve)
       child.once("error", reject)
     })
-    expect(output).toContain("Ran 11 tests")
+    expect(output).toContain("Ran 12 tests")
     expect(code).toBe(0)
   },
 )

@@ -172,6 +172,20 @@ test("preparation binds real clean source and full history to metadata-only offi
   const build = JSON.parse(await readFile(join(result.root, "inputs/public-build-inputs.json"), "utf8"))
   expect(build.updaterTest).toBe("unreleased-updater-test-only")
   expect(() => validatePublicBuildInputs(build, result.plan.publicBuildInputsSha256)).toThrow("cannot enter public")
+  const acknowledgement = result.plan.startupAcknowledgement
+  expect(acknowledgement.version).toBe("0.1.0-beta.8")
+  const ackBuild = JSON.parse(await readFile(join(result.root, "ack-inputs/public-build-inputs.json"), "utf8"))
+  const ackRelease = JSON.parse(await readFile(join(result.root, "ack-inputs/release-inputs.json"), "utf8"))
+  const baselineRelease = JSON.parse(await readFile(join(result.root, "inputs/release-inputs.json"), "utf8"))
+  expect(ackBuild).not.toHaveProperty("updaterTest")
+  expect(ackRelease).not.toHaveProperty("upgradeLab")
+  expect(validatePublicBuildInputs(ackBuild, acknowledgement.publicBuildInputsSha256)).toEqual(ackBuild)
+  expect(ackBuild.releaseInputsSha256).toBe(acknowledgement.releaseInputsSha256)
+  expect(ackRelease.sha256).toBe(acknowledgement.releaseInputsSha256)
+  expect(ackRelease.source).toEqual(baselineRelease.source)
+  expect(ackRelease.releaseHistory).toEqual(baselineRelease.releaseHistory)
+  expect(ackRelease.publication).toBe(false)
+  expect(await readFile(join(result.root, "ack-inputs/history.json"), "utf8")).toBe(f.env.UPDATER_TEST_HISTORY!)
   expect(JSON.parse(await readFile(join(result.root, "preview-update-runner.json"), "utf8"))).toEqual({
     kind: "disposable-preview-update",
     runId: "12345",
@@ -246,39 +260,94 @@ test("build rejects a replaced plan, run owner or removed marker before invoking
   expect(await readdir(prepared.root)).not.toContain("build")
 })
 
-test("the build wrapper binds the ordinary pipeline and records only its exact native installer", async () => {
+test("acknowledgement uses ordinary next-version allocation and refuses history behind the real target", async () => {
+  const f = await fixture()
+  f.env.UPDATER_TEST_HISTORY = json({ complete: true, versions: ["0.1.0-beta.1", "0.1.0-beta.7", "0.1.0-beta.9"] })
+  const prepared = await preparePreviewUpdaterTest(f.options)
+  expect(prepared.plan.startupAcknowledgement.version).toBe("0.1.0-beta.10")
+  expect(await readFile(join(prepared.root, "ack-inputs/history.json"), "utf8")).toBe(f.env.UPDATER_TEST_HISTORY!)
+  const stale = await fixture()
+  stale.env.UPDATER_TEST_HISTORY = json({ complete: true, versions: ["0.1.0-beta.1", "0.1.0-beta.4"] })
+  await expect(preparePreviewUpdaterTest(stale.options)).rejects.toThrow("PREVIEW_UPDATER_TEST_INPUTS_INVALID")
+  expect(await readdir(stale.temporary)).toEqual([])
+})
+
+test.each(["digest", "purpose", "source"])("changed acknowledgement %s cannot enter either build", async (change) => {
+  const f = await fixture()
+  const prepared = await preparePreviewUpdaterTest(f.options)
+  const publicFile = join(prepared.root, "ack-inputs/public-build-inputs.json")
+  const publicInputs = JSON.parse(await readFile(publicFile, "utf8"))
+  if (change === "purpose") publicInputs.updaterTest = "unreleased-updater-test-only"
+  else publicInputs.sourceRevision = "d".repeat(40)
+  await writeFile(publicFile, json(publicInputs))
+  if (change !== "digest") {
+    prepared.plan.startupAcknowledgement.publicBuildInputsSha256 = publicReviewDigest(publicInputs)
+    await writeFile(join(prepared.root, "plan.json"), json(prepared.plan))
+  }
+  f.env.UPDATER_TEST_PLAN_SHA256 = publicReviewDigest(prepared.plan)
+  let called = false
+  await expect(
+    buildPreviewUpdaterTest({
+      ...f.options,
+      build: async () => {
+        called = true
+        throw new Error("Unexpected build")
+      },
+    }),
+  ).rejects.toThrow(
+    change === "purpose"
+      ? "cannot enter public"
+      : change === "digest"
+        ? "trusted digest"
+        : "PREVIEW_UPDATER_TEST_INPUTS_INVALID",
+  )
+  expect(called).toBe(false)
+  expect(await readdir(prepared.root)).not.toContain("build")
+  expect(await readdir(prepared.root)).not.toContain("ack-build")
+})
+
+test("the build wrapper separately binds both ordinary pipelines and exact native installers", async () => {
   const f = await fixture()
   const prepared = await preparePreviewUpdaterTest(f.options)
   f.env.UPDATER_TEST_PLAN_SHA256 = prepared.planSha256
+  const versions: string[] = []
   const result = await buildPreviewUpdaterTest({
     ...f.options,
     build: async (args, options) => {
+      const acknowledgement = versions.length === 1
+      const expected = acknowledgement ? prepared.plan.startupAcknowledgement : prepared.plan
+      const inputDirectory = acknowledgement ? "ack-inputs" : "inputs"
+      const outputDirectory = acknowledgement ? "ack-build" : "build"
+      versions.push(expected.version)
       expect(args).toEqual([
         "--inputs",
-        join(prepared.root, "inputs/release-inputs.json"),
+        join(prepared.root, inputDirectory, "release-inputs.json"),
         "--public-inputs",
-        join(prepared.root, "inputs/public-build-inputs.json"),
+        join(prepared.root, inputDirectory, "public-build-inputs.json"),
         "--expected-inputs-sha256",
-        prepared.plan.releaseInputsSha256,
+        expected.releaseInputsSha256,
         "--expected-public-build-sha256",
-        prepared.plan.publicBuildInputsSha256,
+        expected.publicBuildInputsSha256,
         "--platform",
         prepared.plan.platform,
         "--output",
-        join(prepared.root, "build"),
+        join(prepared.root, outputDirectory),
       ])
       expect(options?.root).toBe(await realpath(f.root))
-      await mkdir(join(prepared.root, "build"))
-      for (const artifact of candidateNames(prepared.plan.version, prepared.plan.platform))
-        await writeFile(join(prepared.root, "build", artifact.name), "SIMULATED INSTALLER TEST BYTES; NEVER EXECUTED")
+      await mkdir(join(prepared.root, outputDirectory))
+      for (const artifact of candidateNames(expected.version, prepared.plan.platform))
+        await writeFile(
+          join(prepared.root, outputDirectory, artifact.name),
+          `SIMULATED INSTALLER ${expected.version}; NEVER EXECUTED`,
+        )
       return {
         schemaVersion: 1,
         kind: "unqualified-public-desktop-build",
         publication: false,
-        publicBuildInputsSha256: prepared.plan.publicBuildInputsSha256,
-        releaseInputsSha256: prepared.plan.releaseInputsSha256,
+        publicBuildInputsSha256: expected.publicBuildInputsSha256,
+        releaseInputsSha256: expected.releaseInputsSha256,
         sourceRevision: prepared.plan.sourceRevision,
-        version: prepared.plan.version,
+        version: expected.version,
         channel: "preview",
         platform: prepared.plan.platform,
         identity: desktopIdentity("public"),
@@ -289,10 +358,20 @@ test("the build wrapper binds the ordinary pipeline and records only its exact n
       }
     },
   })
-  expect(result.installer.bytes).toBe(Buffer.byteLength("SIMULATED INSTALLER TEST BYTES; NEVER EXECUTED"))
-  expect(result.installer.sha256).toBe(hash("SIMULATED INSTALLER TEST BYTES; NEVER EXECUTED"))
+  expect(versions).toEqual(["0.1.0-beta.1", "0.1.0-beta.8"])
+  expect(result.installer.bytes).toBe(Buffer.byteLength("SIMULATED INSTALLER 0.1.0-beta.1; NEVER EXECUTED"))
+  expect(result.installer.sha256).toBe(hash("SIMULATED INSTALLER 0.1.0-beta.1; NEVER EXECUTED"))
   expect(result.installer.path).toBe(join(prepared.root, "build", result.installer.name))
   expect(result.installer.name.endsWith(process.platform === "win32" ? ".exe" : ".deb")).toBe(true)
+  expect(result.startupAcknowledgement).toEqual({
+    ...prepared.plan.startupAcknowledgement,
+    installer: {
+      name: result.startupAcknowledgement.installer.name,
+      bytes: Buffer.byteLength("SIMULATED INSTALLER 0.1.0-beta.8; NEVER EXECUTED"),
+      sha256: hash("SIMULATED INSTALLER 0.1.0-beta.8; NEVER EXECUTED"),
+      path: join(prepared.root, "ack-build", result.startupAcknowledgement.installer.name),
+    },
+  })
   expect(result.publication).toBe(false)
   expect(result.qualification).toBe(false)
   expect(JSON.parse(await readFile(join(prepared.root, "build-record.json"), "utf8"))).toEqual(result)

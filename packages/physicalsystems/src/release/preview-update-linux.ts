@@ -7,6 +7,28 @@ import { requireDisposablePublicRunner } from "./public-qualification"
 
 type NativeInput = { env: NodeJS.ProcessEnv; root: string; applicationPid: number; version: string }
 type Dependencies = { spawn?: typeof spawn; timeoutMs?: number }
+export type PreviewUpdateLinuxDialogDiagnostic = {
+  applications: number
+  ownedApplications: number
+  windows: {
+    role: "dialog" | "alert" | "frame" | "window" | "other"
+    name: "update-title" | "target-message" | "empty" | "other"
+    message: boolean
+    install: number
+    later: number
+  }[]
+}
+
+/** The only diagnostic payload that may be retained by the native test driver. */
+export class PreviewUpdateLinuxError extends Error {
+  constructor(
+    message: string,
+    readonly nativeDialog?: PreviewUpdateLinuxDialogDiagnostic,
+  ) {
+    super(message)
+    this.name = "PreviewUpdateLinuxError"
+  }
+}
 
 /** Password-bearing authentication is confined to the disposable runner and a private pipe. */
 export async function startPreviewUpdatePolkitAgent(
@@ -149,10 +171,11 @@ function startHelper(
   let ended = false
   let registered = false
   let observed = false
+  let diagnostic: PreviewUpdateLinuxDialogDiagnostic | undefined
   let failure: Error | undefined
   let buffer = ""
   const fail = (code: string) => {
-    failure ??= new Error(code)
+    failure ??= new PreviewUpdateLinuxError(code, diagnostic)
     ready.reject(failure)
     completed.reject(failure)
   }
@@ -178,6 +201,10 @@ function startHelper(
       try {
         const event: unknown = JSON.parse(line)
         if (!event || typeof event !== "object" || !("event" in event)) throw new Error()
+        if (event.event === "diagnostic" && mode === "dialog" && !observed && !diagnostic && "data" in event) {
+          diagnostic = validateDialogDiagnostic(event.data)
+          continue
+        }
         if (event.event === "ready" && mode === "polkit" && !registered && !observed) {
           registered = true
           ready.resolve()
@@ -264,6 +291,38 @@ function startHelper(
       })())
     },
   }
+}
+
+function validateDialogDiagnostic(value: unknown): PreviewUpdateLinuxDialogDiagnostic {
+  const record = (input: unknown): input is Record<string, unknown> =>
+    Boolean(input) && typeof input === "object" && !Array.isArray(input)
+  const count = (input: unknown): input is number =>
+    typeof input === "number" && Number.isSafeInteger(input) && input >= 0 && input <= 64
+  if (
+    !record(value) ||
+    Object.keys(value).sort().join() !== "applications,ownedApplications,windows" ||
+    !count(value.applications) ||
+    !count(value.ownedApplications) ||
+    value.ownedApplications > value.applications ||
+    !Array.isArray(value.windows) ||
+    value.windows.length > 16
+  )
+    throw new Error("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+  for (const window of value.windows) {
+    if (
+      !record(window) ||
+      Object.keys(window).sort().join() !== "install,later,message,name,role" ||
+      typeof window.role !== "string" ||
+      !["dialog", "alert", "frame", "window", "other"].includes(window.role) ||
+      typeof window.name !== "string" ||
+      !["update-title", "target-message", "empty", "other"].includes(window.name) ||
+      typeof window.message !== "boolean" ||
+      !count(window.install) ||
+      !count(window.later)
+    )
+      throw new Error("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+  }
+  return structuredClone(value) as PreviewUpdateLinuxDialogDiagnostic
 }
 
 // Finite authored diagnostics only: never return raw PTY, Python, or AT-SPI text.

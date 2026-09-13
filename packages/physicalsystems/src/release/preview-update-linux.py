@@ -248,26 +248,40 @@ def walk_accessibles(root, limit=512):
         pending.extend((node.get_child_at_index(i), depth + 1) for i in range(children))
 
 
-def find_dialog_button(applications, pid, version, choice, roles):
+def find_dialog_button(applications, pid, version, choice, roles, observation=None):
     """Only the owned native dialog, its exact copy and exact buttons authorize a click."""
     matches = []
+    if observation is not None:
+        observation.update({"applications": min(len(applications), 64), "ownedApplications": 0, "windows": []})
     for app in applications:
         if app.get_process_id() != pid:
             continue
+        if observation is not None:
+            observation["ownedApplications"] += 1
         # GTK exposes native windows immediately below the application. Avoid
         # walking Electron's much larger rendered web content or clicking a web
         # imitation of a native dialog.
         count = app.get_child_count()
         require(0 <= count <= 64, "NATIVE_DIALOG_TREE_LIMIT")
         for dialog in (app.get_child_at_index(i) for i in range(count)):
-            if dialog.get_role() not in roles["dialog"] or dialog.get_name() != "Update Ready":
+            role = dialog.get_role()
+            name = dialog.get_name()
+            entry = {
+                "role": roles.get("names", {}).get(role, "other"),
+                "name": "update-title" if name == "Update Ready" else "target-message" if name == "Install Physical Systems " + version + "?" else "empty" if not name else "other",
+                "message": False, "install": 0, "later": 0,
+            }
+            if observation is not None and len(observation["windows"]) < 16:
+                observation["windows"].append(entry)
+            if role not in roles["dialog"] or name != "Update Ready":
                 continue
             nodes = list(walk_accessibles(dialog, 128))
             names = [node.get_name() for node in nodes]
-            if "Install Physical Systems " + version + "?" not in names:
-                continue
             buttons = [node for node in nodes if node.get_role() == roles["button"]]
-            if sorted(node.get_name() for node in buttons) != ["Install update", "Later"]:
+            button_names = [node.get_name() for node in buttons]
+            entry.update({"message": "Install Physical Systems " + version + "?" in names,
+                          "install": min(button_names.count("Install update"), 64), "later": min(button_names.count("Later"), 64)})
+            if not entry["message"] or sorted(button_names) != ["Install update", "Later"]:
                 continue
             matches.extend(node for node in buttons if node.get_name() == ("Later" if choice == "later" else "Install update"))
     require(len(matches) <= 1, "NATIVE_DIALOG_AMBIGUOUS")
@@ -280,19 +294,31 @@ def click_confirmation(config, start_time):
     try:
         import gi
         gi.require_version("Atspi", "2.0")
-        from gi.repository import Atspi
+        from gi.repository import Atspi, GLib
     except ImportError:
         raise QualificationError("NATIVE_ACCESSIBILITY_UNAVAILABLE")
     Atspi.init()
     # Bound each remote accessibility call as well as the overall wait.
     Atspi.set_timeout(1500, 1500)
     deadline = time.monotonic() + 45
+    observation = {}
+    context = GLib.MainContext.default()
     while time.monotonic() < deadline:
+        # Registry child changes are delivered through GLib. This helper polls
+        # instead of running Atspi.event_main(), so dispatch pending events to
+        # avoid indefinitely inspecting a cached pre-dialog application tree.
+        for _ in range(64):
+            if not context.pending():
+                break
+            context.iteration(False)
         require(process_identity(config["applicationPid"]) == start_time, "APPLICATION_IDENTITY_CHANGED")
         desktop = Atspi.get_desktop(0)
-        applications = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+        count = desktop.get_child_count()
+        require(0 <= count <= 64, "NATIVE_DIALOG_TREE_LIMIT")
+        applications = [desktop.get_child_at_index(i) for i in range(count)]
         button = find_dialog_button(applications, config["applicationPid"], config["version"], config["choice"],
-                                    {"dialog": (Atspi.Role.DIALOG, Atspi.Role.ALERT, Atspi.Role.FRAME), "button": Atspi.Role.PUSH_BUTTON})
+                                    {"dialog": (Atspi.Role.DIALOG, Atspi.Role.ALERT, Atspi.Role.FRAME), "button": Atspi.Role.PUSH_BUTTON,
+                                     "names": {Atspi.Role.DIALOG: "dialog", Atspi.Role.ALERT: "alert", Atspi.Role.FRAME: "frame", Atspi.Role.WINDOW: "window"}}, observation)
         if button:
             require(button.get_process_id() == config["applicationPid"], "NATIVE_DIALOG_OWNER_MISMATCH")
             states = button.get_state_set()
@@ -307,6 +333,9 @@ def click_confirmation(config, start_time):
             emit("clicked", action=config["choice"], method="at-spi")
             return
         time.sleep(0.1)
+    # Authored categories/counts only. No title, message, PID, path, accessibility
+    # tree, or unrelated application's content is returned to the CI report.
+    emit("diagnostic", data=observation)
     raise QualificationError("NATIVE_DIALOG_NOT_FOUND")
 
 

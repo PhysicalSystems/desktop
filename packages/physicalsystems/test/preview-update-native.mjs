@@ -9,15 +9,21 @@ import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { requireDisposablePublicRunner, verifyPublicPackagedIdentity } from "../src/release/public-qualification.ts"
-import { releaseInputDigest } from "../src/release/inputs.ts"
+import { releaseInputDigest, compareVersion } from "../src/release/inputs.ts"
 import { validatePublicBuildInputs, verifyCompiledPublicIdentity } from "../src/release/public-build.ts"
 import { publicReviewDigest } from "../src/release/public-downloads.ts"
 import { sha256File, payloadFingerprint } from "../src/release/qualification.ts"
+import { nsisInstallArguments, nsisSpawnOptions } from "../src/release/installed-reinstall.ts"
 import { inspectPreviewUpdateInstallation } from "../../desktop/src/main/preview-update-install.ts"
-import { createPreviewUpdateWindowsNative, previewUpdateWindowsTime } from "../src/release/preview-update-windows.ts"
+import {
+  createPreviewUpdateWindowsNative,
+  previewUpdateWindowsTime,
+  readPreviewUpdateWindowsObservation,
+} from "../src/release/preview-update-windows.ts"
 import {
   clickPreviewUpdateLinuxConfirmation,
   startPreviewUpdatePolkitAgent,
+  PreviewUpdateLinuxError,
 } from "../src/release/preview-update-linux.ts"
 
 const root = resolve(process.argv[3] || ".")
@@ -68,6 +74,20 @@ if (
 )
   throw Error("PREVIEW_UPDATE_INSTALLER_PATH_INVALID")
 await verifyFile(build.installer.path, build.installer)
+const acknowledgement = plan.startupAcknowledgement
+const acknowledgementBuild = build.startupAcknowledgement
+if (
+  !acknowledgement ||
+  !acknowledgementBuild ||
+  compareVersion(acknowledgement.version, plan.target.version) <= 0 ||
+  ["version", "releaseInputsSha256", "publicBuildInputsSha256"].some(
+    (key) => acknowledgement[key] !== acknowledgementBuild[key],
+  ) ||
+  acknowledgementBuild.installer.path !== join(root, "ack-build", acknowledgementBuild.installer.name) ||
+  basename(acknowledgementBuild.installer.name) !== acknowledgementBuild.installer.name
+)
+  throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_PLAN_MISMATCH")
+await verifyFile(acknowledgementBuild.installer.path, acknowledgementBuild.installer)
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
 const profile = join(
   windows ? process.env.APPDATA : process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
@@ -89,7 +109,7 @@ const receipt = {
   status: "RUNNING",
   stages: [],
   limitations: [
-    "Target release predates the new journal acknowledgement code.",
+    "Startup acknowledgement is tested after a separate manual fixture installation, not a second updater-driven upgrade.",
     "Native interrupted-installation recovery is not exercised.",
     "Preservation assertion covers a renderer setting; full conversation and credential migration is qualified separately.",
   ],
@@ -101,7 +121,6 @@ const record = async (name) => {
 }
 let stage = "bootstrap-install"
 let baseline
-let baselineClosed = false
 let current
 let cdp
 let keyring
@@ -116,34 +135,9 @@ try {
   stage = "baseline-startup"
   if (!windows) keyring = await startKeyring()
   const launchedAfter = windows ? previewUpdateWindowsTime() : undefined
-  let announced
-  let output = ""
-  baseline = spawn(executable, ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", "--disable-gpu"], {
-    cwd: root,
-    shell: false,
-    stdio: ["ignore", "ignore", "pipe"],
-    env: {
-      ...process.env,
-      PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
-      LANG: "C.UTF-8",
-      LC_ALL: "C.UTF-8",
-      LANGUAGE: "en",
-      NO_AT_BRIDGE: "0",
-      GTK_MODULES: "atk-bridge",
-    },
-  })
-  baseline.once("error", () => {
-    baselineClosed = true
-  })
-  baseline.once("exit", () => {
-    baselineClosed = true
-  })
-  baseline.stderr.on("data", (chunk) => {
-    output = (output + chunk.toString()).slice(-8192)
-    const match = /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[a-f0-9-]+)/.exec(output)
-    if (match) announced = match[1]
-  })
-  await wait(async () => announced, 90000, "BASELINE_DEBUG_ENDPOINT_UNCONFIRMED")
+  const launch = await launchInstalled(executable)
+  baseline = launch.child
+  const announced = launch.endpoint
   current = windows
     ? await wait(
         () => native.observe({ executable, version: plan.version, after: launchedAfter }),
@@ -178,7 +172,7 @@ try {
     30000,
     "LATER_DID_NOT_RETAIN_READY_STATE",
   )
-  if (!ready || baselineClosed || (await journal())?.attempt) throw Error("PREVIEW_UPDATE_LATER_CHANGED_INSTALLATION")
+  if (!ready || launch.closed() || (await journal())?.attempt) throw Error("PREVIEW_UPDATE_LATER_CHANGED_INSTALLATION")
   await verifyPackage(executable, plan.version, true)
   const cache = join(profile, "desktop", "preview-updates", asset.name)
   await verifyFile(cache, asset)
@@ -213,6 +207,7 @@ try {
   }
   const installedAfter = windows ? previewUpdateWindowsTime() : current.birth
   const old = current
+  const originalDeparted = windows ? await native.captureShutdown({ application: current }) : undefined
   await clickUpdate(cdp)
   await confirm("install")
   await wait(
@@ -229,10 +224,13 @@ try {
     polkit = undefined
   }
   await wait(
-    () => (windows ? native.exited({ application: old }) : Promise.resolve(baselineClosed)),
+    () => (windows ? native.exited({ application: old }) : Promise.resolve(launch.closed())),
     180000,
     "OLD_APPLICATION_EXIT_UNCONFIRMED",
   )
+  if (originalDeparted) await wait(originalDeparted, 60000, "ORIGINAL_DESCENDANT_EXIT_UNCONFIRMED")
+  await wait(async () => launch.closed(), 10000, "ORIGINAL_CHILD_EXIT_UNCONFIRMED")
+  if (!launch.cleanExit()) throw Error("PREVIEW_UPDATE_BASELINE_EXIT_NOT_SUCCESSFUL")
   cdp.close()
   cdp = undefined
   await record("native-confirmation-and-old-application-exit-confirmed")
@@ -282,17 +280,90 @@ try {
   await record("actual-target-process-package-and-preserved-setting-confirmed")
 
   stage = "normal-target-close"
+  const targetDeparted = windows ? await native.captureShutdown({ application: current }) : undefined
   if (windows) await native.close({ application: current })
-  else await cdp.evaluate("window.close(); true")
+  else void cdp.evaluate("window.close(); true").catch(() => {})
   await wait(
     () => (windows ? native.exited({ application: current }) : linuxExited(current)),
     60000,
     "TARGET_NORMAL_CLOSE_UNCONFIRMED",
   )
+  if (targetDeparted) await wait(targetDeparted, 60000, "TARGET_DESCENDANT_EXIT_UNCONFIRMED")
   current = undefined
   cdp?.close()
   cdp = undefined
   await record("target-normal-close-confirmed")
+
+  stage = "manual-startup-acknowledgement-install"
+  const attempted = (await journal())?.attempt
+  if (attempted?.from !== plan.version || attempted.to !== plan.target.version || attempted.sha256 !== asset.sha256)
+    throw Error("PREVIEW_UPDATE_REAL_ATTEMPT_NOT_RETAINED")
+  await verifyFile(acknowledgementBuild.installer.path, acknowledgementBuild.installer)
+  // Separate manual installation exercises acknowledgement by the new code.
+  // It is never reported as another successful in-app update or recovery retry.
+  if (windows)
+    await command(acknowledgementBuild.installer.path, nsisInstallArguments(dirname(executable)).args, {
+      spawnOptions: nsisSpawnOptions(acknowledgementBuild.installer.path),
+    })
+  else
+    await command("/usr/bin/sudo", [
+      "-n",
+      "/usr/bin/dpkg",
+      "--refuse-downgrade",
+      "--install",
+      acknowledgementBuild.installer.path,
+    ])
+  await verifyPackage(executable, acknowledgement.version, false, acknowledgement)
+  if (publicReviewDigest((await journal())?.attempt) !== publicReviewDigest(attempted))
+    throw Error("PREVIEW_UPDATE_MANUAL_INSTALL_CHANGED_JOURNAL")
+  await record("manual-new-code-install-retained-real-attempt")
+
+  stage = "automatic-startup-acknowledgement"
+  const acknowledgementAfter = windows ? previewUpdateWindowsTime() : undefined
+  const acknowledgementLaunch = await launchInstalled(executable)
+  baseline = acknowledgementLaunch.child
+  current = windows
+    ? await wait(
+        () => native.observe({ executable, version: acknowledgement.version, after: acknowledgementAfter }),
+        60000,
+        "ACKNOWLEDGEMENT_WINDOW_UNCONFIRMED",
+      )
+    : await linuxProcess(acknowledgementLaunch.child.pid, executable)
+  if (current.pid !== acknowledgementLaunch.child.pid) throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_PROCESS_MISMATCH")
+  // No check()/recover() call or journal mutation: index.ts starts the updater.
+  await wait(async () => (await journal())?.attempt === undefined, 90000, "STARTUP_DID_NOT_ACKNOWLEDGE_REAL_ATTEMPT")
+  cdp = await connectRenderer(new URL(acknowledgementLaunch.endpoint).port)
+  await wait(
+    () => cdp.evaluate("Boolean(window.api?.storeGet && document.querySelector('[data-action=desktop-update]'))"),
+    90000,
+    "ACKNOWLEDGEMENT_RENDERER_UNAVAILABLE",
+  )
+  if ((await cdp.evaluate("window.api.storeGet('opencode.settings','preview-updater-test')")) !== nonce)
+    throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_SETTING_LOST")
+  await verifyPackage(executable, acknowledgement.version, false, acknowledgement)
+  receipt.startupAcknowledgement = {
+    version: acknowledgement.version,
+    sourceRevision: plan.sourceRevision,
+    installerSha256: acknowledgementBuild.installer.sha256,
+    result: "PASS",
+    installation: "separate-manual-fixture",
+  }
+  await record("new-code-startup-acknowledged-real-attempt-and-preserved-setting")
+  const acknowledgementDeparted = windows ? await native.captureShutdown({ application: current }) : undefined
+  if (windows) await native.close({ application: current })
+  else void cdp.evaluate("window.close(); true").catch(() => {})
+  await wait(
+    () => (windows ? native.exited({ application: current }) : linuxExited(current)),
+    60000,
+    "ACKNOWLEDGEMENT_NORMAL_CLOSE_UNCONFIRMED",
+  )
+  if (acknowledgementDeparted) await wait(acknowledgementDeparted, 60000, "ACKNOWLEDGEMENT_DESCENDANT_EXIT_UNCONFIRMED")
+  await wait(async () => acknowledgementLaunch.closed(), 10000, "ACKNOWLEDGEMENT_CHILD_EXIT_UNCONFIRMED")
+  if (!acknowledgementLaunch.cleanExit()) throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_EXIT_NOT_SUCCESSFUL")
+  current = undefined
+  cdp.close()
+  cdp = undefined
+  await record("acknowledgement-fixture-normal-close-confirmed")
   if (polkit) await polkit.stop()
   if (authUserCreated) await command("/usr/bin/sudo", ["-n", "/usr/sbin/userdel", "ps-update-auth"])
   authUserCreated = false
@@ -308,6 +379,9 @@ try {
       : "PREVIEW_UPDATE_TEST_UNCONFIRMED"
   if (error instanceof Error && /^PREVIEW_UPDATE_WINDOWS_UNCONFIRMED:[a-z-]{1,30}$/.test(error.message))
     receipt.nativePhase = error.message.split(":")[1]
+  if (error instanceof PreviewUpdateLinuxError && error.nativeDialog) receipt.nativeDialog = error.nativeDialog
+  const windowsObservation = readPreviewUpdateWindowsObservation(error)
+  if (windowsObservation) receipt.nativeWindows = windowsObservation
   await record("test-failed")
   // Uncertain native installation is not killed, retried, or cleaned up as if
   // complete. The isolated hosted VM owns teardown after this failing test.
@@ -368,6 +442,7 @@ async function command(file, args, options = {}) {
       env: process.env,
       shell: false,
       stdio: [options.stdin ? "pipe" : "ignore", "pipe", "pipe"],
+      ...options.spawnOptions,
     })
     let stdout = ""
     let oversized = false
@@ -402,7 +477,9 @@ async function bootstrap() {
   if (windows) {
     const destination = join(root, "install")
     if (await exists(destination)) throw Error("PREVIEW_UPDATE_FRESH_INSTALL_DIRECTORY_REQUIRED")
-    await command(build.installer.path, ["/S", `/D=${destination}`])
+    await command(build.installer.path, nsisInstallArguments(destination).args, {
+      spawnOptions: nsisSpawnOptions(build.installer.path),
+    })
     return realpath(join(destination, "Physical Systems.exe"))
   }
   const absent = await command("/usr/bin/dpkg-query", ["--show", "physical-systems-desktop"], { allowFailure: true })
@@ -415,7 +492,7 @@ async function bootstrap() {
   if (executables.length !== 1) throw Error("PREVIEW_UPDATE_DEBIAN_EXECUTABLE_AMBIGUOUS")
   return realpath(executables[0])
 }
-async function verifyPackage(executable, version, lab) {
+async function verifyPackage(executable, version, lab, expected) {
   const installation = await inspectPreviewUpdateInstallation({
     platform: process.platform,
     arch: process.arch,
@@ -467,6 +544,15 @@ async function verifyPackage(executable, version, lab) {
       mainBytes,
     },
   )
+  if (expected) {
+    if (
+      publicBuildInputsSha256 !== expected.publicBuildInputsSha256 ||
+      inputs.sha256 !== expected.releaseInputsSha256 ||
+      publicInputs.sourceRevision !== plan.sourceRevision
+    )
+      throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_INPUTS_MISMATCH")
+    return
+  }
   receipt.observedTargetSourceRevision = publicInputs.sourceRevision
   receipt.observedTargetPublicBuildInputsSha256 = publicBuildInputsSha256
 }
@@ -475,6 +561,57 @@ async function journal() {
     if (error.code === "ENOENT") return
     throw error
   })
+}
+async function launchInstalled(executable) {
+  let endpoint
+  let output = ""
+  let closed = false
+  let successfulExit = false
+  const child = spawn(
+    executable,
+    [
+      "--remote-debugging-port=0",
+      "--remote-debugging-address=127.0.0.1",
+      "--disable-gpu",
+      ...(!windows ? ["--force-renderer-accessibility"] : []),
+    ],
+    {
+      cwd: root,
+      shell: false,
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        ...process.env,
+        PHYSICALSYSTEMS_ALLOW_DEVICES: "0",
+        LANG: "C.UTF-8",
+        LC_ALL: "C.UTF-8",
+        LANGUAGE: "en",
+        NO_AT_BRIDGE: "0",
+        GTK_MODULES: "atk-bridge",
+        ...(!windows ? { ACCESSIBILITY_ENABLED: "1" } : {}),
+      },
+    },
+  )
+  child.once("error", () => {
+    closed = true
+  })
+  child.once("exit", (code, signal) => {
+    closed = true
+    successfulExit = code === 0 && signal === null
+  })
+  child.stderr.on("data", (chunk) => {
+    output = (output + chunk.toString()).slice(-8192)
+    const match = /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[a-f0-9-]+)/.exec(output)
+    if (match) endpoint = match[1]
+  })
+  await wait(
+    async () => {
+      if (closed) throw Error("PREVIEW_UPDATE_APPLICATION_EXITED_BEFORE_READY")
+      return endpoint
+    },
+    90000,
+    "APPLICATION_DEBUG_ENDPOINT_UNCONFIRMED",
+  )
+  return { child, endpoint, closed: () => closed, cleanExit: () => successfulExit }
 }
 async function clickUpdate(client) {
   const clicked = await client.evaluate(

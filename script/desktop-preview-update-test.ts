@@ -7,6 +7,8 @@ import { checkDesktopUpdate } from "../packages/desktop/src/main/desktop-update-
 import { artifactDigest, candidateNames } from "../packages/physicalsystems/src/release/artifacts"
 import { desktopIdentity } from "../packages/physicalsystems/src/release/identity"
 import {
+  compareVersion,
+  prepareReleaseInputs,
   prepareUpdaterLabInputs,
   releaseInputDigest,
   UPDATER_LAB_VERSION,
@@ -136,6 +138,29 @@ export async function preparePreviewUpdaterTest(options: Options = {}) {
     fetch: options.fetch,
   })
   if (target.status !== "available" || target.channel !== "preview" || !target.unsignedWindowsPreview) throw failure()
+  // A separate manual installation exercises startup acknowledgement using the
+  // ordinary next version. Allocation is local: no public version is reserved.
+  const acknowledgement = await prepareReleaseInputs({ repoRoot: source, repository, channel: "preview", history })
+  if (
+    acknowledgement.upgradeLab !== undefined ||
+    compareVersion(acknowledgement.version, target.version) <= 0 ||
+    publicReviewDigest(acknowledgement.source) !== publicReviewDigest(release.source) ||
+    publicReviewDigest(acknowledgement.releaseHistory) !== publicReviewDigest(release.releaseHistory)
+  )
+    throw failure()
+  const acknowledgementPublic: PublicBuildInputs = {
+    schemaVersion: 1,
+    kind: "public-desktop-build",
+    sourceRevision: acknowledgement.source.revision,
+    releaseInputsSha256: acknowledgement.sha256,
+    version: acknowledgement.version,
+    channel: "preview",
+    identity: desktopIdentity("public"),
+    windowsSigning: { provider: "unsigned-preview" },
+    publication: false,
+  }
+  const acknowledgementPublicSha256 = publicReviewDigest(acknowledgementPublic)
+  validatePublicBuildInputs(acknowledgementPublic, acknowledgementPublicSha256)
   const compressed = await readFile(join(source, "release/models.dev-api.json.gz"))
   const models = gunzipSync(compressed, { maxOutputLength: 32 * 1024 * 1024 })
   if (hash(compressed) !== release.modelCatalog.sha256 || hash(models) !== release.modelCatalog.decodedSha256)
@@ -151,17 +176,27 @@ export async function preparePreviewUpdaterTest(options: Options = {}) {
     releaseInputsSha256: release.sha256,
     publicBuildInputsSha256,
     target,
+    startupAcknowledgement: {
+      version: acknowledgement.version,
+      releaseInputsSha256: acknowledgement.sha256,
+      publicBuildInputsSha256: acknowledgementPublicSha256,
+    },
   }
   // An existing directory or symlink must never be adopted as a fresh test root.
   await mkdir(root, { mode: 0o700 })
   await write(join(root, "owner.json"), owner)
   await write(join(root, "preview-update-runner.json"), { kind: "disposable-preview-update", runId: owner.runId })
-  const inputs = join(root, "inputs")
-  await mkdir(inputs, { mode: 0o700 })
-  await write(join(inputs, "release-inputs.json"), release)
-  await write(join(inputs, "public-build-inputs.json"), publicInputs)
-  await write(join(inputs, "history.json"), history)
-  await writeFile(join(inputs, "models.dev-api.json"), models, { flag: "wx", mode: 0o600 })
+  for (const fixture of [
+    { directory: "inputs", release, publicInputs },
+    { directory: "ack-inputs", release: acknowledgement, publicInputs: acknowledgementPublic },
+  ]) {
+    const inputs = join(root, fixture.directory)
+    await mkdir(inputs, { mode: 0o700 })
+    await write(join(inputs, "release-inputs.json"), fixture.release)
+    await write(join(inputs, "public-build-inputs.json"), fixture.publicInputs)
+    await write(join(inputs, "history.json"), history)
+    await writeFile(join(inputs, "models.dev-api.json"), models, { flag: "wx", mode: 0o600 })
+  }
   await write(join(root, "plan.json"), plan)
   const planSha256 = publicReviewDigest(plan)
   if (env.GITHUB_OUTPUT) {
@@ -176,6 +211,7 @@ export async function buildPreviewUpdaterTest(options: Options = {}) {
   const { root, source, platform, owner } = await context(env, options.repoRoot ?? sourceRoot)
   await privateDirectory(root)
   await privateDirectory(join(root, "inputs"))
+  await privateDirectory(join(root, "ack-inputs"))
   if (
     publicReviewDigest(await read(join(root, "owner.json"))) !== publicReviewDigest(owner) ||
     publicReviewDigest(await read(join(root, "preview-update-runner.json"))) !==
@@ -192,55 +228,70 @@ export async function buildPreviewUpdaterTest(options: Options = {}) {
     plan.qualification !== false ||
     plan.sourceRevision !== owner.sourceRevision ||
     plan.version !== UPDATER_LAB_VERSION ||
-    plan.platform !== platform
+    plan.platform !== platform ||
+    !plan.startupAcknowledgement ||
+    compareVersion(plan.startupAcknowledgement.version, plan.target.version) <= 0
   )
     throw failure()
-  const inputs = join(root, "inputs")
-  const releaseFile = join(inputs, "release-inputs.json")
-  const publicFile = join(inputs, "public-build-inputs.json")
-  const publicInputs = validatePublicBuildInputs(await read(publicFile), plan.publicBuildInputsSha256, {
-    allowUpdaterTest: true,
-  })
-  if (
-    publicInputs.updaterTest !== "unreleased-updater-test-only" ||
-    publicInputs.releaseInputsSha256 !== plan.releaseInputsSha256 ||
-    publicInputs.sourceRevision !== owner.sourceRevision
-  )
-    throw failure()
-  // The normal build pipeline independently verifies source, complete history,
-  // input hashes and matching test markers before it creates output or compiles.
-  const build = await (options.build ?? buildPublicDesktop)(
-    [
-      "--inputs",
-      releaseFile,
-      "--public-inputs",
-      publicFile,
-      "--expected-inputs-sha256",
-      plan.releaseInputsSha256,
-      "--expected-public-build-sha256",
-      plan.publicBuildInputsSha256,
-      "--platform",
-      platform,
-      "--output",
-      join(root, "build"),
-    ],
-    { root: source, env },
-  )
-  if (
-    build.sourceRevision !== owner.sourceRevision ||
-    build.version !== plan.version ||
-    build.platform !== platform ||
-    build.publication !== false ||
-    build.qualification !== "NOT_TESTED" ||
-    build.releaseInputsSha256 !== plan.releaseInputsSha256 ||
-    build.publicBuildInputsSha256 !== plan.publicBuildInputsSha256
-  )
-    throw failure()
-  const installer = candidateNames(plan.version, platform).find(
-    (entry) => entry.format === (platform === "windows-x64" ? "nsis" : "deb"),
-  )!
-  const file = join(root, "build", installer.name)
-  const observed = await artifactDigest(file)
+  const fixtures = [
+    { directory: "inputs", output: "build", expected: plan, updaterTest: true },
+    { directory: "ack-inputs", output: "ack-build", expected: plan.startupAcknowledgement, updaterTest: false },
+  ]
+  // Validate both independent public-input anchors before either build begins.
+  for (const fixture of fixtures) {
+    const publicInputs = validatePublicBuildInputs(
+      await read(join(root, fixture.directory, "public-build-inputs.json")),
+      fixture.expected.publicBuildInputsSha256,
+      { allowUpdaterTest: fixture.updaterTest },
+    )
+    if (
+      (publicInputs.updaterTest === "unreleased-updater-test-only") !== fixture.updaterTest ||
+      publicInputs.releaseInputsSha256 !== fixture.expected.releaseInputsSha256 ||
+      publicInputs.version !== fixture.expected.version ||
+      publicInputs.channel !== "preview" ||
+      publicInputs.windowsSigning.provider !== "unsigned-preview" ||
+      publicInputs.sourceRevision !== owner.sourceRevision
+    )
+      throw failure()
+  }
+  const installers = []
+  for (const fixture of fixtures) {
+    // The ordinary build pipeline verifies source, full history and purpose
+    // bindings before compilation. Neither build invokes public qualification.
+    const build = await (options.build ?? buildPublicDesktop)(
+      [
+        "--inputs",
+        join(root, fixture.directory, "release-inputs.json"),
+        "--public-inputs",
+        join(root, fixture.directory, "public-build-inputs.json"),
+        "--expected-inputs-sha256",
+        fixture.expected.releaseInputsSha256,
+        "--expected-public-build-sha256",
+        fixture.expected.publicBuildInputsSha256,
+        "--platform",
+        platform,
+        "--output",
+        join(root, fixture.output),
+      ],
+      { root: source, env },
+    )
+    if (
+      build.sourceRevision !== owner.sourceRevision ||
+      build.version !== fixture.expected.version ||
+      build.platform !== platform ||
+      build.publication !== false ||
+      build.qualification !== "NOT_TESTED" ||
+      build.releaseInputsSha256 !== fixture.expected.releaseInputsSha256 ||
+      build.publicBuildInputsSha256 !== fixture.expected.publicBuildInputsSha256
+    )
+      throw failure()
+    const installer = candidateNames(fixture.expected.version, platform).find(
+      (entry) => entry.format === (platform === "windows-x64" ? "nsis" : "deb"),
+    )!
+    const file = join(root, fixture.output, installer.name)
+    const observed = await artifactDigest(file)
+    installers.push({ name: installer.name, bytes: observed.bytes, sha256: observed.sha256, path: file })
+  }
   const record = {
     schemaVersion: 1,
     kind: "unpublished-preview-updater-test-build",
@@ -251,7 +302,8 @@ export async function buildPreviewUpdaterTest(options: Options = {}) {
     platform,
     releaseInputsSha256: plan.releaseInputsSha256,
     publicBuildInputsSha256: plan.publicBuildInputsSha256,
-    installer: { name: installer.name, bytes: observed.bytes, sha256: observed.sha256, path: file },
+    installer: installers[0]!,
+    startupAcknowledgement: { ...plan.startupAcknowledgement, installer: installers[1]! },
   }
   await write(join(root, "build-record.json"), record)
   return record
