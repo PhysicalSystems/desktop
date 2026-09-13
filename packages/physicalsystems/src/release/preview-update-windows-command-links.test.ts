@@ -142,7 +142,6 @@ namespace PreviewUpdateFixture {
         EnumChildWindows(window,delegate(IntPtr child, IntPtr data) {
           if(NativeCount>=64) return false;
           NativeCount++;
-          if(nativeRows.Count>=16) return true;
           uint childPid; GetWindowThreadProcessId(child,out childPid);
           var name=new StringBuilder(128);
           GetClassName(child,name,name.Capacity);
@@ -153,12 +152,17 @@ namespace PreviewUpdateFixture {
           var text=new StringBuilder(128); UIntPtr read;
           bool textRead=ReadNativeText(child,0x000D,new IntPtr(text.Capacity),text,2,100,out read)!=IntPtr.Zero;
           int id=GetDlgCtrlID(child);
-          nativeRows.Add(new NativeFact {
+          var row=new NativeFact {
             Class=classCategory,
             Name=textRead?NameCategory(text.ToString()):"other", Id=id==100?"100":id==101?"101":"other",
             Style=GetStyle(child,-16)&15, Owned=childPid==pid,
             Child=IsChild(window,child) && GetAncestor(child,2)==window
-          });
+          };
+          if(nativeRows.Count<16) nativeRows.Add(row);
+          else if(row.Name=="install" || row.Name=="later") {
+            int replace=nativeRows.FindLastIndex(delegate(NativeFact item) { return item.Name=="other"; });
+            if(replace>=0) nativeRows[replace]=row;
+          }
           return true;
         },IntPtr.Zero);
       } catch { NativeFailed=true; }
@@ -178,8 +182,8 @@ namespace PreviewUpdateFixture {
       return 0;
     }
     static IntPtr Window() { return Interlocked.CompareExchange(ref dialog,IntPtr.Zero,IntPtr.Zero); }
-    static void Show(string manifest) {
-      IntPtr context=IntPtr.Zero, buttons=IntPtr.Zero, install=IntPtr.Zero, later=IntPtr.Zero;
+    static void Show(string manifest, bool duplicate) {
+      IntPtr context=IntPtr.Zero, buttons=IntPtr.Zero, install=IntPtr.Zero, later=IntPtr.Zero, extra=IntPtr.Zero;
       UIntPtr cookie=UIntPtr.Zero;
       bool activated=false;
       try {
@@ -190,16 +194,20 @@ namespace PreviewUpdateFixture {
         activated=true;
         int size=Marshal.SizeOf(typeof(Button));
         install=Marshal.StringToHGlobalUni("Install update"); later=Marshal.StringToHGlobalUni("Later");
-        buttons=Marshal.AllocHGlobal(size*2);
+        buttons=Marshal.AllocHGlobal(size*(duplicate?3:2));
         Marshal.StructureToPtr(new Button { Id=100, Text=install },buttons,false);
         Marshal.StructureToPtr(new Button { Id=101, Text=later },IntPtr.Add(buttons,size),false);
+        if(duplicate) {
+          extra=Marshal.StringToHGlobalUni("Later");
+          Marshal.StructureToPtr(new Button { Id=102, Text=extra },IntPtr.Add(buttons,size*2),false);
+        }
         var config=new Config {
           Size=(uint)Marshal.SizeOf(typeof(Config)),
           Flags=0x0010|0x0008|0x0800, // Command links, cancellation, bounded callback timer.
           Title="Physical Systems inert updater command-link test",
           Instruction="Install Physical Systems 0.1.0-beta.7 now?",
           Content="This dialog belongs only to the disposable native-control fixture.",
-          ButtonCount=2, Buttons=buttons, DefaultButton=101, Notify=notify
+          ButtonCount=duplicate?3u:2u, Buttons=buttons, DefaultButton=101, Notify=notify
         };
         int radio; bool verification;
         if(TaskDialogIndirect(ref config,out selected,out radio,out verification)!=0) nativeFailed=true;
@@ -209,18 +217,19 @@ namespace PreviewUpdateFixture {
         if(buttons!=IntPtr.Zero) Marshal.FreeHGlobal(buttons);
         if(install!=IntPtr.Zero) Marshal.FreeHGlobal(install);
         if(later!=IntPtr.Zero) Marshal.FreeHGlobal(later);
+        if(extra!=IntPtr.Zero) Marshal.FreeHGlobal(extra);
         if(activated) DeactivateActCtx(0,cookie);
         if(context!=IntPtr.Zero && context!=new IntPtr(-1)) ReleaseActCtx(context);
       }
     }
-    public static int Run(string manifest, int choice) {
+    public static int Run(string manifest, int choice, bool duplicate) {
       if(choice!=100 && choice!=101) throw new InvalidOperationException();
       timedOut=false; nativeFailed=false; selected=0;
       InstallFacts=null; LaterFacts=null;
       Uia=new UiaFact[0]; Native=new NativeFact[0]; UiaCount=0; NativeCount=0;
       DiagnosticOwned=false; UiaFailed=false; NativeFailed=false;
       uint pid=(uint)Process.GetCurrentProcess().Id;
-      var thread=new Thread(delegate() { Show(manifest); });
+      var thread=new Thread(delegate() { Show(manifest,duplicate); });
       thread.IsBackground=true;
       thread.SetApartmentState(ApartmentState.STA);
       thread.Start();
@@ -233,10 +242,34 @@ namespace PreviewUpdateFixture {
           window=Window();
           if(window!=IntPtr.Zero) {
             install=InstallFacts=PreviewUpdateCommandLink.Read(window,pid,100);
-            later=LaterFacts=PreviewUpdateCommandLink.Read(window,pid,101);
-            if(install.Ready && later.Ready) break;
+            if(duplicate) { if(install.Ready) break; }
+            else {
+              later=LaterFacts=PreviewUpdateCommandLink.Read(window,pid,101);
+              if(install.Ready && later.Ready) break;
+            }
           }
           Thread.Sleep(25);
+        }
+        if(duplicate) {
+          Phase="duplicate-controls";
+          Diagnose(window,pid);
+          int labels=0;
+          foreach(var item in Native) if(item.Name=="later" && item.Class=="Button" && item.Owned && item.Child) labels++;
+          if(nativeFailed || install==null || !install.Ready || labels!=2) throw new InvalidOperationException();
+          Phase="duplicate-refusal";
+          bool ambiguous=false;
+          try { later=LaterFacts=PreviewUpdateCommandLink.Read(window,pid,101); }
+          catch(InvalidOperationException) { ambiguous=true; }
+          if(!ambiguous) throw new InvalidOperationException();
+          // No selector Click occurs for this ambiguous dialog. Close only our
+          // exact HWND, and require the actual TaskDialog cancellation result.
+          Phase="duplicate-close";
+          uint actual;
+          if(window!=Window() || GetWindowThreadProcessId(window,out actual)==0 || actual!=pid ||
+             !PostMessage(window,0x0010,IntPtr.Zero,IntPtr.Zero)) throw new InvalidOperationException();
+          if(!thread.Join(3000) || nativeFailed || timedOut || selected!=2) throw new InvalidOperationException();
+          Phase="complete";
+          return selected;
         }
         if(nativeFailed || install==null || later==null || !install.Ready || !later.Ready || install.Handle==later.Handle) {
           Diagnose(window,pid);
@@ -268,7 +301,7 @@ namespace PreviewUpdateFixture {
 `
 
 test.skipIf(!hostedWindows)(
-  "hosted Windows selects owned native command links and observes actual Later and Install results",
+  "hosted Windows selects actual Later and Install command links and refuses duplicate labels",
   async () => {
     const root = await mkdtemp(join(await realpath(process.env.RUNNER_TEMP!), "preview-update-command-links-"))
     await requireDisposablePublicRunner(process.env, root)
@@ -307,10 +340,11 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type -AssemblyName WindowsBase
 Add-Type -TypeDefinition $request.source -ReferencedAssemblies @('System.dll','System.Core.dll',[Windows.Automation.AutomationElement].Assembly.Location,[Windows.Automation.AutomationIdentifier].Assembly.Location,[Windows.Rect].Assembly.Location)
-$later=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,101)
-$install=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,100)
+$later=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,101,$false)
+$install=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,100,$false)
+$duplicate=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,101,$true)
 [int[]]$selected=@($later,$install)
-[Console]::Out.Write((ConvertTo-Json -InputObject @{status='complete';selected=$selected;ownershipRejected=$true;changedHandleRejected=$true} -Compress))
+[Console]::Out.Write((ConvertTo-Json -InputObject @{status='complete';selected=$selected;ownershipRejected=$true;changedHandleRejected=$true;duplicateLabelCancelled=$duplicate} -Compress))
 `
     let closed = false
     const native = createWindowsReviewRequestTransport<{ source: string; manifest: string }>(
@@ -346,6 +380,7 @@ $install=[PreviewUpdateFixture.TaskDialog]::Run($request.manifest,100)
         selected: [101, 100],
         ownershipRejected: true,
         changedHandleRejected: true,
+        duplicateLabelCancelled: 2,
       })
     } finally {
       if (closed) await rm(root, { recursive: true, force: true })

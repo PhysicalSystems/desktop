@@ -209,18 +209,20 @@ export function previewUpdateWindowsTime() {
   return (BigInt(Date.now()) * 10000n + 621355968000000000n).toString()
 }
 
-/** Electron 42's custom TaskDialog buttons use IDs 100/101 and command-link
- * styles, which the managed legacy Button proxy does not consistently expose.
- * Read only those two native controls; never accept a caller-provided label,
- * class, message ID or action ID. BM_CLICK targets the actual verified control.
+/** Electron 42's command links can be nested below DirectUI/notification sinks,
+ * with native HWND IDs unrelated to TaskDialog's logical IDs 100/101. Select only
+ * the two fixed labels in this owned window's bounded descendant tree; the
+ * managed legacy Button proxy does not consistently expose these controls.
+ * BM_CLICK targets the actual verified control, never a guessed dialog result.
  */
 export const previewUpdateWindowsCommandLinks = String.raw`
 using System;
+using System.Collections.Generic;
 using System.Text;
 using System.Runtime.InteropServices;
 public static class PreviewUpdateCommandLink {
-  [DllImport("user32.dll")] static extern IntPtr GetDlgItem(IntPtr parent, int id);
-  [DllImport("user32.dll")] static extern int GetDlgCtrlID(IntPtr h);
+  delegate bool EnumChild(IntPtr window, IntPtr data);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr parent, EnumChild callback, IntPtr data);
   [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
   [DllImport("user32.dll")] static extern bool IsChild(IntPtr parent, IntPtr h);
   [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint id);
@@ -235,21 +237,21 @@ public static class PreviewUpdateCommandLink {
     public bool Found, Owned, Child, ClassMatches, StyleMatches, TextMatches, Enabled, Visible;
     public bool Ready { get {return Found && Owned && Child && ClassMatches && StyleMatches && TextMatches && Enabled && Visible;} }
   }
-  public static Facts Read(IntPtr dialog, uint pid, int id) {
-    if(dialog==IntPtr.Zero || pid==0 || (id!=100 && id!=101)) throw new InvalidOperationException();
+  static Facts ReadControl(IntPtr dialog, IntPtr control, uint pid, int id) {
     var result=new Facts(); uint dialogPid=0, buttonPid=0;
     GetWindowThreadProcessId(dialog,out dialogPid);
     if(dialogPid!=pid) return result;
-    result.Handle=GetDlgItem(dialog,id); result.Found=result.Handle!=IntPtr.Zero;
+    result.Handle=control; result.Found=control!=IntPtr.Zero;
     if(!result.Found) return result;
     GetWindowThreadProcessId(result.Handle,out buttonPid);
     result.Owned=buttonPid==pid;
-    result.Child=IsChild(dialog,result.Handle) && GetAncestor(result.Handle,2)==dialog && GetDlgCtrlID(result.Handle)==id;
+    result.Child=IsChild(dialog,result.Handle) && GetAncestor(result.Handle,2)==dialog;
     if(!result.Owned || !result.Child) return result;
     var name=new StringBuilder(128); int length=GetClassName(result.Handle,name,name.Capacity);
     result.ClassMatches=length>0 && length<127 && String.Equals(name.ToString(),"Button",StringComparison.OrdinalIgnoreCase);
     int style=GetStyle(result.Handle,-16) & 15;
     result.StyleMatches=style==14 || style==15;
+    if(!result.ClassMatches || !result.StyleMatches) return result;
     var text=new StringBuilder(128); UIntPtr read;
     if(ReadText(result.Handle,0x000D,new IntPtr(text.Capacity),text,2,500,out read)!=IntPtr.Zero && read.ToUInt64()<127)
       result.TextMatches=String.Equals(text.ToString(),id==100?"Install update":"Later",StringComparison.Ordinal);
@@ -257,9 +259,29 @@ public static class PreviewUpdateCommandLink {
     result.Visible=IsWindowVisible(dialog) && IsWindowVisible(result.Handle);
     return result;
   }
+  public static Facts Read(IntPtr dialog, uint pid, int id) {
+    if(dialog==IntPtr.Zero || pid==0 || (id!=100 && id!=101)) throw new InvalidOperationException();
+    uint dialogPid; GetWindowThreadProcessId(dialog,out dialogPid);
+    if(dialogPid!=pid) return new Facts();
+    var children=new List<IntPtr>(); bool bounded=true;
+    EnumChildWindows(dialog,delegate(IntPtr child, IntPtr data) {
+      if(children.Count>=64) {bounded=false;return false;}
+      children.Add(child); return true;
+    },IntPtr.Zero);
+    if(!bounded) throw new InvalidOperationException();
+    var result=new Facts(); int matches=0;
+    foreach(var child in children) {
+      var candidate=ReadControl(dialog,child,pid,id);
+      if(!candidate.TextMatches) continue;
+      if(++matches>1) throw new InvalidOperationException();
+      result=candidate;
+    }
+    return result;
+  }
   public static void Click(IntPtr dialog, uint pid, int id, IntPtr expected) {
     var current=Read(dialog,pid,id);
-    if(!current.Ready || current.Handle!=expected || !PostMessage(current.Handle,0x00F5,IntPtr.Zero,IntPtr.Zero))
+    if(!current.Ready || current.Handle!=expected || !ReadControl(dialog,expected,pid,id).Ready ||
+       !PostMessage(expected,0x00F5,IntPtr.Zero,IntPtr.Zero))
       throw new InvalidOperationException();
   }
 }
