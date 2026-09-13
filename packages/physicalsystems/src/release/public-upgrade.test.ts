@@ -1,32 +1,59 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
+import { allocateDesktopVersion, compareVersion } from "./inputs"
 import { publicReviewDigest } from "./public-downloads"
 import { simulatedPublicNativeFixture } from "./public-native-fixture"
 import { publicUpgradePlan, publicUpgradeVersions, validatePublicUpgradePlan } from "./public-upgrade"
 
-test("first public upgrade uses a strictly older unreleased lab allocation without requiring a prior qualified release", () => {
+test("first public release keeps beta.1 and bootstraps its upgrade with a separate lab version", () => {
   expect(publicUpgradeVersions({ history: { complete: true, versions: [] }, channel: "preview" })).toEqual({
-    baselineVersion: "0.1.0-beta.1",
-    targetVersion: "0.1.0-beta.2",
+    baselineVersion: "0.0.0-beta.1",
+    targetVersion: "0.1.0-beta.1",
     baselineHistory: { complete: true, versions: [] },
-    targetHistory: { complete: true, versions: ["0.1.0-beta.1"] },
+    targetHistory: { complete: true, versions: [] },
   })
   expect(
     publicUpgradeVersions({ history: { complete: true, versions: [] }, channel: "stable", requestedVersion: "0.1.0" })
       .targetVersion,
   ).toBe("0.1.0")
-  expect(() =>
+  expect(
     publicUpgradeVersions({
       history: { complete: true, versions: [] },
       channel: "preview",
       requestedVersion: "0.1.0-beta.1",
-    }),
+    }).targetVersion,
+  ).toBe("0.1.0-beta.1")
+})
+
+test.each([
+  { versions: ["0.1.0-beta.4"], expected: "0.1.0-beta.5" },
+  { versions: ["0.1.0-beta.6", "0.1.0-beta.4"], expected: "0.1.0-beta.7" },
+  { versions: ["0.1.0"], expected: "0.1.1-beta.1" },
+])("candidate and public targets agree for complete history $versions", ({ versions, expected }) => {
+  const history = { complete: true as const, versions: [...versions] }
+  const original = structuredClone(history)
+  const candidate = allocateDesktopVersion({ history, channel: "preview" })
+  const release = publicUpgradeVersions({ history, channel: "preview", requestedVersion: candidate })
+  expect(candidate).toBe(expected)
+  expect(release.targetVersion).toBe(candidate)
+  expect(publicUpgradeVersions({ history, channel: "preview" }).targetVersion).toBe(candidate)
+  expect(compareVersion(release.baselineVersion, release.targetVersion)).toBeLessThan(0)
+  expect(release.baselineHistory).toEqual(original)
+  expect(release.targetHistory).toEqual(original)
+  expect(history).toEqual(original)
+  release.baselineHistory.versions.push("9.0.0")
+  expect(release.targetHistory).toEqual(original)
+  expect(history).toEqual(original)
+})
+
+test("a candidate version cannot silently change or be reused after another release reserves it", () => {
+  const history = { complete: true as const, versions: ["0.1.0-beta.4", "0.1.0-beta.6"] }
+  for (const requestedVersion of ["0.1.0-beta.5", "0.1.0-beta.6", "0.0.0-beta.1"])
+    expect(() => publicUpgradeVersions({ history, channel: "preview", requestedVersion })).toThrow()
+  expect(() => publicUpgradeVersions({ history, channel: "stable" })).toThrow()
+  expect(() =>
+    publicUpgradeVersions({ history: { ...history, complete: false } as never, channel: "preview" }),
   ).toThrow()
-  const history = { complete: true as const, versions: ["0.1.0"] }
-  const next = publicUpgradeVersions({ history, channel: "preview" })
-  expect(next.baselineVersion).toBe("0.1.1-beta.1")
-  expect(next.targetVersion).toBe("0.1.1-beta.2")
-  expect(history.versions).toEqual(["0.1.0"])
 })
 
 test("baseline plan binds both public builds, exact signing policy and limited same-source/schema scope", () => {

@@ -79,6 +79,21 @@ The source checks use `bun test` and `bun typecheck` from the affected package d
 
 The input bundle contains `release-inputs.json`, `history.json`, the decoded `models.dev-api.json`, and `SHA256SUMS`. The record fixes the desktop version/channel, repository and source commit, OpenCode baseline, canonical operator revision/digests, lockfile, toolchain, model catalog and compatibility declarations. Both platforms verify these bytes before building. A platform does not refresh its model catalog independently or rebuild the operator from a developer-local checkout.
 
+Candidate and public preparation use the same next-version allocator and the same
+`DESKTOP_RELEASE_HISTORY_TOKEN`, with read-only contents access to the download
+repository so drafts count in both workflows. With public beta.4 and reserved
+draft beta.6, both select beta.7. The public upgrade test uses a separate,
+unpublishable `0.0.0-beta.1` lab build and does not consume a beta number.
+
+A candidate's version is provisional until public reservation. To keep its number,
+enter that exact version in the public workflow and verify that its reviewed source
+matches the candidate's source; the public workflow builds the dispatched `main`
+revision. If another release has reserved that number or advanced history,
+preparation fails instead of silently renumbering or overwriting it. Prepare a new
+candidate when that happens. Matching versions do not make candidate and public
+installers identical: public identity and native qualification still require the
+public build. Existing drafts, tags and installers are never renumbered.
+
 In GitHub Actions, every consuming CLI command also requires `PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256` and `PHYSICALSYSTEMS_RELEASE_REPOSITORY`. The expected digest comes from the trusted prepare job's output, and the repository comes from the workflow context. They must not be derived from the downloaded record being checked: a self-consistent replacement record is insufficient. Local diagnostics still verify the record against source and may supply the same anchors explicitly.
 
 | Target                        | Files prepared   | Automated qualification boundary                                                                           |

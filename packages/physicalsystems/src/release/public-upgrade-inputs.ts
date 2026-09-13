@@ -3,7 +3,7 @@ import { lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join } from "node:path"
 import { gunzipSync } from "node:zlib"
 import { emptyOutput } from "./commands"
-import { prepareReleaseInputs, verifyReleaseInputs } from "./inputs"
+import { prepareReleaseInputs, prepareUpgradeLabInputs, verifyReleaseInputs } from "./inputs"
 import type { ReleaseHistory } from "./inputs"
 import { preparePublicProducerInputs, validatePublicProducerPolicy } from "./public-producer"
 import { validatePublicBuildInputs } from "./public-build"
@@ -24,11 +24,9 @@ export async function preparePublicUpgradeInputs(input: {
 }) {
   const policy = validatePublicProducerPolicy(input.policy, input.expectedPolicySha256, input.sourceRevision)
   const versions = publicUpgradeVersions(input)
-  const baseline = await prepareReleaseInputs({
+  const baseline = await prepareUpgradeLabInputs({
     repoRoot: input.root,
     repository: "PhysicalSystems/desktop",
-    channel: "preview",
-    version: versions.baselineVersion,
     history: versions.baselineHistory,
   })
   const target = await prepareReleaseInputs({
@@ -111,6 +109,8 @@ export async function loadPublicUpgradeInputs(input: { root: string; env: NodeJS
   }
   const target = await release("PUBLIC_RELEASE_INPUTS", "EXPECTED_RELEASE_INPUTS_SHA256")
   const baseline = await release("PUBLIC_BASELINE_RELEASE_INPUTS", "EXPECTED_BASELINE_RELEASE_INPUTS_SHA256")
+  if (target.upgradeLab !== undefined || baseline.upgradeLab !== "unreleased-lab-only")
+    throw new Error("PUBLIC_UPGRADE_INPUT_BINDING_INVALID")
   const targetPublic = validatePublicBuildInputs(
     await read(required("PUBLIC_BUILD_INPUTS")),
     required("EXPECTED_PUBLIC_BUILD_SHA256"),

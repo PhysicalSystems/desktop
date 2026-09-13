@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash } from "node:crypto"
 import { candidateNames } from "./artifacts"
+import { compareVersion } from "./inputs"
 
 const repository = "PhysicalSystems/physicalsystems"
 export const unsignedWindowsPreviewWarning = "Unsigned Windows preview: Windows may warn or block installation."
@@ -186,6 +187,8 @@ export function validateDistributionFacts(input: unknown): PublicDistributionFac
     !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/.test(review.version)
   )
     throw new Error("Invalid public desktop version")
+  if (compareVersion(review.version, "0.1.0-beta.1") < 0)
+    throw new Error("Public desktop version precedes the initial release; upgrade labs cannot be distributed")
   if (
     (review.channel !== "preview" && review.channel !== "stable") ||
     review.version.includes("-beta.") !== (review.channel === "preview") ||

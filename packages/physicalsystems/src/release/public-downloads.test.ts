@@ -12,8 +12,7 @@ import type { PublicDistributionReview } from "./public-downloads"
 const sha = (text: string) => createHash("sha256").update(text).digest("hex")
 const repository = "PhysicalSystems/physicalsystems"
 
-function fixture() {
-  const version = "0.1.0-beta.1"
+function fixture(version = "0.1.0-beta.1") {
   const names = [
     `physical-systems-desktop-${version}-windows-x64.exe`,
     `physical-systems-desktop-${version}-linux-x64.deb`,
@@ -100,6 +99,20 @@ function fixture() {
 }
 
 describe("anonymous public desktop download readback", () => {
+  test("rejects fully qualified upgrade-lab facts and approval before attempting public downloads", async () => {
+    const data = fixture("0.0.0-beta.1")
+    const { schemaVersion, kind, releaseId, approval, ...facts } = data.review
+    expect(() => validateDistributionFacts(facts)).toThrow("precedes the initial release")
+    await expect(
+      verifyPublicDownloads({
+        review: data.review,
+        expectedReviewSha256: publicReviewDigest(data.review),
+        fetch: data.request,
+      }),
+    ).rejects.toThrow("upgrade labs cannot be distributed")
+    expect(data.calls).toHaveLength(0)
+  })
+
   test("preview download readback preserves untested account sign-in without relaxing stable checks", async () => {
     const data = fixture()
     for (const asset of data.review.assets) asset.qualification.checks["provider-browser-sign-in"] = "NOT_TESTED"

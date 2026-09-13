@@ -7,6 +7,7 @@ import { gunzipSync } from "node:zlib"
 
 export type ReleaseHistory = { complete: true; versions: string[] }
 export type ReleaseChannel = "preview" | "stable"
+export const UPGRADE_LAB_VERSION = "0.0.0-beta.1"
 
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/
 const revisionPattern = /^[a-f0-9]{40}$/
@@ -201,6 +202,32 @@ export async function prepareReleaseInputs(input: {
   version?: string
   history: ReleaseHistory
 }) {
+  return captureReleaseInputs(input)
+}
+
+/** The upgrade fixture is never allocated in public history. Its reserved lower
+ * version and lab purpose are bound into the same immutable source receipt. */
+export async function prepareUpgradeLabInputs(input: {
+  repoRoot: string
+  repository: string
+  history: ReleaseHistory
+}) {
+  return captureReleaseInputs(
+    { repoRoot: input.repoRoot, repository: input.repository, channel: "preview", history: input.history },
+    "unreleased-lab-only",
+  )
+}
+
+async function captureReleaseInputs(
+  input: {
+    repoRoot: string
+    repository: string
+    channel: ReleaseChannel
+    version?: string
+    history: ReleaseHistory
+  },
+  upgradeLab?: "unreleased-lab-only",
+) {
   if (
     typeof input.repository !== "string" ||
     input.repository.trim() !== input.repository ||
@@ -221,11 +248,10 @@ export async function prepareReleaseInputs(input: {
   if (git(root, ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"])) {
     throw new Error("Desktop release source must be clean and committed")
   }
-  const version = allocateDesktopVersion({
-    channel: input.channel,
-    requestedVersion: input.version,
-    history: input.history,
-  })
+  const versions = releaseHistory(input.history)
+  const version = upgradeLab
+    ? UPGRADE_LAB_VERSION
+    : allocateDesktopVersion({ channel: input.channel, requestedVersion: input.version, history: input.history })
   const policyBytes = await trackedFile(root, "release/desktop.json")
   const policy = jsonObject(JSON.parse(policyBytes.toString()), "desktop release policy")
   if (
@@ -337,6 +363,7 @@ export async function prepareReleaseInputs(input: {
     product: "Physical Systems Desktop",
     version,
     channel: input.channel,
+    ...(upgradeLab ? { upgradeLab } : {}),
     publication: false,
     source,
     policy: { path: "release/desktop.json", sha256: sha256(policyBytes) },
@@ -346,8 +373,8 @@ export async function prepareReleaseInputs(input: {
     modelCatalog,
     releaseHistory: {
       complete: true,
-      count: input.history.versions.length,
-      sha256: sha256(canonical(releaseHistory(input.history))),
+      count: versions.length,
+      sha256: sha256(canonical(versions)),
     },
     targets: structuredClone(targetPolicy),
     qualification: structuredClone(qualificationPolicy),
@@ -398,13 +425,26 @@ export async function verifyReleaseInputs(input: {
   ) {
     throw new Error("Release input digest does not match the trusted preparation receipt")
   }
-  const expected = await prepareReleaseInputs({
-    repoRoot: input.repoRoot,
-    repository: source.repository,
-    version: record.version,
-    channel: record.channel,
-    history: input.history,
-  })
+  if (
+    "upgradeLab" in record &&
+    (record.upgradeLab !== "unreleased-lab-only" ||
+      record.version !== UPGRADE_LAB_VERSION ||
+      record.channel !== "preview")
+  )
+    throw new Error("Invalid unreleased upgrade lab identity")
+  const expected = await (record.upgradeLab === "unreleased-lab-only"
+    ? prepareUpgradeLabInputs({
+        repoRoot: input.repoRoot,
+        repository: source.repository,
+        history: input.history,
+      })
+    : prepareReleaseInputs({
+        repoRoot: input.repoRoot,
+        repository: source.repository,
+        version: record.version,
+        channel: record.channel,
+        history: input.history,
+      }))
   if (canonical(expected) !== canonical(record))
     throw new Error("Release inputs do not match pinned source and release history")
   return expected
