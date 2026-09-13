@@ -11,7 +11,7 @@ import { freezePublicProducerPolicy } from "./public-producer"
 import { publicReviewDigest } from "./public-downloads"
 
 const directories: string[] = []
-const history = { complete: true as const, versions: [] as string[] }
+const history = { complete: true as const, versions: ["0.1.0-beta.4", "0.1.0-beta.6"] }
 const policy = JSON.parse(await readFile(new URL("../../../../release/desktop.json", import.meta.url), "utf8"))
 
 afterAll(async () => {
@@ -153,24 +153,24 @@ beforeAll(async () => {
 })
 
 test("freezes two real clean-source input bundles with distinct versions and the same policy", async () => {
-  expect(prepared.result.version).toBe("0.1.0-beta.2")
-  expect(prepared.result.baseline_version).toBe("0.1.0-beta.1")
+  expect(prepared.result.version).toBe("0.1.0-beta.7")
+  expect(prepared.result.baseline_version).toBe("0.0.0-beta.1")
   const loaded = await loadPublicUpgradeInputs({ root: prepared.root, env: prepared.env })
   expect(loaded.plan.publication).toBe(false)
   expect(loaded.plan.baselinePurpose).toBe("unreleased-lab-only")
   expect(loaded.target.source).toEqual(loaded.baseline.source)
   expect(loaded.target.sha256).not.toBe(loaded.baseline.sha256)
+  expect(loaded.target.upgradeLab).toBeUndefined()
+  expect(loaded.baseline.upgradeLab).toBe("unreleased-lab-only")
+  expect(loaded.target.releaseHistory).toEqual(loaded.baseline.releaseHistory)
   expect(loaded.targetPublic.windowsSigning).toEqual(loaded.baselinePublic.windowsSigning)
-  expect(JSON.parse(await readFile(path.join(prepared.output, "history.json"), "utf8"))).toEqual({
-    complete: true,
-    versions: ["0.1.0-beta.1"],
-  })
+  expect(JSON.parse(await readFile(path.join(prepared.output, "history.json"), "utf8"))).toEqual(history)
   expect(JSON.parse(await readFile(path.join(prepared.output, "baseline/history.json"), "utf8"))).toEqual(history)
   expect(await readFile(path.join(prepared.output, "models.dev-api.json"), "utf8")).toBe(
     await readFile(path.join(prepared.output, "baseline/models.dev-api.json"), "utf8"),
   )
   expect(git(prepared.root, "status", "--porcelain")).toBe("")
-  expect(history).toEqual({ complete: true, versions: [] })
+  expect(history).toEqual({ complete: true, versions: ["0.1.0-beta.4", "0.1.0-beta.6"] })
 })
 
 test("loading the frozen pair rejects a changed upgrade-plan digest", async () => {

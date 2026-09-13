@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { allocateDesktopVersion, compareVersion } from "./inputs"
+import { allocateDesktopVersion, compareVersion, UPGRADE_LAB_VERSION } from "./inputs"
 import type { ReleaseHistory } from "./inputs"
 import { validatePublicBuildInputs } from "./public-build"
 import type { PublicBuildInputs } from "./public-build"
@@ -18,22 +18,24 @@ export type PublicUpgradePlan = {
 
 const invalid = () => new Error("PUBLIC_UPGRADE_BASELINE_INVALID")
 
-/** Reserve a lab version in this run's immutable history before selecting the
- * strictly newer public version. The lab installer is never a public asset. */
+/** Select the same target as candidate preparation. The private upgrade lab
+ * uses its own pre-release-floor version and consumes no public version. */
 export function publicUpgradeVersions(input: {
   history: ReleaseHistory
   channel: "preview" | "stable"
   requestedVersion?: string
 }) {
-  const baselineHistory = structuredClone(input.history)
-  const baselineVersion = allocateDesktopVersion({ history: baselineHistory, channel: "preview" })
-  const targetHistory: ReleaseHistory = { complete: true, versions: [...baselineHistory.versions, baselineVersion] }
   const targetVersion = allocateDesktopVersion({
-    history: targetHistory,
+    history: input.history,
     channel: input.channel,
     requestedVersion: input.requestedVersion,
   })
-  return { baselineVersion, targetVersion, baselineHistory, targetHistory }
+  return {
+    baselineVersion: UPGRADE_LAB_VERSION,
+    targetVersion,
+    baselineHistory: structuredClone(input.history),
+    targetHistory: structuredClone(input.history),
+  }
 }
 
 export function publicUpgradePlan(input: {

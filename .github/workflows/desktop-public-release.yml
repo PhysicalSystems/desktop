@@ -13,7 +13,7 @@ on:
         default: preview
         required: true
       version:
-        description: Optional preview version; stable requires an explicit version
+        description: Use the reviewed candidate version (preview auto-selects if empty; stable requires a version)
         type: string
         required: false
       windows_signing:

@@ -44,12 +44,16 @@ The public download record reports `unsigned-preview`, with no invented publishe
 or certificate identity. This is a deliberately unsigned prerelease, not a signature
 verification success.
 
-Configure `DESKTOP_RELEASE_HISTORY_TOKEN` with **read-only contents access** to
-`PhysicalSystems/physicalsystems`. The desktop repository's ordinary GitHub token
+Configure `DESKTOP_RELEASE_HISTORY_TOKEN` for both candidate and public preparation
+with **read-only contents access** to `PhysicalSystems/physicalsystems`. The desktop repository's ordinary GitHub token
 cannot read draft releases in that separate repository. Preparation needs complete
 history including drafts and prereleases; it must not label anonymous/public-only
 history complete. This credential is available only to the history-read step.
 The publisher separately rechecks version reservation before creating any release.
+Both preparations select the public target once with the same allocator. The
+upgrade lab uses the reserved internal `0.0.0-beta.1` version; it does not advance
+public history. An explicit candidate version is rejected if that history has
+since advanced or reserved it, rather than silently selecting a different number.
 
 For PFX signing, configure repository secrets `DESKTOP_WINDOWS_PFX_BASE64` and
 `DESKTOP_WINDOWS_PFX_PASSWORD`. The first contains canonical base64 for a PFX of

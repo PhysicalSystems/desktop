@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { gzipSync } from "node:zlib"
 import { buildPublicDesktop, publicBuildArguments, publicBuildEnvironments } from "./public-build-command"
-import { prepareReleaseInputs } from "./inputs"
+import { prepareReleaseInputs, prepareUpgradeLabInputs } from "./inputs"
 import type { ReleaseInputs } from "./inputs"
 import { compiledIdentityRecord, loadPublicBuildInputs } from "./public-build"
 import type { PublicBuildInputs } from "./public-build"
@@ -318,8 +318,20 @@ async function fixture() {
   }
 }
 
-test("actual immutable source staging builds only exact public outputs and emits no native qualification claims", async () => {
+test.each(["target", "upgrade-lab"])("staging preserves %s inputs and outputs", async (purpose) => {
   const data = await fixture()
+  if (purpose === "upgrade-lab") {
+    data.inputs = await prepareUpgradeLabInputs({
+      repoRoot: data.root,
+      repository: "PhysicalSystems/desktop",
+      history,
+    })
+    data.build = { ...data.build, version: data.inputs.version, releaseInputsSha256: data.inputs.sha256 }
+    data.flags[5] = data.inputs.sha256
+    data.flags[7] = publicReviewDigest(data.build)
+    await writeFile(join(data.folder, "release-inputs.json"), json(data.inputs))
+    await writeFile(join(data.folder, "public-build-inputs.json"), json(data.build))
+  }
   const phases: string[] = []
   let stage = ""
   const record = await buildPublicDesktop(data.flags, {

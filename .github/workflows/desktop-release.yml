@@ -15,7 +15,7 @@ on:
         default: preview
         required: true
       version:
-        description: Optional preview version; stable requires an explicit version
+        description: Intended public version (preview auto-selects next available; stable requires a version)
         type: string
         required: false
       diagnostic_public_key:
@@ -192,10 +192,15 @@ jobs:
         with:
           install-dependencies: "false"
 
-      - name: Read complete desktop release history from the public download repository
+      - name: Read complete desktop release history, including drafts
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Use the same draft-visible history as the public release workflow.
+          GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_HISTORY_TOKEN }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo 'Provision DESKTOP_RELEASE_HISTORY_TOKEN with read-only contents access to the download repository.'
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/desktop-release"
           destination=$(node -p 'const p=require("./release/desktop.json"); if(p.publicReleaseRepository !== "PhysicalSystems/physicalsystems") throw new Error("Unreviewed public download destination"); p.publicReleaseRepository')
           gh api --paginate --slurp "repos/$destination/releases?per_page=100" > "$RUNNER_TEMP/desktop-release/history-pages.json"

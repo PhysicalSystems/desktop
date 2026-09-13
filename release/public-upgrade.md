@@ -8,12 +8,19 @@ come from the trusted preparation job, before signing credentials or native
 installation. Both builds compile their own exact version; neither relabels an
 existing candidate or installer.
 
-For the first preview with empty release history, the lab uses `0.1.0-beta.1` and
-the target uses `0.1.0-beta.2`. Later preparation allocates both above the complete
-public release history, including drafts. The lab version is recorded in this
-run's target allocation history and uploaded under a separate `desktop-upgrade-lab`
-artifact name. It never appears in the target inventory or qualified publisher
-bundle. A previously published release is not required to bootstrap the lab.
+The target uses the same allocator and complete history, including drafts, as
+candidate preparation. For the first preview it selects `0.1.0-beta.1`; with
+`0.1.0-beta.6` already reserved it selects `0.1.0-beta.7`. The lab always uses
+`0.0.0-beta.1`, below the first permitted public version, and consumes no public
+version. Only dedicated lab preparation can create this version, with the
+digest-bound `upgradeLab: "unreleased-lab-only"` purpose. Both input bundles retain
+the actual complete history; no synthetic entry is added and no history is hidden
+to admit the older lab. Public distribution validation rejects versions below
+`0.1.0-beta.1`.
+
+The lab is uploaded under a separate `desktop-upgrade-lab` artifact name. It never
+appears in the target inventory or qualified publisher bundle. A previously
+published release is not required to bootstrap the lab.
 
 This tests installer replacement and preservation **within the same reviewed
 source and storage schema**. It does not test historical database migrations,
