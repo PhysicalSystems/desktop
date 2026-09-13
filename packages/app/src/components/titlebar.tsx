@@ -41,6 +41,7 @@ import { newTabTooltipKeybind } from "./command-tooltip-keybind"
 import { normalizeSessionInfo } from "@/utils/session"
 import type { UpdaterState } from "@/updater"
 import { updaterAction } from "./updater-action"
+import { UpdaterButton, type UpdaterButtonState } from "./updater-button"
 
 const legacyTitlebarHeight = 40
 const v2TitlebarHeight = 36
@@ -122,17 +123,17 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   const canForward = createMemo(() => history.index < history.stack.length - 1)
   const hasProjects = createMemo(() => layout.projects.list().length > 0)
   const nav = createMemo(() => (useV2Titlebar() ? settings.general.showNavigation() : true))
-  const updateState = createMemo<TitlebarUpdatePillState>(() => {
+  const updateState = createMemo<UpdaterButtonState>(() => {
     const state = props.update?.state()
     const action = updaterAction(state)
     const version = state && "version" in state ? state.version : undefined
-    const busy = state?.status === "downloading" || state?.status === "installing"
+    const busy = state?.status === "checking" || state?.status === "downloading" || state?.status === "installing" || (state?.status === "blocked" && !state.recoverable)
     return {
-      visible: version !== undefined,
+      visible: version !== undefined || (state?.mode === "preview" && state.status !== "disabled"),
       installing: busy,
       label: language.t(action.label),
       ariaLabel: language.t(action.label),
-      title: version ? language.t("titlebar.updateVersion", { version }) : undefined,
+      title: state?.status === "blocked" || state?.status === "error" ? state.message : version ? language.t("titlebar.updateVersion", { version }) : undefined,
       onInstall: () => props.update?.run(),
     }
   })
@@ -584,7 +585,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
               data-tauri-drag-region
             >
               <Show when={updateState().visible}>
-                <TitlebarUpdateIconButton state={updateState()} />
+                <UpdaterButton state={updateState()} />
               </Show>
               <div id="opencode-titlebar-right" class="flex items-center gap-1 shrink-0 justify-end" />
               <Show when={windows()}>
@@ -598,45 +599,18 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   )
 }
 
-type TitlebarUpdatePillState = {
-  visible: boolean
-  installing: boolean
-  label: string
-  ariaLabel: string
-  title?: string
-  onInstall: () => void
-}
-
 type TitlebarV2RightState = {
-  update: TitlebarUpdatePillState
+  update: UpdaterButtonState
 }
 
 function TitlebarV2Right(props: { state: TitlebarV2RightState }) {
   return (
     <div class="relative z-20 flex shrink-0 items-center justify-end gap-0 overflow-visible">
       <Show when={props.state.update.visible}>
-        <TitlebarUpdateIconButton state={props.state.update} />
+        <UpdaterButton state={props.state.update} />
       </Show>
       <div id="opencode-titlebar-right" class="flex shrink-0 items-center justify-end gap-0" />
     </div>
-  )
-}
-
-function TitlebarUpdateIconButton(props: { state: TitlebarUpdatePillState }) {
-  return (
-    <Button
-      size="small"
-      variant="secondary"
-      icon={props.state.installing ? undefined : "download"}
-      class="mr-2 shrink-0 [app-region:no-drag]"
-      onClick={props.state.onInstall}
-      disabled={props.state.installing}
-      aria-busy={props.state.installing}
-      aria-label={props.state.ariaLabel}
-      title={props.state.title}
-    >
-      {props.state.label}
-    </Button>
   )
 }
 

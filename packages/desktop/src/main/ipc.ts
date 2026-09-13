@@ -15,6 +15,7 @@ import { runDesktopMenuAction } from "./desktop-menu-actions"
 import { setForceFocus } from "./debug"
 import { assertAttachmentBudget, createPickedFileAuthorizations } from "./attachment-picker"
 import { getStore, removeStoreFileIfEmpty } from "./store"
+import { rendererStoreName } from "./renderer-store"
 import {
   getPinchZoomEnabled,
   getWindowID,
@@ -126,6 +127,7 @@ export function registerIpcHandlers(deps: Deps) {
   ipcMain.handle("check-app-exists", (_event: IpcMainInvokeEvent, appName: string) => deps.checkAppExists(appName))
   ipcMain.handle("resolve-app-path", (_event: IpcMainInvokeEvent, appName: string) => deps.resolveAppPath(appName))
   ipcMain.handle("updater-subscribe", (event) => {
+    assertPhysicalSender(event)
     const id = event.sender.id
     updaterSubscriptions.set(
       id,
@@ -136,10 +138,11 @@ export function registerIpcHandlers(deps: Deps) {
     )
     event.sender.once("destroyed", () => updaterSubscriptions.delete(id))
   })
-  ipcMain.handle("updater-unsubscribe", (event) => updaterSubscriptions.delete(event.sender.id))
-  ipcMain.handle("updater-check", () => deps.updater.check())
-  ipcMain.handle("updater-download", () => deps.updater.download())
-  ipcMain.handle("updater-install", () => deps.updater.install())
+  ipcMain.handle("updater-unsubscribe", (event) => { assertPhysicalSender(event); updaterSubscriptions.delete(event.sender.id) })
+  ipcMain.handle("updater-check", (event) => { assertPhysicalSender(event); return deps.updater.check() })
+  ipcMain.handle("updater-download", (event) => { assertPhysicalSender(event); return deps.updater.download() })
+  ipcMain.handle("updater-install", (event) => { assertPhysicalSender(event); return deps.updater.install() })
+  ipcMain.handle("updater-recover", (event) => { assertPhysicalSender(event); return deps.updater.recover?.() ?? deps.updater.getState() })
   ipcMain.handle("set-background-color", (_event: IpcMainInvokeEvent, color: string) => deps.setBackgroundColor(color))
   ipcMain.handle("export-debug-logs", () => deps.exportDebugLogs())
   ipcMain.handle("set-force-focus", (event: IpcMainInvokeEvent, enabled: boolean) =>
@@ -157,7 +160,9 @@ export function registerIpcHandlers(deps: Deps) {
     if (!bundle) throw new Error("Invalid native translation bundle")
     deps.setNativeTranslations(bundle)
   })
-  ipcMain.handle("store-get", (_event: IpcMainInvokeEvent, name: string, key: string) => {
+  ipcMain.handle("store-get", (event: IpcMainInvokeEvent, name: string, key: string) => {
+    assertPhysicalSender(event)
+    name = rendererStoreName(name)
     try {
       const store = getStore(name)
       const value = store.get(key)
@@ -167,22 +172,32 @@ export function registerIpcHandlers(deps: Deps) {
       return null
     }
   })
-  ipcMain.handle("store-set", (_event: IpcMainInvokeEvent, name: string, key: string, value: string) => {
+  ipcMain.handle("store-set", (event: IpcMainInvokeEvent, name: string, key: string, value: string) => {
+    assertPhysicalSender(event)
+    name = rendererStoreName(name)
     getStore(name).set(key, value)
   })
-  ipcMain.handle("store-delete", (_event: IpcMainInvokeEvent, name: string, key: string) => {
+  ipcMain.handle("store-delete", (event: IpcMainInvokeEvent, name: string, key: string) => {
+    assertPhysicalSender(event)
+    name = rendererStoreName(name)
     getStore(name).delete(key)
     void removeStoreFileIfEmpty(name)
   })
-  ipcMain.handle("store-clear", (_event: IpcMainInvokeEvent, name: string) => {
+  ipcMain.handle("store-clear", (event: IpcMainInvokeEvent, name: string) => {
+    assertPhysicalSender(event)
+    name = rendererStoreName(name)
     getStore(name).clear()
     void removeStoreFileIfEmpty(name)
   })
-  ipcMain.handle("store-keys", (_event: IpcMainInvokeEvent, name: string) => {
+  ipcMain.handle("store-keys", (event: IpcMainInvokeEvent, name: string) => {
+    assertPhysicalSender(event)
+    name = rendererStoreName(name)
     const store = getStore(name)
     return Object.keys(store.store)
   })
-  ipcMain.handle("store-length", (_event: IpcMainInvokeEvent, name: string) => {
+  ipcMain.handle("store-length", (event: IpcMainInvokeEvent, name: string) => {
+    assertPhysicalSender(event)
+    name = rendererStoreName(name)
     const store = getStore(name)
     return Object.keys(store.store).length
   })
@@ -338,6 +353,7 @@ export function registerIpcHandlers(deps: Deps) {
     setTitlebar(win, theme)
   })
   ipcMain.handle("run-desktop-menu-action", (event: IpcMainInvokeEvent, action: DesktopMenuAction) => {
+    assertPhysicalSender(event)
     runDesktopMenuAction(BrowserWindow.fromWebContents(event.sender), action, {
       checkForUpdates: () => void deps.showUpdater(),
       relaunch: deps.relaunch,

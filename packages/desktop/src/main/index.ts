@@ -25,6 +25,8 @@ import {
 } from "./onboarding"
 import { spawnLocalServer, type SidecarListener } from "./server"
 import { setupAutoUpdater, showUpdaterDialog } from "./updater"
+import { previewUpdaterEligible, setupPreviewUpdater } from "./preview-updater"
+import { PreviewUpdateInstallError } from "./preview-update-install"
 import { safeWebContentsURL } from "./window-state"
 import {
   getLastFocusedWindow,
@@ -197,6 +199,7 @@ const main = Effect.gen(function* () {
       app.quit()
     },
     blocked(error) { shutdownTrace("BLOCKED", error); physical?.notify() },
+    updateUncertain: (error) => error instanceof PreviewUpdateInstallError && error.installationUncertain,
   })
   const relaunch = () => { void shutdown.request("relaunch") }
 
@@ -322,11 +325,14 @@ const main = Effect.gen(function* () {
   // A review build never takes over the installed OpenCode URL handler.
   registerRendererProtocol()
   setDockIcon()
-  const updater = setupAutoUpdater(async (launch) => {
+  const installUpdate = async (launch: () => void | Promise<void>) => {
     // Unlike quitAndInstall, preparation preserves the operator window until
     // operator/credential cleanup and owned process exit are confirmed.
     if (!(await shutdown.update(launch))) throw new Error("UPDATE_SHUTDOWN_UNCONFIRMED")
-  })
+  }
+  const updater = previewUpdaterEligible({ packaged: app.isPackaged, platform: process.platform, arch: process.arch, currentVersion: app.getVersion(), identity })
+    ? setupPreviewUpdater({ identity, shutdown: installUpdate, resume: () => { if (!shutdown.clearUpdateUncertainty()) throw new Error("UPDATE_HANDOFF_ACTIVE") } })
+    : setupAutoUpdater(installUpdate)
   const menuDeps = {
     trigger: (id: string) => {
       const win = getLastFocusedWindow()

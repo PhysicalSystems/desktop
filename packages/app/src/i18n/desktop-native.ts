@@ -286,6 +286,16 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.updater.dialog.installFailed.message":
     "The update could not be installed. Physical Systems has not confirmed that it is safe to restart. Review any active work before retrying.",
   "desktop.updater.dialog.later": "Later",
+  "desktop.updater.preview.confirm": "Install Physical Systems {{version}}?",
+  "desktop.updater.preview.install": "Install update",
+  "desktop.updater.preview.windows": "This is an unsigned Windows preview. The download matches the release selected by Physical Systems, but no Windows publisher signature has been verified. Windows may warn or block installation. The app will close after local services have stopped; the installer can reopen it when finished.",
+  "desktop.updater.preview.linux": "Ubuntu will ask for permission to install the downloaded package. Physical Systems will stop its local services before installation and restart after the package manager confirms the new version. Stop any physical operation before continuing.",
+  "desktop.updater.preview.checkFailed": "Could not verify an available preview update. Check your connection and try again.",
+  "desktop.updater.preview.changed": "The selected release changed. Check for updates again before installing.",
+  "desktop.updater.preview.failed": "The update did not finish. Review any system installation message and restart Physical Systems before retrying.",
+  "desktop.updater.preview.pending": "The previous update has not been confirmed. Complete that installation and reopen Physical Systems. If it failed or was cancelled, check the installation before retrying. Windows may require completing the update with the official installer.",
+  "desktop.updater.preview.uncertain": "Installation has not been confirmed. Do not start another installer while the package manager may still be running. Resolve the system installation, then reopen Physical Systems.",
+  "desktop.updater.preview.shutdown": "The app could not confirm that its local services stopped. Review active work before retrying the update.",
 
   "desktop.recovery.action.relaunch": "Relaunch",
   "desktop.recovery.action.exportLogs": "Export Logs",

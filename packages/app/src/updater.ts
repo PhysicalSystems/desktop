@@ -1,6 +1,6 @@
 import type { Accessor } from "solid-js"
 
-export type UpdaterState =
+export type UpdaterState = (
   | { status: "disabled" }
   | { status: "idle" }
   | { status: "checking" }
@@ -10,10 +10,13 @@ export type UpdaterState =
   | { status: "up-to-date" }
   | { status: "installing"; version: string }
   | { status: "error"; message: string }
+  | { status: "blocked"; version: string; message: string; recoverable?: boolean }
+) & { mode?: "preview" }
 
 export type UpdaterPlatform = {
   state: Accessor<UpdaterState>
   check(): Promise<UpdaterState>
   download(): Promise<UpdaterState>
   install(): Promise<void>
+  recover?(): Promise<UpdaterState>
 }

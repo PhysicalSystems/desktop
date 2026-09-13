@@ -7,6 +7,7 @@ import { getStore } from "./store"
 import { setAppQuitting } from "./windows"
 import { nativeT } from "./native-translations"
 import { launchUpdaterInstaller } from "./updater-install"
+import type { UpdaterController } from "./updater-controller"
 
 const { autoUpdater } = pkg
 const key = "ready"
@@ -65,8 +66,25 @@ export function setupAutoUpdater(install: (launch: () => void) => Promise<void>)
   })
 }
 
-export async function showUpdaterDialog(controller: ReturnType<typeof setupAutoUpdater>, alertOnFail: boolean) {
+export async function showUpdaterDialog(controller: UpdaterController, alertOnFail: boolean) {
+  const install = () =>
+    controller.install().catch(async () => {
+      await dialog.showMessageBox({
+        type: "error",
+        title: nativeT("desktop.updater.dialog.checkFailed.title"),
+        message: nativeT("desktop.updater.dialog.installFailed.message"),
+      })
+    })
   const state = await controller.check()
+  if (state.status === "blocked") {
+    if (alertOnFail)
+      await dialog.showMessageBox({
+        type: "warning",
+        title: nativeT("desktop.updater.dialog.checkFailed.title"),
+        message: state.message,
+      })
+    return
+  }
   if (state.status === "error") {
     if (!alertOnFail) return
     await dialog.showMessageBox({
@@ -102,14 +120,9 @@ export async function showUpdaterDialog(controller: ReturnType<typeof setupAutoU
         title: nativeT("desktop.updater.dialog.checkFailed.title"),
         message: nativeT("desktop.updater.dialog.downloadFailed.message"),
       })
+    if (downloaded.status === "ready" && downloaded.mode === "preview") await install()
     return
   }
   if (state.status !== "ready") return
-  await controller.install().catch(async () => {
-    await dialog.showMessageBox({
-      type: "error",
-      title: nativeT("desktop.updater.dialog.checkFailed.title"),
-      message: nativeT("desktop.updater.dialog.installFailed.message"),
-    })
-  })
+  await install()
 }

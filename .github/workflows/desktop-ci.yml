@@ -44,6 +44,9 @@ jobs:
       - name: Validate Windows recovery controller and owner protocol regressions
         working-directory: packages/physicalsystems
         run: bun test ./src/release/native-upgrade-process.test.ts ./src/release/windows-installer-owner.test.ts
+      - name: Validate preview update discovery, downloads and native handoff on Windows
+        working-directory: packages/desktop
+        run: bun test ./src/main/desktop-update-discovery.test.ts ./src/main/preview-update-download.test.ts ./src/main/preview-update-install.test.ts ./src/main/preview-update-controller.test.ts ./src/main/preview-update-recovery.test.ts ./src/main/renderer-store.test.ts
       - name: Validate the actual Windows owner with an inert process tree
         working-directory: packages/physicalsystems
         run: bun ./src/release/windows-installer-owner.hosted.ts
@@ -86,7 +89,7 @@ jobs:
 
       - name: Rendered composer and provider sign-in regressions
         working-directory: packages/app
-        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts
+        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts ./test-browser/preview-update-button.test.ts
 
       - name: Provider attempt lifecycle regression
         working-directory: packages/app
@@ -122,6 +125,9 @@ jobs:
       - name: Disabled updater controller and install handoff regressions
         working-directory: packages/desktop
         run: bun test ./src/main/updater-controller.test.ts ./src/main/updater-install.test.ts ./src/main/updater-policy.test.ts ./src/main/updater-subscriptions.test.ts
+      - name: Preview update discovery, downloads and native handoff regressions
+        working-directory: packages/desktop
+        run: bun test ./src/main/desktop-update-discovery.test.ts ./src/main/preview-update-download.test.ts ./src/main/preview-update-install.test.ts ./src/main/preview-update-controller.test.ts ./src/main/preview-update-recovery.test.ts ./src/main/renderer-store.test.ts
 
       - name: Typecheck integration
         working-directory: packages/physicalsystems

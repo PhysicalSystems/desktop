@@ -29,6 +29,7 @@ export type UpdaterAPI = {
   check: () => Promise<UpdaterState>
   download: () => Promise<UpdaterState>
   install: () => Promise<void>
+  recover: () => Promise<UpdaterState>
 }
 
 export type LinuxDisplayBackend = "wayland" | "auto"

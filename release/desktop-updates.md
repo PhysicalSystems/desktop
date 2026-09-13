@@ -1,6 +1,8 @@
 # Signed desktop updates
 
-The update feature must remain release-disabled until authenticated in-app installation is qualified. A notification that opens a manual download is not the approved feature. `UPDATER_ENABLED` remains `false`, and `REVIEWED_UPDATER_CONFIGURATION` is deliberately absent. Runtime environment variables must not enable updates or supply the trusted feed or publisher.
+The signed update feature must remain release-disabled until authenticated in-app installation is qualified. A notification that opens a manual download is not the approved feature. `UPDATER_ENABLED` remains `false`, and `REVIEWED_UPDATER_CONFIGURATION` is deliberately absent. Runtime environment variables must not enable updates or supply the trusted feed or publisher.
+
+The separately requested [preview installer update path](../packages/desktop/PREVIEW_UPDATES.md) supports explicit installation of the selected unsigned preview on Windows x64 NSIS and Ubuntu x64 Debian packages. It verifies official HTTPS release metadata and complete installer hashes, displays the unsigned Windows disclosure, and preserves owned-service shutdown and interruption recovery. It does not enable this signed updater gate or claim publisher-signature verification. Its native installed-app qualification must pass before a public release includes it.
 
 ## Implemented source groundwork
 

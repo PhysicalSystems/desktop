@@ -2,6 +2,22 @@ import { describe, expect, test } from "bun:test"
 import { updaterAction } from "./updater-action"
 
 describe("updaterAction", () => {
+  test("preview Update starts download and verification, while an uncertain installation cannot be retried", () => {
+    expect(updaterAction({ status: "available", version: "0.1.0-beta.9", mode: "preview" })).toEqual({
+      label: "settings.updates.action.update",
+      run: "download",
+    })
+    expect(
+      updaterAction({
+        status: "blocked",
+        version: "0.1.0-beta.9",
+        mode: "preview",
+        message: "Installation unconfirmed",
+      }),
+    ).toEqual({
+      label: "settings.updates.action.attention",
+    })
+  })
   test("disables update actions when the platform has no updater", () => {
     expect(updaterAction(undefined)).toEqual({ label: "settings.updates.action.checkNow" })
   })

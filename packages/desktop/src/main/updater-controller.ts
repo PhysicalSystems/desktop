@@ -92,7 +92,7 @@ export function createUpdaterController(input: {
     subscribe(listener: (state: UpdaterState) => void) {
       listeners.add(listener)
       listener(state)
-      return () => listeners.delete(listener)
+      return () => { listeners.delete(listener) }
     },
     async start() {
       if (!input.enabled) return state
@@ -121,4 +121,4 @@ export function createUpdaterController(input: {
   }
 }
 
-export type UpdaterController = ReturnType<typeof createUpdaterController>
+export type UpdaterController = ReturnType<typeof createUpdaterController> & { recover?(): Promise<UpdaterState> }
