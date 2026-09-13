@@ -80,8 +80,10 @@ The source checks use `bun test` and `bun typecheck` from the affected package d
 The input bundle contains `release-inputs.json`, `history.json`, the decoded `models.dev-api.json`, and `SHA256SUMS`. The record fixes the desktop version/channel, repository and source commit, OpenCode baseline, canonical operator revision/digests, lockfile, toolchain, model catalog and compatibility declarations. Both platforms verify these bytes before building. A platform does not refresh its model catalog independently or rebuild the operator from a developer-local checkout.
 
 Candidate and public preparation use the same next-version allocator and the same
-`DESKTOP_RELEASE_HISTORY_TOKEN`, with read-only contents access to the download
-repository so drafts count in both workflows. With public beta.4 and reserved
+`DESKTOP_RELEASE_HISTORY_TOKEN`, with Contents read and write access limited to the
+download repository so drafts count in both workflows. The history steps only read
+releases; a read-only token can omit drafts even when its owner has write access.
+With public beta.4 and reserved
 draft beta.6, both select beta.7. The public upgrade test uses a separate,
 unpublishable `0.0.0-beta.1` lab build and does not consume a beta number.
 

@@ -45,8 +45,11 @@ or certificate identity. This is a deliberately unsigned prerelease, not a signa
 verification success.
 
 Configure `DESKTOP_RELEASE_HISTORY_TOKEN` for both candidate and public preparation
-with **read-only contents access** to `PhysicalSystems/physicalsystems`. The desktop repository's ordinary GitHub token
-cannot read draft releases in that separate repository. Preparation needs complete
+with **Contents read and write access**, limited to `PhysicalSystems/physicalsystems`.
+A read-only fine-grained token can omit drafts even when its owner has repository
+write access; verify both retrieval of an existing owned draft and its inclusion in
+the release list when provisioning the credential. The desktop repository's ordinary
+GitHub token cannot read draft releases in that separate repository. Preparation needs complete
 history including drafts and prereleases; it must not label anonymous/public-only
 history complete. This credential is available only to the history-read step.
 The publisher separately rechecks version reservation before creating any release.

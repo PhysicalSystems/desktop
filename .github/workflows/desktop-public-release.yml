@@ -97,7 +97,7 @@ jobs:
           GH_TOKEN: ${{ secrets.DESKTOP_RELEASE_HISTORY_TOKEN }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo 'Provision DESKTOP_RELEASE_HISTORY_TOKEN with read-only contents access to the download repository.'
+            echo 'Provision DESKTOP_RELEASE_HISTORY_TOKEN with Contents read and write access to the download repository so draft releases are visible.'
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/desktop-public"
