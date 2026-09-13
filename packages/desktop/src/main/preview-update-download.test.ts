@@ -1,6 +1,18 @@
 import { afterEach, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { downloadPreviewUpdate, reverifyPreviewUpdate } from "./preview-update-download"
@@ -67,7 +79,9 @@ test("downloads anonymous bounded chunks through an owned CDN into private files
       return stream([f.bytes.subarray(0, 7), f.bytes.subarray(7)])
     },
   })
-  expect(file).toBe(join(f.directory, f.asset.name))
+  // Windows TEMP may contain an 8.3 alias; the downloader returns its canonical
+  // owned directory, not the caller's original path spelling.
+  expect(file).toBe(join(await realpath(f.directory), f.asset.name))
   expect(await readFile(file)).toEqual(f.bytes)
   expect(await readdir(f.directory)).toEqual([f.asset.name])
   expect(progress[0]).toBe(0)
@@ -156,7 +170,7 @@ test.each([3, 4])("allows at most three CDN redirects: %s", async (redirects) =>
           })
         : new Response(f.bytes),
   })
-  if (redirects === 3) expect(await result).toBe(join(f.directory, f.asset.name))
+  if (redirects === 3) expect(await result).toBe(join(await realpath(f.directory), f.asset.name))
   else await expect(result).rejects.toThrow("PREVIEW_UPDATE_REDIRECT_INVALID")
   expect(calls).toBe(4)
 })
@@ -211,6 +225,7 @@ test("rejects directory links and non-file cache entries", async () => {
   const f = await fixture()
   const real = join(f.root, "real")
   await mkdir(real, { mode: 0o700 })
+  await writeFile(join(real, "sentinel"), "preserve", { mode: 0o600 })
   await symlink(real, f.directory, "junction")
   await expect(
     downloadPreviewUpdate({
@@ -220,12 +235,17 @@ test("rejects directory links and non-file cache entries", async () => {
       },
     }),
   ).rejects.toThrow("PREVIEW_UPDATE_CACHE_UNSAFE")
-  await rm(f.directory)
-  await mkdir(f.directory, { mode: 0o700 })
-  await mkdir(join(f.directory, f.asset.name))
+  expect((await lstat(f.directory)).isSymbolicLink()).toBe(true)
+  expect(await readdir(real)).toEqual(["sentinel"])
+  expect(await readFile(join(real, "sentinel"), "utf8")).toBe("preserve")
+  // Keep the rejected junction intact for ordinary recursive fixture cleanup.
+  // Removing a junction with non-recursive rm is not portable in pinned Bun.
+  const entry = await fixture()
+  await mkdir(entry.directory, { mode: 0o700 })
+  await mkdir(join(entry.directory, entry.asset.name))
   await expect(
     downloadPreviewUpdate({
-      ...f,
+      ...entry,
       fetch: async () => {
         throw new Error("must not request")
       },
