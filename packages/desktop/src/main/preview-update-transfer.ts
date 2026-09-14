@@ -1,4 +1,4 @@
-import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor"
+import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor.js"
 import { CancellationToken, DigestTransform, ProgressCallbackTransform } from "builder-util-runtime"
 import type { DownloadCallOptions } from "builder-util-runtime/out/httpExecutor"
 import { createWriteStream, write, writev } from "node:fs"

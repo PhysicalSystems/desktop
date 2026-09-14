@@ -35,6 +35,24 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
+test("the transfer module loads with external dependencies under packaged Node ESM resolution", async () => {
+  const build = await Bun.build({
+    entrypoints: [join(import.meta.dir, "preview-update-transfer.ts")],
+    target: "node",
+    format: "esm",
+    packages: "external",
+  })
+  expect(build.success).toBe(true)
+  const child = Bun.spawn(["node", "--input-type=module", "--eval", await build.outputs[0]!.text()], {
+    cwd: join(import.meta.dir, "../.."),
+    stdout: "ignore",
+    stderr: "pipe",
+  })
+  const [code, error] = await Promise.all([child.exited, new Response(child.stderr).text()])
+  if (code !== 0) throw new Error(error)
+  expect(code).toBe(0)
+})
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "physical-preview-download-"))
   roots.push(root)

@@ -249,20 +249,19 @@ describe("updater controller", () => {
     expect(app.controller.getState().status).toBe("ready")
   })
 
-  test("checks, downloads and recovery share pending native confirmation without installing twice", async () => {
+  test("checks observe unresolved native confirmation while other operations remain serialized", async () => {
     const confirmation = Promise.withResolvers<boolean>()
     const app = setup({ confirmInstall: () => confirmation.promise })
     await app.controller.start()
     await app.controller.download()
     const installing = app.controller.install()
-    const checking = app.controller.check()
+    const downloading = app.controller.download()
     expect(app.controller.install()).toBe(installing)
-    expect(app.controller.download()).toBe(checking)
-    expect(app.controller.recover()).toBe(checking)
-    expect(app.controller.getState().status).toBe("installing")
+    expect(app.controller.recover()).toBe(downloading)
+    expect(await app.controller.check()).toEqual({ status: "installing", version: "2.0.0" })
     expect(app.calls).toEqual(["check", "download", "confirm"])
     confirmation.resolve(false)
-    expect((await checking).status).toBe("ready")
+    expect((await downloading).status).toBe("ready")
     await installing
     expect(app.calls).toEqual(["check", "download", "confirm"])
   })

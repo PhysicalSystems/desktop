@@ -63,9 +63,11 @@ export function createUpdaterController(input: {
     return state
   }
   const check = (): Promise<UpdaterState> => {
+    // Native confirmation must remain observable while install awaits its
+    // response. Reporting this state does not start another update operation.
+    if (state.status === "installing") return Promise.resolve(state)
     if (pending) return pending
-    if (!input.enabled || ["disabled", "ready", "installing", "blocked"].includes(state.status))
-      return Promise.resolve(state)
+    if (!input.enabled || ["disabled", "ready", "blocked"].includes(state.status)) return Promise.resolve(state)
     transition({ status: "checking" })
     pending = (async () => {
       if (!initialized) {
@@ -118,8 +120,8 @@ export function createUpdaterController(input: {
       const version = state.version
       let failure: UpdaterFailure | undefined
       transition({ status: "installing", version })
-      // All entry points share this promise, including checks during confirmation
-      // and shutdown. The void promise preserves the install caller's rejection.
+      // Download/recovery callers wait for confirmation and shutdown. Check can
+      // observe installing; the void promise preserves the install rejection.
       pending = (async () => {
         if (!(await operations.confirmInstall(version))) return transition({ status: "ready", version })
         failure = (await operations.install(version)) ?? undefined

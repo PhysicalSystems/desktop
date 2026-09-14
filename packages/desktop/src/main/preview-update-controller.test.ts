@@ -349,20 +349,21 @@ test("an actually running newer supported version acknowledges an older pending 
   expect(f.calls).not.toContain("install")
 })
 
-test("all preview entry points wait for confirmation and Later leaves the verified download reusable", async () => {
+test("checks observe preview confirmation before Later while download and recovery wait", async () => {
   const f = fixture()
   const confirmation = Promise.withResolvers<boolean>()
   const controller = createPreviewUpdateController({ ...f.input, confirm: () => confirmation.promise })
   await controller.start()
   await controller.download()
   const installing = controller.install()
-  const checking = controller.check()
+  const downloading = controller.download()
   expect(controller.install()).toBe(installing)
-  expect(controller.download()).toBe(checking)
-  expect(controller.recover()).toBe(checking)
-  expect(controller.getState()).toEqual({ status: "installing", version: release.version, mode: "preview" })
+  expect(controller.recover()).toBe(downloading)
+  const calls = [...f.calls]
+  expect(await controller.check()).toEqual({ status: "installing", version: release.version, mode: "preview" })
+  expect(f.calls).toEqual(calls)
   confirmation.resolve(false)
-  expect(await checking).toEqual({ status: "ready", version: release.version, mode: "preview" })
+  expect(await downloading).toEqual({ status: "ready", version: release.version, mode: "preview" })
   await installing
   expect(f.calls).not.toContain("operator")
   expect(f.state.journal).toBeUndefined()
