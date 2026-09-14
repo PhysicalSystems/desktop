@@ -90,7 +90,7 @@ export async function mergeWebsiteSelection(input: {
     const run = matching[0]
     if (run?.status === "completed" && run.conclusion !== "success")
       throw new Error("Website validation failed; the integration PR remains available for repair")
-    if (run?.status !== "completed" || pull.mergeable === null) {
+    if (run?.status !== "completed") {
       await wait()
       continue
     }
@@ -117,8 +117,6 @@ export async function mergeWebsiteSelection(input: {
       jobs.jobs[0]?.conclusion !== "success"
     )
       throw new Error("The current website validation job did not succeed")
-    if (pull.mergeable !== true || pull.mergeable_state !== "clean")
-      throw new Error("Website PR cannot merge under current repository rules")
     const latest = await api(`pulls/${match[1]}`)
     const latestMain = await api("git/ref/heads/main")
     if (
@@ -127,12 +125,23 @@ export async function mergeWebsiteSelection(input: {
       latestMain?.object?.sha !== main.object.sha
     )
       throw new Error("Website source changed after validation; no merge performed")
+    if (latest.state !== "open" || latest.draft)
+      throw new Error("Website PR is no longer open and ready for review; no merge performed")
+    if (latest.mergeable === false) throw new Error("Website PR cannot merge under current repository rules")
+    // GitHub may still be updating merge readiness after CI completes. Refresh
+    // it after validation and retry read-only until the existing rules allow it.
+    if (latest.mergeable !== true || latest.mergeable_state !== "clean") {
+      await wait()
+      continue
+    }
     const merged = await api(`pulls/${match[1]}/merge`, "PUT", { sha: pull.head.sha, merge_method: "squash" })
     if (merged?.merged !== true)
       throw new Error("Website merge is unconfirmed; inspect the existing PR before retrying")
     // Read the actual selected bytes after a successful or lost acknowledgement.
   }
-  throw new Error("Website validation did not complete within 15 minutes; rerun promotion to resume the existing PR")
+  throw new Error(
+    "Website validation or merge readiness did not complete within 15 minutes; inspect the PR and rerun promotion to resume",
+  )
 }
 
 /** Deployment is complete only when the public site serves the approved bytes. */

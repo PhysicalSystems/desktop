@@ -45,7 +45,10 @@ function fixture(unsigned = false) {
     changedBytes: false,
     changedMain: false,
     uncertain: false,
-    blocked: false,
+    closed: false,
+    draft: false,
+    mergeable: true as boolean | null,
+    mergeableState: "clean",
     runSha: head,
     runPath: ".github/workflows/website-ci.yml",
     conclusion: "success",
@@ -72,12 +75,12 @@ function fixture(unsigned = false) {
           ref: "desktop-download-0.1.0b1",
           sha: state.changed && state.reads > 1 ? "c".repeat(40) : head,
         },
-        state: "open",
-        draft: false,
+        state: state.closed ? "closed" : "open",
+        draft: state.draft,
         changed_files: 1,
         merged: state.merged,
-        mergeable: true,
-        mergeable_state: state.blocked ? "blocked" : "clean",
+        mergeable: state.mergeable,
+        mergeable_state: state.mergeableState,
       })
     }
     if (endpoint === "git/ref/heads/main")
@@ -231,13 +234,102 @@ describe("automatic website integration after release approval", () => {
       expect(data.state.waits).toBe(90)
     }
   })
-  test("refuses failed checks, changed source or selection, unrelated files and repository blocks", async () => {
-    for (const flag of ["changed", "changedBytes", "unrelated", "changedMain", "blocked"] as const) {
+  test("refreshes merge readiness after CI instead of rejecting its earlier blocked snapshot", async () => {
+    const data = fixture()
+    data.state.mergeableState = "blocked"
+    await mergeWebsiteSelection({
+      ...data.input,
+      fetch: async (url, init) => {
+        const response = await data.input.fetch(url, init)
+        if (url.endsWith("/attempts/2/jobs?per_page=100")) data.state.mergeableState = "clean"
+        return response
+      },
+    })
+    expect(data.state.waits).toBe(0)
+    expect(data.state.mergeCalls).toBe(1)
+  })
+  test("waits when refreshed readiness is pending or blocked even if its earlier snapshot was clean", async () => {
+    for (const status of ["blocked", "unknown", "unstable"] as const) {
+      const data = fixture()
+      await mergeWebsiteSelection({
+        ...data.input,
+        fetch: async (url, init) => {
+          const response = await data.input.fetch(url, init)
+          if (url.endsWith("/attempts/2/jobs?per_page=100") && data.state.waits === 0) {
+            data.state.mergeableState = status
+            data.state.mergeable = status === "unknown" ? null : true
+          }
+          return response
+        },
+        wait: async () => {
+          expect(data.state.mergeCalls).toBe(0)
+          data.state.waits++
+          data.state.mergeableState = "clean"
+          data.state.mergeable = true
+        },
+      })
+      expect(data.state.waits).toBe(1)
+      expect(data.state.mergeCalls).toBe(1)
+    }
+  })
+  test("bounds readiness polling without merging permanently blocked PRs", async () => {
+    const data = fixture()
+    data.state.mergeableState = "blocked"
+    await expect(mergeWebsiteSelection(data.input)).rejects.toThrow(
+      "merge readiness did not complete within 15 minutes",
+    )
+    expect(data.state.waits).toBe(90)
+    expect(data.state.mergeCalls).toBe(0)
+  })
+  test("does not merge a PR closed or converted to draft after its initial snapshot", async () => {
+    for (const flag of ["closed", "draft"] as const) {
+      const data = fixture()
+      await expect(
+        mergeWebsiteSelection({
+          ...data.input,
+          fetch: async (url, init) => {
+            const response = await data.input.fetch(url, init)
+            if (url.endsWith("/attempts/2/jobs?per_page=100")) data.state[flag] = true
+            return response
+          },
+        }),
+      ).rejects.toThrow("no longer open and ready for review")
+      expect(data.state.mergeCalls).toBe(0)
+      expect(data.state.waits).toBe(0)
+    }
+  })
+  test("still rejects changed inputs or failed CI while waiting for merge readiness", async () => {
+    for (const flag of ["changed", "changedBytes", "unrelated", "changedMain", "conclusion"] as const) {
+      const data = fixture()
+      data.state.mergeableState = "blocked"
+      await expect(
+        mergeWebsiteSelection({
+          ...data.input,
+          wait: async () => {
+            data.state.waits++
+            data.state.mergeableState = "clean"
+            if (flag === "conclusion") data.state.conclusion = "failure"
+            else data.state[flag] = true
+          },
+        }),
+      ).rejects.toThrow()
+      expect(data.state.waits).toBe(1)
+      expect(data.state.mergeCalls).toBe(0)
+    }
+  })
+  test("refuses failed checks, changed source or selection, unrelated files and merge conflicts", async () => {
+    for (const flag of ["changed", "changedBytes", "unrelated", "changedMain"] as const) {
       const data = fixture()
       data.state[flag] = true
       await expect(mergeWebsiteSelection(data.input)).rejects.toThrow()
       expect(data.state.mergeCalls).toBe(0)
     }
+    const conflict = fixture()
+    conflict.state.mergeable = false
+    conflict.state.mergeableState = "dirty"
+    await expect(mergeWebsiteSelection(conflict.input)).rejects.toThrow("cannot merge")
+    expect(conflict.state.mergeCalls).toBe(0)
+    expect(conflict.state.waits).toBe(0)
     for (const conclusion of ["failure", "cancelled", "skipped", "neutral", "timed_out"]) {
       const data = fixture()
       data.state.conclusion = conclusion
