@@ -10,8 +10,10 @@ import {
   allocateDesktopVersion,
   prepareReleaseInputs,
   prepareUpgradeLabInputs,
+  prepareUpdaterLabInputs,
   releaseInputDigest,
   UPGRADE_LAB_VERSION,
+  UPDATER_LAB_VERSION,
   verifyReleaseInputs,
 } from "./inputs"
 
@@ -175,6 +177,75 @@ describe("desktop version allocation", () => {
 })
 
 describe("immutable desktop release inputs from real Git checkouts", () => {
+  test("freezes an eligible unpublished updater lab without allocating or rewriting history", async () => {
+    const data = await fixture()
+    const complete = { complete: true as const, versions: ["0.1.0-beta.6", "0.1.0-beta.1", "0.1.0-beta.4"] }
+    const lab = await prepareUpdaterLabInputs({ ...data.input, history: complete })
+    const target = await prepareReleaseInputs({ ...data.input, history: complete })
+    const baseline = await prepareUpgradeLabInputs({ ...data.input, history: complete })
+    expect(lab.version).toBe(UPDATER_LAB_VERSION)
+    expect(lab.upgradeLab).toBe("unreleased-updater-test-only")
+    expect(lab.channel).toBe("preview")
+    expect(lab.publication).toBe(false)
+    expect(lab.releaseHistory).toEqual(target.releaseHistory)
+    expect(lab.releaseHistory).toEqual(baseline.releaseHistory)
+    expect(lab.releaseHistory.count).toBe(3)
+    expect(lab.source).toEqual(target.source)
+    expect(lab.source.revision).toBe(git(data.root, "rev-parse", "HEAD"))
+    expect(lab.source.tree).toBe(git(data.root, "rev-parse", "HEAD^{tree}"))
+    expect(target.version).toBe("0.1.0-beta.7")
+    expect(target).not.toHaveProperty("upgradeLab")
+    expect(baseline.version).toBe(UPGRADE_LAB_VERSION)
+    expect(baseline.upgradeLab).toBe("unreleased-lab-only")
+    expect(lab.sha256).toBe(releaseInputDigest(lab))
+    expect(
+      await verifyReleaseInputs({
+        repoRoot: data.root,
+        inputs: lab,
+        history: complete,
+        expectedRepository: data.input.repository,
+        expectedSha256: lab.sha256,
+      }),
+    ).toEqual(lab)
+    expect(complete.versions).toEqual(["0.1.0-beta.6", "0.1.0-beta.1", "0.1.0-beta.4"])
+    await expect(
+      prepareReleaseInputs({
+        ...data.input,
+        history: complete,
+        version: UPDATER_LAB_VERSION,
+        upgradeLab: lab.upgradeLab,
+      } as never),
+    ).rejects.toThrow("already allocated")
+    expect(
+      await prepareReleaseInputs({ ...data.input, history: complete, upgradeLab: lab.upgradeLab } as never),
+    ).toEqual(target)
+  })
+
+  test("updater lab purpose cannot be changed or removed to claim a reused public version", async () => {
+    const data = await fixture()
+    const complete = { complete: true as const, versions: [UPDATER_LAB_VERSION, "0.1.0-beta.6"] }
+    const lab = await prepareUpdaterLabInputs({ ...data.input, history: complete })
+    const { upgradeLab: _purpose, ...unmarked } = lab
+    for (const altered of [
+      unmarked,
+      { ...lab, upgradeLab: "unreleased-lab-only" },
+      { ...lab, upgradeLab: "candidate" },
+      { ...lab, upgradeLab: null },
+      { ...lab, version: UPGRADE_LAB_VERSION },
+      { ...lab, version: "0.1.0-beta.2" },
+      { ...lab, channel: "stable" },
+      { ...lab, publication: true },
+    ]) {
+      const inputs = { ...altered, sha256: releaseInputDigest(altered) }
+      await expect(verifyReleaseInputs({ repoRoot: data.root, inputs, history: complete })).rejects.toThrow()
+    }
+    await expect(
+      verifyReleaseInputs({ repoRoot: data.root, inputs: lab, history: complete, expectedSha256: "0".repeat(64) }),
+    ).rejects.toThrow("trusted preparation receipt")
+    await writeFile(path.join(data.root, "LICENSE"), "uncommitted source\n")
+    await expect(prepareUpdaterLabInputs({ ...data.input, history: complete })).rejects.toThrow("clean")
+  })
+
   test("freezes a reserved upgrade lab without consuming or truncating public history", async () => {
     const data = await fixture()
     const complete = { complete: true as const, versions: ["0.1.0-beta.6", "0.1.0-beta.4"] }
@@ -228,25 +299,28 @@ describe("immutable desktop release inputs from real Git checkouts", () => {
     ).rejects.toThrow("trusted preparation receipt")
   })
 
-  test("requires and binds complete history for the unreleased upgrade lab", async () => {
-    const data = await fixture()
-    const complete = { complete: true as const, versions: ["0.1.0-beta.4", "0.1.0-beta.6"] }
-    const lab = await prepareUpgradeLabInputs({ ...data.input, history: complete })
-    for (const changed of [
-      history,
-      { complete: true as const, versions: ["0.1.0-beta.4"] },
-      { complete: true as const, versions: [...complete.versions, "0.1.0-beta.7"] },
-    ])
-      await expect(
-        verifyReleaseInputs({ repoRoot: data.root, inputs: lab, history: changed }),
-      ).rejects.toThrow("do not match")
-    for (const invalid of [
-      { complete: false, versions: [] },
-      { complete: true, versions: ["0.1.0-beta.4", "0.1.0-beta.4"] },
-      { complete: true, versions: ["latest"] },
-    ])
-      await expect(prepareUpgradeLabInputs({ ...data.input, history: invalid as never })).rejects.toThrow()
-  })
+  test.each([prepareUpgradeLabInputs, prepareUpdaterLabInputs])(
+    "requires and binds complete history for %p",
+    async (prepare) => {
+      const data = await fixture()
+      const complete = { complete: true as const, versions: ["0.1.0-beta.4", "0.1.0-beta.6"] }
+      const lab = await prepare({ ...data.input, history: complete })
+      for (const changed of [
+        history,
+        { complete: true as const, versions: ["0.1.0-beta.4"] },
+        { complete: true as const, versions: [...complete.versions, "0.1.0-beta.7"] },
+      ])
+        await expect(verifyReleaseInputs({ repoRoot: data.root, inputs: lab, history: changed })).rejects.toThrow(
+          "do not match",
+        )
+      for (const invalid of [
+        { complete: false, versions: [] },
+        { complete: true, versions: ["0.1.0-beta.4", "0.1.0-beta.4"] },
+        { complete: true, versions: ["latest"] },
+      ])
+        await expect(prepare({ ...data.input, history: invalid as never })).rejects.toThrow()
+    },
+  )
 
   test("rejects invalid or ambiguous repository identities", async () => {
     const data = await fixture()

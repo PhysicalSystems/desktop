@@ -173,6 +173,19 @@ async function fixture(unsigned = false, channel: "preview" | "stable" = "previe
   return { root, evidence, build, plan, input, edit }
 }
 
+test("the strict distribution collector rejects unpublished updater build purpose", async () => {
+  const f = await fixture(true)
+  const build = { ...f.build, updaterTest: "unreleased-updater-test-only" as const }
+  await expect(
+    collectPublicDistribution({
+      ...f.input(),
+      publicBuild: build,
+      expectedPublicBuildSha256: publicReviewDigest(build),
+    }),
+  ).rejects.toThrow("cannot enter public")
+  await expect(readdir(f.input().output)).rejects.toThrow()
+})
+
 test("collector creates the exact existing publisher bundle only from complete simulated evidence", async () => {
   const f = await fixture()
   await f.edit("smokeSha256", (record) => {

@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { desktopIdentity } from "./identity"
+import { UPDATER_LAB_VERSION } from "./inputs"
 import { publicReviewDigest } from "./public-downloads"
 import {
   compiledDesktopIdentity,
@@ -52,6 +53,49 @@ async function fixture() {
 }
 
 describe("public desktop compile-time identity and signing policy", () => {
+  test("unpublished updater builds opt in only at compilation and packaging boundaries", async () => {
+    const data = await fixture()
+    data.data.updaterTest = "unreleased-updater-test-only"
+    data.data.version = UPDATER_LAB_VERSION
+    data.data.windowsSigning = { provider: "unsigned-preview" }
+    const digest = publicReviewDigest(data.data)
+    expect(() => validatePublicBuildInputs(data.data, digest)).toThrow("cannot enter public")
+    expect(() => validatePublicBuildInputs(data.data, digest, { allowUpdaterTest: false })).toThrow(
+      "cannot enter public",
+    )
+    expect(validatePublicBuildInputs(data.data, digest, { allowUpdaterTest: true })).toEqual(data.data)
+    expect(() => validatePublicBuildInputs(data.data, "c".repeat(64), { allowUpdaterTest: true })).toThrow(
+      "trusted digest",
+    )
+    await writeFile(data.env.PHYSICALSYSTEMS_PUBLIC_BUILD_INPUTS, JSON.stringify(data.data))
+    data.env.PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256 = digest
+    expect(loadPublicBuildInputs(data.env)).toEqual(data.data)
+    expect(compiledDesktopIdentity(data.env)).toEqual(desktopIdentity("public"))
+    expect(publicSigningConfiguration(data.data, {}, "win32")).toEqual({})
+    expect(publicSigningConfiguration(data.data, {}, "linux")).toEqual({})
+  })
+  test("updater build opt-in cannot change its purpose, version, channel or unsigned policy", () => {
+    const data = {
+      ...inputs(),
+      updaterTest: "unreleased-updater-test-only",
+      windowsSigning: { provider: "unsigned-preview" },
+    }
+    for (const altered of [
+      { ...data, updaterTest: "unreleased-lab-only" },
+      { ...data, updaterTest: undefined },
+      { ...data, updaterTest: null },
+      { ...data, version: "0.1.0-beta.2" },
+      { ...data, version: "0.0.0-beta.1" },
+      { ...data, version: "0.1.0", channel: "stable" },
+      { ...data, windowsSigning: inputs().windowsSigning },
+      { ...data, publication: true },
+    ]) {
+      expect(() =>
+        validatePublicBuildInputs(altered, publicReviewDigest(altered), { allowUpdaterTest: true }),
+      ).toThrow()
+      expect(() => publicSigningConfiguration(altered as PublicBuildInputs, {}, "linux")).toThrow()
+    }
+  })
   test("an explicit unsigned preview needs no signing credentials and cannot become stable", () => {
     const data = inputs()
     data.windowsSigning = { provider: "unsigned-preview" }

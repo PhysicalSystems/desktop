@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import { lstatSync, readFileSync } from "node:fs"
 import { isAbsolute } from "node:path"
 import { desktopIdentity } from "./identity"
+import { UPDATER_LAB_VERSION } from "./inputs"
 import { publicReviewDigest } from "./public-downloads"
 
 export type PublicSigningPolicy =
@@ -29,6 +30,7 @@ export type PublicBuildInputs = {
   identity: ReturnType<typeof desktopIdentity>
   windowsSigning: PublicSigningPolicy
   publication: false
+  updaterTest?: "unreleased-updater-test-only"
 }
 function exact(input: unknown, fields: string[]) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Invalid public build input")
@@ -49,9 +51,16 @@ function text(input: unknown, maximum: number): input is string {
 /** Public identity is pinned separately from candidate inputs before compilation.
  * This record grants no publication, signing success or qualification authority.
  */
-export function validatePublicBuildInputs(input: unknown, expectedSha256: string): PublicBuildInputs {
+export function validatePublicBuildInputs(
+  input: unknown,
+  expectedSha256: string,
+  options: { allowUpdaterTest?: boolean } = {},
+): PublicBuildInputs {
   if (!/^[a-f0-9]{64}$/.test(expectedSha256) || publicReviewDigest(input) !== expectedSha256)
     throw new Error("Public build does not match its independently trusted digest")
+  const updaterTest = !!input && typeof input === "object" && "updaterTest" in input
+  if (updaterTest && options.allowUpdaterTest !== true)
+    throw new Error("Unreleased updater test builds cannot enter public qualification or publication")
   const data = exact(input, [
     "schemaVersion",
     "kind",
@@ -62,6 +71,7 @@ export function validatePublicBuildInputs(input: unknown, expectedSha256: string
     "identity",
     "windowsSigning",
     "publication",
+    ...(updaterTest ? ["updaterTest"] : []),
   ])
   if (
     data.schemaVersion !== 1 ||
@@ -80,6 +90,14 @@ export function validatePublicBuildInputs(input: unknown, expectedSha256: string
   if (publicReviewDigest(data.identity) !== publicReviewDigest(desktopIdentity("public")))
     throw new Error("Public app, profile and executable identities are fixed before compilation")
   validatePublicSigningPolicy(data.windowsSigning)
+  if (
+    updaterTest &&
+    (data.updaterTest !== "unreleased-updater-test-only" ||
+      data.version !== UPDATER_LAB_VERSION ||
+      data.channel !== "preview" ||
+      (data.windowsSigning as PublicSigningPolicy).provider !== "unsigned-preview")
+  )
+    throw new Error("Updater test builds require the fixed unpublished version and unsigned preview policy")
   if ((data.windowsSigning as PublicSigningPolicy).provider === "unsigned-preview" && data.channel !== "preview")
     throw new Error("Unsigned Windows builds are allowed only for an explicit preview")
   return data as PublicBuildInputs
@@ -125,6 +143,7 @@ export function loadPublicBuildInputs(env: NodeJS.ProcessEnv) {
   const data = validatePublicBuildInputs(
     JSON.parse(readFileSync(file, "utf8")),
     env.PHYSICALSYSTEMS_EXPECTED_PUBLIC_BUILD_SHA256 ?? "",
+    { allowUpdaterTest: true },
   )
   if (env.PHYSICALSYSTEMS_EXPECTED_INPUTS_SHA256 !== data.releaseInputsSha256)
     throw new Error("Public identity is not bound to the trusted release input digest")
@@ -143,8 +162,8 @@ export function compiledDesktopIdentity(env: NodeJS.ProcessEnv) {
 /** Signing credentials remain runner-only and are not included in public inputs. */
 export function publicSigningConfiguration(inputs: PublicBuildInputs, env: NodeJS.ProcessEnv, platform: string) {
   if (platform !== "win32" && platform !== "linux") throw new Error("Public desktop target is not qualified")
+  validatePublicBuildInputs(inputs, publicReviewDigest(inputs), { allowUpdaterTest: true })
   if (inputs.windowsSigning.provider === "unsigned-preview") {
-    validatePublicBuildInputs(inputs, publicReviewDigest(inputs))
     return {}
   }
   if (platform === "linux") return {}

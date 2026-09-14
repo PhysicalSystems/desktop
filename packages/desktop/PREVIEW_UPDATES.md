@@ -68,3 +68,76 @@ installation, restart, journal acknowledgement and retained user data on both
 platforms. Exercise native cancellation and interrupted-installation recovery.
 The current unsigned preview is not signed-updater qualification, and the
 existing stable updater gate stays disabled.
+
+## Disposable native updater test
+
+The manual **Desktop source checks** workflow has a `preview_updater_test` option
+for Windows 2025 and Ubuntu 24.04 hosted runners. Supply `updater_test_history` as
+the complete desktop version history, including drafts, in the form
+`{"complete":true,"versions":["0.1.0-beta.7","0.1.0-beta.6","0.1.0-beta.4","0.1.0-beta.2"]}`.
+Read the current release history before dispatching; this example is not an
+authoritative history snapshot.
+
+This builds the selected committed source as an explicitly unpublished
+`0.1.0-beta.1` fixture. The lower version allows the new updater to discover the
+existing public release through its unchanged production HTTPS flow. Both baseline
+input records carry the test purpose, and public production, qualification and
+collection reject it. The workflow does not reserve a release, publish an
+installer, change the website, or alter the public version sequence.
+
+The same clean source and complete history also produce a separate private
+startup-acknowledgement fixture through ordinary next-version allocation, such as
+`0.1.0-beta.8` after beta.7. Its version is derived from the supplied history, not
+hardcoded or reserved. It uses normal public build inputs with publication
+disabled and remains inside the disposable runner; no producer, qualification,
+collection or publication command consumes it.
+
+On each fresh runner, the test installs the fixture once, opens its actual
+titlebar Update button, checks the verified download, chooses **Later** in the
+real native dialog, then confirms installation. Windows uses the original
+interactive NSIS installer and observes its actual restarted process. Ubuntu
+uses the application's real `pkexec dpkg` request and authenticates through an
+owned Polkit agent with a temporary runner account. Neither test replaces the
+update feed, bypasses the application confirmation, or manually launches the
+target to manufacture restart evidence.
+
+Native confirmation automation stays bound to the owned app process and exact
+version question. Windows verifies the real command-link controls when its
+accessibility provider does not expose them as ordinary buttons. Ubuntu first
+uses AT-SPI; for GTK dialogs absent from that tree, it recognizes the exact public
+question and button labels in the app-owned X11 window before sending events only
+to that window. Neither path uses global keyboard or pointer input.
+
+Ubuntu restart detection binds the fresh browser debugging endpoint to its actual
+main-process PID, installed executable, user, and process start time. Chromium
+rewrites Linux process titles, so flags in `/proc/PID/cmdline` are not treated as
+an argument list. A manual run can select one platform for a focused rerun;
+the default still exercises both platforms.
+
+Source CI first exercises the native controls in small owned Windows and Ubuntu
+fixtures. The Ubuntu fixture uses the pinned npm Electron engine with an empty
+offline window and no app backend, profile credentials, or installer. Its
+explicit `--no-sandbox` flag is confined to that inert engine; it does not test
+production sandboxing or alter the packaged application's launch arguments.
+
+After observing that public target close normally, a separate manual phase checks
+the exact attempt journal left by the real update. It installs the private newer
+fixture, verifies that installation preserved the journal, and explicitly launches
+the new code on the same profile. The test then observes automatic startup
+acknowledgement clearing that attempt and verifies the retained setting. It does
+not call Check installation or force another update check to clear the journal.
+This phase proves manual-install startup acknowledgement; it does not claim an
+in-app update to the private newer version or interrupted-installation recovery.
+
+The retained `result.json` identifies exact source, versions, installer hashes,
+completed stages and a fixed failure code. It verifies one preserved renderer
+setting and normal target closure, and reports the manual startup acknowledgement
+separately from the actual in-app update. It is separate from release
+qualification: the current beta.7 target predates the new journal acknowledgement
+code, and the test does not exercise native interrupted-installation recovery or
+complete conversation/credential migration. Ubuntu can also retain the two
+app-owned confirmation images after exact public-text verification. A recognition
+failure may retain the exact owned `Update Ready` window for diagnosis after
+process, title, window-type and visibility checks. These captures happen before
+authentication and never capture the desktop. Profiles, passwords, packages,
+arbitrary screenshots and raw app logs are not uploaded.

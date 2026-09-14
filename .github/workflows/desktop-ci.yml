@@ -3,6 +3,23 @@ name: Desktop source checks
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      preview_updater_test:
+        description: Build an unpublished app and exercise its updater on disposable Windows and Ubuntu runners
+        type: boolean
+        required: false
+        default: false
+      updater_test_platform:
+        description: Platforms for the unpublished updater test
+        type: choice
+        required: false
+        default: both
+        options: [both, windows, ubuntu]
+      updater_test_history:
+        description: Complete Desktop release history JSON for the unpublished updater test
+        type: string
+        required: false
+        default: ""
   workflow_call:
     inputs:
       source_sha:
@@ -43,7 +60,7 @@ jobs:
           install-dependencies: "false"
       - name: Validate Windows recovery controller and owner protocol regressions
         working-directory: packages/physicalsystems
-        run: bun test ./src/release/native-upgrade-process.test.ts ./src/release/windows-installer-owner.test.ts
+        run: bun test ./src/release/native-upgrade-process.test.ts ./src/release/windows-installer-owner.test.ts ./src/release/preview-update-windows.test.ts ./src/release/preview-update-windows-command-links.test.ts
       - name: Validate preview update discovery, downloads and native handoff on Windows
         working-directory: packages/desktop
         run: bun test ./src/main/desktop-update-discovery.test.ts ./src/main/preview-update-download.test.ts ./src/main/preview-update-install.test.ts ./src/main/preview-update-controller.test.ts ./src/main/preview-update-recovery.test.ts ./src/main/renderer-store.test.ts
@@ -56,9 +73,51 @@ jobs:
           PHYSICALSYSTEMS_WINDOWS_REVIEW_SELECTION_FIXTURE: "1"
         run: bun ./src/release/windows-review-process-selection.hosted.ts
 
+  linux-updater-dialog:
+    name: Ubuntu updater dialog fixture
+    if: github.repository == 'PhysicalSystems/desktop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI: "true"
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      LANGUAGE: en
+      ACCESSIBILITY_ENABLED: "1"
+      NO_AT_BRIDGE: "0"
+      GTK_MODULES: atk-bridge
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+      - name: Install display and recognition dependencies on the disposable runner
+        run: |
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          desktop_ubuntu_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=/dev/null)
+          sudo apt-get "${desktop_ubuntu_sources[@]}" update
+          sudo apt-get "${desktop_ubuntu_sources[@]}" install -y --no-install-recommends xvfb xauth dbus dbus-x11 gnome-keyring libsecret-tools libglib2.0-bin pkexec polkitd python3-gi python3-pyatspi gir1.2-atspi-2.0 python3-xlib tesseract-ocr tesseract-ocr-eng libatk-adaptor at-spi2-core libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0
+      - name: Exercise both choices in the inert Electron confirmation
+        run: dbus-run-session -- xvfb-run -a bun packages/physicalsystems/test/preview-update-linux-inert.mjs
+      - name: Retain owned dialog fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: preview-update-linux-dialog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/preview-update-linux-inert/result.json
+            ${{ runner.temp }}/preview-update-linux-inert/native-dialog-later.png
+            ${{ runner.temp }}/preview-update-linux-inert/native-dialog-install.png
+            ${{ runner.temp }}/preview-update-linux-inert/native-dialog-diagnostic.png
+          if-no-files-found: warn
+          retention-days: 7
+
   source:
     name: Source and authority checks
-    needs: [windows-installer-owner]
+    needs: [windows-installer-owner, linux-updater-dialog]
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -144,3 +203,76 @@ jobs:
       - name: Typecheck core
         working-directory: packages/core
         run: bun typecheck
+
+  preview-updater-test:
+    name: Unpublished app updater test (${{ matrix.os }})
+    needs: [source]
+    if: github.repository == 'PhysicalSystems/desktop' && github.event_name == 'workflow_dispatch' && inputs.preview_updater_test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.updater_test_platform == 'ubuntu' && '["ubuntu-24.04"]' || inputs.updater_test_platform == 'windows' && '["windows-2025"]' || '["windows-2025","ubuntu-24.04"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      PHYSICALSYSTEMS_UPDATER_TEST: "1"
+      UPDATER_TEST_HISTORY: ${{ inputs.updater_test_history }}
+      OPENCODE_DISABLE_MODELS_FETCH: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      GOMAXPROCS: "2"
+      GOMEMLIMIT: 5GiB
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+      - name: Freeze clean source, complete history and official target metadata
+        id: prepare
+        run: bun script/desktop-preview-update-test.ts prepare
+      - name: Build the unpublished updater test app
+        env:
+          UPDATER_TEST_PLAN_SHA256: ${{ steps.prepare.outputs.plan_sha256 }}
+        run: bun script/desktop-preview-update-test.ts build
+      - name: Install display and accessibility dependencies on the disposable Ubuntu runner
+        if: runner.os == 'Linux'
+        run: |
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          desktop_ubuntu_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=/dev/null)
+          sudo apt-get "${desktop_ubuntu_sources[@]}" update
+          sudo apt-get "${desktop_ubuntu_sources[@]}" install -y --no-install-recommends xvfb xauth dbus dbus-x11 gnome-keyring libsecret-tools libglib2.0-bin pkexec polkitd python3-gi python3-pyatspi gir1.2-atspi-2.0 python3-xlib tesseract-ocr tesseract-ocr-eng libatk-adaptor at-spi2-core libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0
+      - name: Exercise actual app download, confirmation, installer and restart on Windows
+        if: runner.os == 'Windows'
+        env:
+          UPDATER_TEST_ROOT: ${{ steps.prepare.outputs.root }}
+          UPDATER_TEST_PLAN_SHA256: ${{ steps.prepare.outputs.plan_sha256 }}
+        run: bun packages/physicalsystems/test/preview-update-native.mjs --root "$UPDATER_TEST_ROOT"
+      - name: Exercise actual app download, confirmation, installer and restart on Ubuntu
+        if: runner.os == 'Linux'
+        env:
+          UPDATER_TEST_ROOT: ${{ steps.prepare.outputs.root }}
+          UPDATER_TEST_PLAN_SHA256: ${{ steps.prepare.outputs.plan_sha256 }}
+        run: dbus-run-session -- xvfb-run -a bun packages/physicalsystems/test/preview-update-native.mjs --root "$UPDATER_TEST_ROOT"
+      # This test grants no release qualification. Retain the sanitized result
+      # and only the exact app-owned confirmation windows after public text
+      # verification, before authentication. Never upload packages or profiles.
+      - name: Retain sanitized updater test result
+        if: always() && steps.prepare.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: preview-updater-test-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.prepare.outputs.root }}/result.json
+            ${{ steps.prepare.outputs.root }}/native-dialog-later.png
+            ${{ steps.prepare.outputs.root }}/native-dialog-install.png
+            ${{ steps.prepare.outputs.root }}/native-dialog-diagnostic.png
+          if-no-files-found: warn
+          retention-days: 7

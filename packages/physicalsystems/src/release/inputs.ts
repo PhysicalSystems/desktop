@@ -8,6 +8,8 @@ import { gunzipSync } from "node:zlib"
 export type ReleaseHistory = { complete: true; versions: string[] }
 export type ReleaseChannel = "preview" | "stable"
 export const UPGRADE_LAB_VERSION = "0.0.0-beta.1"
+export const UPDATER_LAB_VERSION = "0.1.0-beta.1"
+type UpgradeLab = "unreleased-lab-only" | "unreleased-updater-test-only"
 
 const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.([1-9]\d*))?$/
 const revisionPattern = /^[a-f0-9]{40}$/
@@ -218,6 +220,20 @@ export async function prepareUpgradeLabInputs(input: {
   )
 }
 
+/** An unpublished updater fixture needs an eligible installed version. This
+ * fixed version bypasses allocation only with its independently bound purpose;
+ * the full source and release history remain mandatory and unchanged. */
+export async function prepareUpdaterLabInputs(input: {
+  repoRoot: string
+  repository: string
+  history: ReleaseHistory
+}) {
+  return captureReleaseInputs(
+    { repoRoot: input.repoRoot, repository: input.repository, channel: "preview", history: input.history },
+    "unreleased-updater-test-only",
+  )
+}
+
 async function captureReleaseInputs(
   input: {
     repoRoot: string
@@ -226,7 +242,7 @@ async function captureReleaseInputs(
     version?: string
     history: ReleaseHistory
   },
-  upgradeLab?: "unreleased-lab-only",
+  upgradeLab?: UpgradeLab,
 ) {
   if (
     typeof input.repository !== "string" ||
@@ -250,7 +266,9 @@ async function captureReleaseInputs(
   }
   const versions = releaseHistory(input.history)
   const version = upgradeLab
-    ? UPGRADE_LAB_VERSION
+    ? upgradeLab === "unreleased-updater-test-only"
+      ? UPDATER_LAB_VERSION
+      : UPGRADE_LAB_VERSION
     : allocateDesktopVersion({ channel: input.channel, requestedVersion: input.version, history: input.history })
   const policyBytes = await trackedFile(root, "release/desktop.json")
   const policy = jsonObject(JSON.parse(policyBytes.toString()), "desktop release policy")
@@ -427,24 +445,32 @@ export async function verifyReleaseInputs(input: {
   }
   if (
     "upgradeLab" in record &&
-    (record.upgradeLab !== "unreleased-lab-only" ||
-      record.version !== UPGRADE_LAB_VERSION ||
+    (!(
+      (record.upgradeLab === "unreleased-lab-only" && record.version === UPGRADE_LAB_VERSION) ||
+      (record.upgradeLab === "unreleased-updater-test-only" && record.version === UPDATER_LAB_VERSION)
+    ) ||
       record.channel !== "preview")
   )
     throw new Error("Invalid unreleased upgrade lab identity")
-  const expected = await (record.upgradeLab === "unreleased-lab-only"
-    ? prepareUpgradeLabInputs({
+  const expected = await (record.upgradeLab === "unreleased-updater-test-only"
+    ? prepareUpdaterLabInputs({
         repoRoot: input.repoRoot,
         repository: source.repository,
         history: input.history,
       })
-    : prepareReleaseInputs({
-        repoRoot: input.repoRoot,
-        repository: source.repository,
-        version: record.version,
-        channel: record.channel,
-        history: input.history,
-      }))
+    : record.upgradeLab === "unreleased-lab-only"
+      ? prepareUpgradeLabInputs({
+          repoRoot: input.repoRoot,
+          repository: source.repository,
+          history: input.history,
+        })
+      : prepareReleaseInputs({
+          repoRoot: input.repoRoot,
+          repository: source.repository,
+          version: record.version,
+          channel: record.channel,
+          history: input.history,
+        }))
   if (canonical(expected) !== canonical(record))
     throw new Error("Release inputs do not match pinned source and release history")
   return expected

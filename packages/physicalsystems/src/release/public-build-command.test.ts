@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { gzipSync } from "node:zlib"
 import { buildPublicDesktop, publicBuildArguments, publicBuildEnvironments } from "./public-build-command"
-import { prepareReleaseInputs, prepareUpgradeLabInputs } from "./inputs"
+import { prepareReleaseInputs, prepareUpgradeLabInputs, prepareUpdaterLabInputs, releaseInputDigest } from "./inputs"
 import type { ReleaseInputs } from "./inputs"
 import { compiledIdentityRecord, loadPublicBuildInputs } from "./public-build"
 import type { PublicBuildInputs } from "./public-build"
@@ -318,19 +318,26 @@ async function fixture() {
   }
 }
 
-test.each(["target", "upgrade-lab"])("staging preserves %s inputs and outputs", async (purpose) => {
+test.each(["target", "upgrade-lab", "updater-test"])("staging preserves %s inputs and outputs", async (purpose) => {
   const data = await fixture()
-  if (purpose === "upgrade-lab") {
-    data.inputs = await prepareUpgradeLabInputs({
+  if (purpose !== "target") {
+    const prepare = purpose === "upgrade-lab" ? prepareUpgradeLabInputs : prepareUpdaterLabInputs
+    const complete = { complete: true as const, versions: ["0.1.0-beta.1", "0.1.0-beta.7"] }
+    data.inputs = await prepare({
       repoRoot: data.root,
       repository: "PhysicalSystems/desktop",
-      history,
+      history: complete,
     })
     data.build = { ...data.build, version: data.inputs.version, releaseInputsSha256: data.inputs.sha256 }
+    if (purpose === "updater-test") {
+      data.build.updaterTest = "unreleased-updater-test-only"
+      data.build.windowsSigning = { provider: "unsigned-preview" }
+    }
     data.flags[5] = data.inputs.sha256
     data.flags[7] = publicReviewDigest(data.build)
     await writeFile(join(data.folder, "release-inputs.json"), json(data.inputs))
     await writeFile(join(data.folder, "public-build-inputs.json"), json(data.build))
+    await writeFile(join(data.folder, "history.json"), json(complete))
   }
   const phases: string[] = []
   let stage = ""
@@ -378,7 +385,7 @@ test.each(["target", "upgrade-lab"])("staging preserves %s inputs and outputs", 
         ))
           await writeFile(join(cwd, "public-dist", entry.name), "synthetic installer fixture " + entry.format)
       }
-      if (phases.at(-1) !== "package") expect(env?.WIN_CSC_KEY_PASSWORD).toBeUndefined()
+      if (phases.at(-1) !== "package" || purpose === "updater-test") expect(env?.WIN_CSC_KEY_PASSWORD).toBeUndefined()
     },
   })
   expect(phases).toEqual(["install", "agent", "bundle", "package"])
@@ -393,6 +400,62 @@ test.each(["target", "upgrade-lab"])("staging preserves %s inputs and outputs", 
   expect(await readFile(join(data.root, "packages/desktop/physical-public.config.ts"), "utf8")).toBe(
     "concurrent working-copy edit",
   )
+})
+
+test.each(["build", "release", "both"])(
+  "removing %s updater purpose cannot authorize a public build",
+  async (removed) => {
+    const data = await fixture()
+    const complete = { complete: true as const, versions: ["0.1.0-beta.1", "0.1.0-beta.7"] }
+    data.inputs = await prepareUpdaterLabInputs({
+      repoRoot: data.root,
+      repository: "PhysicalSystems/desktop",
+      history: complete,
+    })
+    data.build.updaterTest = "unreleased-updater-test-only"
+    data.build.windowsSigning = { provider: "unsigned-preview" }
+    if (removed !== "build") delete data.inputs.upgradeLab
+    if (removed !== "release") delete data.build.updaterTest
+    data.inputs.sha256 = releaseInputDigest(data.inputs)
+    data.build.releaseInputsSha256 = data.inputs.sha256
+    data.flags[5] = data.inputs.sha256
+    data.flags[7] = publicReviewDigest(data.build)
+    await writeFile(join(data.folder, "release-inputs.json"), json(data.inputs))
+    await writeFile(join(data.folder, "public-build-inputs.json"), json(data.build))
+    await writeFile(join(data.folder, "history.json"), json(complete))
+    let ran = false
+    await expect(
+      buildPublicDesktop(data.flags, {
+        root: data.root,
+        env: data.env,
+        run: async () => {
+          ran = true
+        },
+      }),
+    ).rejects.toThrow(removed === "build" ? "Updater test purpose differs" : "already allocated")
+    expect(ran).toBe(false)
+    await expect(readdir(join(data.folder, "output"))).rejects.toThrow()
+  },
+)
+
+test("an ordinary release cannot opt into updater-only build inputs", async () => {
+  const data = await fixture()
+  data.build.updaterTest = "unreleased-updater-test-only"
+  data.build.windowsSigning = { provider: "unsigned-preview" }
+  data.flags[7] = publicReviewDigest(data.build)
+  await writeFile(join(data.folder, "public-build-inputs.json"), json(data.build))
+  let ran = false
+  await expect(
+    buildPublicDesktop(data.flags, {
+      root: data.root,
+      env: data.env,
+      run: async () => {
+        ran = true
+      },
+    }),
+  ).rejects.toThrow("Updater test purpose differs")
+  expect(ran).toBe(false)
+  await expect(readdir(join(data.folder, "output"))).rejects.toThrow()
 })
 
 for (const field of ["sourceRevision", "version", "channel"] as const)

@@ -5,7 +5,7 @@ import { lstat, mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { releaseInputDigest } from "./inputs"
+import { releaseInputDigest, UPDATER_LAB_VERSION } from "./inputs"
 import type { ReleaseInputs } from "./inputs"
 import { publicReviewDigest } from "./public-downloads"
 import {
@@ -261,6 +261,27 @@ test("public inputs freeze the separately verified source, release digest and si
     expect(() => preparePublicProducerInputs({ ...input, policy: original, ...override } as typeof input)).toThrow()
   const extra = { ...original, approved: true }
   expect(() => validatePublicProducerPolicy(extra, publicReviewDigest(extra), source)).toThrow("exact source")
+})
+
+test("the public producer cannot discard the unpublished updater test purpose", () => {
+  const policy = freezePublicProducerPolicy(env())
+  const partial = {
+    source: { repository: "PhysicalSystems/desktop", revision: source },
+    version: UPDATER_LAB_VERSION,
+    channel: "preview",
+    publication: false,
+    upgradeLab: "unreleased-updater-test-only",
+  }
+  const release = { ...partial, sha256: releaseInputDigest(partial) } as ReleaseInputs
+  expect(() =>
+    preparePublicProducerInputs({
+      policy,
+      expectedPolicySha256: publicReviewDigest(policy),
+      sourceRevision: source,
+      release,
+      expectedInputsSha256: release.sha256,
+    }),
+  ).toThrow("cannot enter the public producer")
 })
 
 test("temporary PFX is private, packaging-only, and removed after success or failure", async () => {

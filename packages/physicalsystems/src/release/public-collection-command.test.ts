@@ -9,6 +9,7 @@ import { collectPublicProducer } from "./public-collection-command"
 import { publicNativeJobReceipt, publicNativeReceipt, publicReceiptBytes } from "./public-native-receipts"
 import { simulatedPublicNativeFixture } from "./public-native-fixture"
 import { verifyQualifiedBundle } from "./public-publisher"
+import { publicReviewDigest } from "./public-downloads"
 
 const roots: string[] = []
 afterEach(async () => {
@@ -77,6 +78,15 @@ test("trusted separate native job outputs reach the real strict collector withou
   expect(plan.artifacts).toHaveLength(3)
   expect(plan.runId).toBe(f.input.env.GITHUB_RUN_ID)
   await expect(collectPublicProducer(f.input)).rejects.toThrow()
+})
+
+test("updater test inputs cannot collect native receipts into a publishable bundle", async () => {
+  const f = await fixture(true, true)
+  f.input.publicBuild.updaterTest = "unreleased-updater-test-only"
+  f.input.expectedPublicBuildSha256 = publicReviewDigest(f.input.publicBuild)
+  await expect(collectPublicProducer(f.input)).rejects.toThrow("cannot enter public")
+  expect(await readdir(f.root)).not.toContain("qualified")
+  expect(await readdir(f.root)).not.toContain("staging")
 })
 
 test("real partial observations remain incomplete and cannot emit a qualified bundle", async () => {

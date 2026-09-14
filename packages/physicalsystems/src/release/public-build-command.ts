@@ -126,6 +126,7 @@ export async function buildPublicDesktop(
   const build = validatePublicBuildInputs(
     JSON.parse(publicBytes.toString("utf8")),
     flags["expected-public-build-sha256"],
+    { allowUpdaterTest: true },
   )
   if (build.releaseInputsSha256 !== flags["expected-inputs-sha256"])
     throw new Error("Public build is not bound to the independently trusted release inputs")
@@ -139,6 +140,8 @@ export async function buildPublicDesktop(
     expectedRepository: "PhysicalSystems/desktop",
     expectedSha256: flags["expected-inputs-sha256"],
   })
+  if ((inputs.upgradeLab === "unreleased-updater-test-only") !== (build.updaterTest !== undefined))
+    throw new Error("Updater test purpose differs between verified release and public build inputs")
   if (
     build.sourceRevision !== inputs.source.revision ||
     build.version !== inputs.version ||

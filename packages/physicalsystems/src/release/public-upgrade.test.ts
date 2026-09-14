@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { expect, test } from "bun:test"
-import { allocateDesktopVersion, compareVersion } from "./inputs"
+import { allocateDesktopVersion, compareVersion, UPDATER_LAB_VERSION } from "./inputs"
 import { publicReviewDigest } from "./public-downloads"
 import { simulatedPublicNativeFixture } from "./public-native-fixture"
 import { publicUpgradePlan, publicUpgradeVersions, validatePublicUpgradePlan } from "./public-upgrade"
@@ -54,6 +54,28 @@ test("a candidate version cannot silently change or be reused after another rele
   expect(() =>
     publicUpgradeVersions({ history: { ...history, complete: false } as never, channel: "preview" }),
   ).toThrow()
+})
+
+test.each(["baseline", "target"])("updater test builds cannot become a public qualification %s", (position) => {
+  const baseline = {
+    ...simulatedPublicNativeFixture().build,
+    version: "0.0.0-beta.1",
+    windowsSigning: { provider: "unsigned-preview" as const },
+  }
+  const target = { ...baseline, version: "0.1.0-beta.2" }
+  const updater = {
+    ...(position === "baseline" ? baseline : target),
+    version: UPDATER_LAB_VERSION,
+    updaterTest: "unreleased-updater-test-only" as const,
+  }
+  const input = { baseline, target, [position]: updater }
+  expect(() =>
+    publicUpgradePlan({
+      ...input,
+      expectedBaselineSha256: publicReviewDigest(input.baseline),
+      expectedTargetSha256: publicReviewDigest(input.target),
+    }),
+  ).toThrow("cannot enter public")
 })
 
 test("baseline plan binds both public builds, exact signing policy and limited same-source/schema scope", () => {
