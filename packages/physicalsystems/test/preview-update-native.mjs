@@ -3,7 +3,7 @@
 // There is no feed override, installer mock, silent update or manual target launch.
 import { spawn } from "node:child_process"
 import { randomBytes } from "node:crypto"
-import { lstat, mkdir, readFile, readdir, readlink, realpath, writeFile } from "node:fs/promises"
+import { lstat, mkdir, readFile, readlink, realpath, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -25,6 +25,11 @@ import {
   startPreviewUpdatePolkitAgent,
   PreviewUpdateLinuxError,
 } from "../src/release/preview-update-linux.ts"
+import {
+  createLinuxRestartObservation,
+  readLinuxBrowserEndpoint,
+  readLinuxBrowserPid,
+} from "../src/release/preview-update-linux-observation.ts"
 
 const root = resolve(process.argv[3] || ".")
 if (process.argv.length !== 4 || process.argv[2] !== "--root") throw Error("PREVIEW_UPDATE_ARGUMENTS_INVALID")
@@ -114,8 +119,10 @@ const receipt = {
     "Preservation assertion covers a renderer setting; full conversation and credential migration is qualified separately.",
   ],
 }
+const linuxRestartObservation = windows ? undefined : createLinuxRestartObservation()
 const record = async (name) => {
   receipt.stages.push(name)
+  if (linuxRestartObservation) receipt.linuxRestart = linuxRestartObservation.snapshot()
   await writeFile(join(root, "result.json"), JSON.stringify(receipt, null, 2) + "\n", { mode: 0o600 })
   console.log(`Preview updater: ${name}`)
 }
@@ -135,7 +142,7 @@ try {
   stage = "baseline-startup"
   if (!windows) keyring = await startKeyring()
   const launchedAfter = windows ? previewUpdateWindowsTime() : undefined
-  const launch = await launchInstalled(executable)
+  const launch = await launchInstalled(executable, (chunk) => linuxRestartObservation?.observeStderr(chunk))
   baseline = launch.child
   const announced = launch.endpoint
   current = windows
@@ -144,7 +151,7 @@ try {
         60000,
         "BASELINE_WINDOW_UNCONFIRMED",
       )
-    : await linuxProcess(baseline.pid, executable)
+    : { ...(await linuxProcess(baseline.pid, executable)), browserEndpoint: announced }
   if (current.pid !== baseline.pid) throw Error("PREVIEW_UPDATE_BASELINE_PROCESS_MISMATCH")
   cdp = await connectRenderer(new URL(announced).port)
   await wait(
@@ -208,8 +215,10 @@ try {
   const installedAfter = windows ? previewUpdateWindowsTime() : current.birth
   const old = current
   const originalDeparted = windows ? await native.captureShutdown({ application: current }) : undefined
+  if (!windows) await linuxRestart(executable, old, "before-confirmation", true)
   await clickUpdate(cdp)
   await confirm("install")
+  if (!windows) await linuxRestart(executable, old, "after-confirmation", true)
   await wait(
     async () => {
       const attempt = (await journal())?.attempt
@@ -218,8 +227,10 @@ try {
     30000,
     "INSTALL_ATTEMPT_NOT_RECORDED",
   )
+  if (!windows) await linuxRestart(executable, old, "attempt-recorded", true)
   if (polkit) {
     await polkit.authenticated
+    await linuxRestart(executable, old, "authenticated", true)
   }
   await wait(
     () => (windows ? native.exited({ application: old }) : Promise.resolve(launch.closed())),
@@ -229,10 +240,12 @@ try {
   if (originalDeparted) await wait(originalDeparted, 60000, "ORIGINAL_DESCENDANT_EXIT_UNCONFIRMED")
   await wait(async () => launch.closed(), 10000, "ORIGINAL_CHILD_EXIT_UNCONFIRMED")
   if (!launch.cleanExit()) throw Error("PREVIEW_UPDATE_BASELINE_EXIT_NOT_SUCCESSFUL")
+  if (!windows) await linuxRestart(executable, old, "old-exited", true)
   if (polkit) {
     // The terminal success message precedes Polkit's final D-Bus reply. Keep
     // its listener alive until the real package manager has finished.
     await verifyPackage(executable, plan.target.version, false)
+    await linuxRestart(executable, old, "target-package-verified", true)
     await polkit.stop()
     polkit = undefined
   }
@@ -254,29 +267,7 @@ try {
   const fingerprint = await payloadFingerprint(executable)
   receipt.observedTargetPayloadSha256 = fingerprint.sha256
   if (!windows) {
-    const args = (await readFile(`/proc/${current.pid}/cmdline`, "utf8")).split("\0")
-    if (!args.includes("--remote-debugging-port=0")) throw Error("PREVIEW_UPDATE_RELAUNCH_ARGUMENTS_LOST")
-    const debug = await wait(
-      async () => {
-        const values = await Promise.all(
-          ["session", "desktop"].map((folder) =>
-            readFile(join(profile, folder, "DevToolsActivePort"), "utf8").catch(() => ""),
-          ),
-        )
-        const ports = [
-          ...new Set(
-            values
-              .map((value) => value.split("\n")[0])
-              .filter((port) => /^\d{1,5}$/.test(port) && port !== new URL(announced).port),
-          ),
-        ]
-        if (ports.length > 1) throw Error("PREVIEW_UPDATE_TARGET_DEBUG_ENDPOINT_AMBIGUOUS")
-        return ports[0]
-      },
-      90000,
-      "TARGET_DEBUG_ENDPOINT_UNCONFIRMED",
-    )
-    cdp = await connectRenderer(debug)
+    cdp = await connectRenderer(new URL(current.browserEndpoint).port)
     await wait(() => cdp.evaluate("Boolean(window.api?.storeGet)"), 90000, "TARGET_RENDERER_UNAVAILABLE")
     if ((await cdp.evaluate("window.api.storeGet('opencode.settings','preview-updater-test')")) !== nonce)
       throw Error("PREVIEW_UPDATE_TARGET_SETTING_UNCONFIRMED")
@@ -568,7 +559,7 @@ async function journal() {
     throw error
   })
 }
-async function launchInstalled(executable) {
+async function launchInstalled(executable, observeStderr) {
   let endpoint
   let output = ""
   let closed = false
@@ -605,7 +596,9 @@ async function launchInstalled(executable) {
     successfulExit = code === 0 && signal === null
   })
   child.stderr.on("data", (chunk) => {
-    output = (output + chunk.toString()).slice(-8192)
+    const text = chunk.toString()
+    observeStderr?.(text)
+    output = (output + text).slice(-8192)
     const match = /DevTools listening on (ws:\/\/127\.0\.0\.1:\d+\/devtools\/browser\/[a-f0-9-]+)/.exec(output)
     if (match) endpoint = match[1]
   })
@@ -735,19 +728,35 @@ async function linuxProcess(pid, executable) {
     throw Error("PREVIEW_UPDATE_LINUX_PROCESS_MISMATCH")
   return { pid, birth: fields[19], executable }
 }
-async function linuxRestart(executable, previous) {
-  const found = []
-  for (const name of await readdir("/proc")) {
-    if (!/^\d+$/.test(name) || Number(name) === previous.pid) continue
-    const path = await readlink(`/proc/${name}/exe`).catch(() => undefined)
-    if (path !== executable) continue
-    const args = (await readFile(`/proc/${name}/cmdline`, "utf8").catch(() => "")).split("\0")
-    if (args.some((arg) => arg.startsWith("--type=")) || !args.includes("--remote-debugging-port=0")) continue
-    const observed = await linuxProcess(Number(name), executable)
-    if (BigInt(observed.birth) > BigInt(previous.birth)) found.push(observed)
+async function linuxRestart(executable, previous, phase = "restart-poll", diagnosticOnly = false) {
+  linuxRestartObservation?.sample(phase)
+  try {
+    const endpoint = await readLinuxBrowserEndpoint(profile, previous.browserEndpoint, process.getuid(), (event) =>
+      linuxRestartObservation?.observe(event),
+    )
+    if (!endpoint) return
+    const pid = await readLinuxBrowserPid(endpoint)
+    if (!pid) {
+      linuxRestartObservation?.observe("browserTransportUnavailable")
+      return
+    }
+    linuxRestartObservation?.observe("browserReplyReceived")
+    // Chromium overwrites Linux argv storage with a space-joined process title.
+    // Bind the actual browser main through CDP, then inspect its kernel identity;
+    // parsing /proc/cmdline flags would reject a correctly relaunched Electron.
+    const identity = await linuxProcess(pid, executable).catch((error) => {
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error
+      linuxRestartObservation?.observe("browserProcessUnavailable")
+    })
+    if (!identity) return
+    if (identity.pid === previous.pid || BigInt(identity.birth) <= BigInt(previous.birth))
+      throw Error("PREVIEW_UPDATE_TARGET_BROWSER_PROCESS_MISMATCH")
+    linuxRestartObservation?.observe("browserIdentityMatched")
+    return { ...identity, browserEndpoint: endpoint }
+  } catch (error) {
+    linuxRestartObservation?.observe("identityRejected")
+    if (!diagnosticOnly) throw error
   }
-  if (found.length > 1) throw Error("PREVIEW_UPDATE_LINUX_RESTART_AMBIGUOUS")
-  return found[0]
 }
 async function linuxExited(application) {
   const stat = await readFile(`/proc/${application.pid}/stat`, "utf8").catch((error) => {

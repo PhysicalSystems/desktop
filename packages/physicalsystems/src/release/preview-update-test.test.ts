@@ -388,7 +388,7 @@ test("native updater CI is explicit, source-gated, disposable and cannot upload 
         if?: string
         needs?: string[]
         permissions?: Record<string, string>
-        strategy?: { matrix: { os: string[] } }
+        strategy?: { matrix: { os: string[] | string } }
         env?: Record<string, string>
         steps: {
           name?: string
@@ -408,7 +408,15 @@ test("native updater CI is explicit, source-gated, disposable and cannot upload 
   expect(job.if).toContain("inputs.preview_updater_test")
   expect(job.needs).toEqual(["source"])
   expect(job.permissions).toEqual({ contents: "read" })
-  expect(job.strategy?.matrix.os).toEqual(["windows-2025", "ubuntu-24.04"])
+  expect(workflow.on.workflow_dispatch.inputs.updater_test_platform).toMatchObject({
+    type: "choice",
+    default: "both",
+    options: ["both", "windows", "ubuntu"],
+  })
+  const platforms = String(job.strategy?.matrix.os)
+  expect(platforms).toContain("inputs.updater_test_platform == 'ubuntu' && '[\"ubuntu-24.04\"]'")
+  expect(platforms).toContain("inputs.updater_test_platform == 'windows' && '[\"windows-2025\"]'")
+  expect(platforms).toContain('|| \'["windows-2025","ubuntu-24.04"]\'')
   expect(job.env?.PHYSICALSYSTEMS_ALLOW_DEVICES).toBe("0")
   expect(job.env?.PHYSICALSYSTEMS_UPDATER_TEST).toBe("1")
   expect(JSON.stringify(job)).not.toContain("secrets.")

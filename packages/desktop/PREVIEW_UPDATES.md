@@ -108,6 +108,12 @@ uses AT-SPI; for GTK dialogs absent from that tree, it recognizes the exact publ
 question and button labels in the app-owned X11 window before sending events only
 to that window. Neither path uses global keyboard or pointer input.
 
+Ubuntu restart detection binds the fresh browser debugging endpoint to its actual
+main-process PID, installed executable, user, and process start time. Chromium
+rewrites Linux process titles, so flags in `/proc/PID/cmdline` are not treated as
+an argument list. A manual run can select one platform for a focused rerun;
+the default still exercises both platforms.
+
 Source CI first exercises the native controls in small owned Windows and Ubuntu
 fixtures. The Ubuntu fixture uses the pinned npm Electron engine with an empty
 offline window and no app backend, profile credentials, or installer. Its

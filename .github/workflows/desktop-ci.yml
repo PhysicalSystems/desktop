@@ -9,6 +9,12 @@ on:
         type: boolean
         required: false
         default: false
+      updater_test_platform:
+        description: Platforms for the unpublished updater test
+        type: choice
+        required: false
+        default: both
+        options: [both, windows, ubuntu]
       updater_test_history:
         description: Complete Desktop release history JSON for the unpublished updater test
         type: string
@@ -205,7 +211,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, ubuntu-24.04]
+        os: ${{ fromJSON(inputs.updater_test_platform == 'ubuntu' && '["ubuntu-24.04"]' || inputs.updater_test_platform == 'windows' && '["windows-2025"]' || '["windows-2025","ubuntu-24.04"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 55
     permissions:
