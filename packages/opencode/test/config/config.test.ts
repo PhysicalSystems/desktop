@@ -98,12 +98,13 @@ const configLayer = (
     auth?: Layer.Layer<Auth.Service>
     account?: Layer.Layer<Account.Service>
     client?: HttpClient.HttpClient
+    npm?: Layer.Layer<Npm.Service>
   } = {},
 ) =>
   LayerNode.compile(LayerNode.group([Config.node, FSUtil.node, Env.node, CrossSpawnSpawner.node]), [
     [Auth.node, options.auth ?? AuthTest.empty],
     [Account.node, options.account ?? AccountTest.empty],
-    [Npm.node, NpmTest.noop],
+    [Npm.node, options.npm ?? NpmTest.noop],
     [httpClient, Layer.succeed(HttpClient.HttpClient, options.client ?? unexpectedHttp)],
   ])
 
@@ -1152,6 +1153,54 @@ it.effect("installs dependencies in writable OPENCODE_CONFIG_DIR", () =>
     expect(yield* FSUtil.use.readFileString(path.join(configDir, ".gitignore"))).toContain("package-lock.json")
   }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(LayerNode.compile(CrossSpawnSpawner.node))),
 )
+
+for (const scenario of [
+  { name: "regular OpenCode", env: {}, installs: true },
+  { name: "Physical Systems desktop", env: { PHYSICALSYSTEMS_DESKTOP: "1" }, installs: false },
+  { name: "Physical Systems agent URL", env: { PHYSICALSYSTEMS_AGENT_URL: "http://127.0.0.1:1" }, installs: false },
+  { name: "Physical Systems agent token", env: { PHYSICALSYSTEMS_AGENT_TOKEN: "fixture-token" }, installs: false },
+]) {
+  const requests: { directory: string; options: unknown }[] = []
+  configIt({
+    npm: Layer.mock(Npm.Service)({
+      install: (directory, options) =>
+        Effect.sync(() => {
+          requests.push({ directory, options })
+        }),
+    }),
+  }).instance(`loads config with the correct dependency setup for ${scenario.name}`, () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const directory = path.join(instance.directory, ".opencode")
+      yield* writeConfigEffect(directory, { model: "fixture/model" })
+
+      yield* withProcessEnvs(
+        {
+          PHYSICALSYSTEMS_DESKTOP: undefined,
+          PHYSICALSYSTEMS_AGENT_URL: undefined,
+          PHYSICALSYSTEMS_AGENT_TOKEN: undefined,
+          ...scenario.env,
+          OPENCODE_CONFIG_DIR: directory,
+        },
+        Effect.gen(function* () {
+          const config = yield* Config.Service
+          expect((yield* config.get()).model).toBe("fixture/model")
+          yield* config.waitForDependencies()
+          expect(yield* config.directories()).toContain(directory)
+        }),
+      )
+
+      if (!scenario.installs) {
+        expect(requests).toEqual([])
+        return
+      }
+      expect(requests).toContainEqual({
+        directory,
+        options: { add: [{ name: "@opencode-ai/plugin", version: undefined }] },
+      })
+    }),
+  )
+}
 
 // Note: deduplication and serialization of npm installs is now handled by the
 // core Npm.Service (via EffectFlock). Those behaviors are tested in the core
