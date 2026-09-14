@@ -3,7 +3,7 @@ import { createStore, reconcile } from "solid-js/store"
 import { render } from "solid-js/web"
 import { PlatformProvider } from "../../../src/context/platform"
 import { LanguageProvider, useLanguage } from "../../../src/context/language"
-import { UpdaterButton } from "../../../src/components/updater-button"
+import { UpdaterButton, updaterButtonState } from "../../../src/components/updater-button"
 import { useUpdaterAction } from "../../../src/components/updater-action"
 import type { UpdaterState } from "../../../src/updater"
 import { fixture } from "./environment"
@@ -29,18 +29,11 @@ export function mount(
   function Control() {
     const action = useUpdaterAction()
     const language = useLanguage()
-    const state = createMemo(() => ({
-      visible: store.state.status !== "disabled",
-      installing:
-        ["checking", "downloading", "installing"].includes(store.state.status) ||
-        (store.state.status === "blocked" && !store.state.recoverable),
-      label: language.t(action.action().label),
-      ariaLabel: language.t(action.action().label),
-      title: action.description(),
-      onInstall: () => {
+    const state = createMemo(() =>
+      updaterButtonState(store.state, language, () => {
         void action.run()
-      },
-    }))
+      }),
+    )
     return (
       <Show when={state().visible}>
         <UpdaterButton state={state()} />

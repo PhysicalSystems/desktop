@@ -331,7 +331,7 @@ try {
   await wait(async () => (await journal())?.attempt === undefined, 90000, "STARTUP_DID_NOT_ACKNOWLEDGE_REAL_ATTEMPT")
   cdp = await connectRenderer(new URL(acknowledgementLaunch.endpoint).port)
   await wait(
-    () => cdp.evaluate("Boolean(window.api?.storeGet && document.querySelector('[data-action=desktop-update]'))"),
+    () => cdp.evaluate("Boolean(window.api?.storeGet && document.querySelector('#opencode-titlebar-right'))"),
     90000,
     "ACKNOWLEDGEMENT_RENDERER_UNAVAILABLE",
   )

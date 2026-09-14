@@ -45,7 +45,6 @@ test("actual update button downloads and hands installation to native control wi
       const available: UpdaterState = { status: "available", mode: "preview", version }
       const downloads: { resolve(value: UpdaterState): void; reject(error: Error): void }[] = []
       const installations: { resolve(): void; reject(error: Error): void }[] = []
-      const checks: { resolve(value: UpdaterState): void }[] = []
       const recoveries: { resolve(value: UpdaterState): void }[] = []
       const calls: string[] = []
       const opened: string[] = []
@@ -53,10 +52,9 @@ test("actual update button downloads and hands installation to native control wi
         container,
         available,
         {
-          check() {
+          async check() {
             calls.push("check")
-            instance.publish({ status: "checking", mode: "preview" })
-            return new Promise<UpdaterState>((resolve) => checks.push({ resolve }))
+            return { status: "up-to-date", mode: "preview" } satisfies UpdaterState
           },
           download() {
             calls.push("download")
@@ -83,6 +81,14 @@ test("actual update button downloads and hands installation to native control wi
       dispose = instance.dispose
       const button = () => container.querySelector<HTMLButtonElement>('button[data-action="desktop-update"]')!
       await settle()
+      for (const status of ["idle", "checking", "up-to-date", "disabled"] as const) {
+        instance.publish({ status, mode: "preview" })
+        await settle()
+        expect(button()).toBeNull()
+      }
+      expect(calls).toEqual([])
+      instance.publish(available)
+      await settle()
       expect(button().textContent).toBe("Update")
       expect(button().getAttribute("aria-label")).toBe("Update")
       expect(button().disabled).toBe(false)
@@ -90,7 +96,8 @@ test("actual update button downloads and hands installation to native control wi
       button().click()
       await settle()
       expect(calls).toEqual(["download"])
-      expect(button().textContent).toBe("Downloading...")
+      expect(button().getAttribute("aria-label")).toBe("Downloading...")
+      expect(button().querySelector('[data-slot="titlebar-update-loader"]')).not.toBeNull()
       expect(button().disabled).toBe(true)
       expect(button().getAttribute("aria-busy")).toBe("true")
       instance.publish({ status: "downloading", mode: "preview", version, percent: 55 })
@@ -100,7 +107,7 @@ test("actual update button downloads and hands installation to native control wi
       downloads.shift()!.resolve({ status: "ready", mode: "preview", version })
       await settle()
       expect(calls).toEqual(["download", "native-install"])
-      expect(button().textContent).toBe("Installing...")
+      expect(button().getAttribute("aria-label")).toBe("Installing...")
       expect(button().disabled).toBe(true)
 
       // The native confirmation was declined. Reusing the already-verified
@@ -109,7 +116,7 @@ test("actual update button downloads and hands installation to native control wi
       installations.shift()!.resolve()
       await settle()
       expect(button().disabled).toBe(false)
-      expect(button().textContent).toBe("Install and restart")
+      expect(button().getAttribute("aria-label")).toBe("Install and restart")
       button().click()
       await settle()
       expect(calls).toEqual(["download", "native-install", "native-install"])
@@ -121,7 +128,9 @@ test("actual update button downloads and hands installation to native control wi
       })
       installations.shift()!.reject(new Error("inert-native-uncertainty"))
       await settle()
-      expect(button().textContent).toBe("Update needs attention")
+      expect(button().getAttribute("aria-label")).toBe("Update needs attention")
+      expect(button().getAttribute("aria-busy")).toBe("false")
+      expect(button().querySelector('[data-slot="titlebar-update-loader"]')).toBeNull()
       expect(button().disabled).toBe(true)
       expect(button().title).toBe("The native installation outcome needs confirmation.")
       button().click()
@@ -139,20 +148,20 @@ test("actual update button downloads and hands installation to native control wi
         message: "Check the installed version before continuing.",
       })
       await settle()
-      expect(button().textContent).toBe("Check installation")
+      expect(button().getAttribute("aria-label")).toBe("Check installation")
       expect(button().disabled).toBe(false)
       button().click()
       await settle()
       expect(calls).toEqual(["download", "native-install", "native-install", "recover"])
-      expect(button().disabled).toBe(true)
-      button().click()
-      await settle()
+      expect(button()).toBeNull()
       expect(recoveries).toHaveLength(1)
       recoveries
         .shift()!
         .resolve({ status: "blocked", mode: "preview", version, message: "Installation is still uncertain." })
       await settle()
-      expect(button().textContent).toBe("Update needs attention")
+      expect(button().getAttribute("aria-label")).toBe("Update needs attention")
+      expect(button().getAttribute("aria-busy")).toBe("false")
+      expect(button().querySelector('[data-slot="titlebar-update-loader"]')).toBeNull()
       expect(button().disabled).toBe(true)
       expect(calls).toEqual(["download", "native-install", "native-install", "recover"])
       expect(opened).toEqual([])
@@ -165,15 +174,12 @@ test("actual update button downloads and hands installation to native control wi
       downloads.shift()!.resolve({ status: "error", mode: "preview", message: "Download could not be verified." })
       await settle()
       expect(calls.filter((value) => value === "native-install")).toHaveLength(2)
-      expect(button().textContent).toBe("Check now")
-      expect(button().disabled).toBe(false)
-      button().click()
+      expect(button()).toBeNull()
+      expect(JSON.stringify(instance.fixture.toasts)).toContain("Download could not be verified.")
+      instance.publish({ status: "up-to-date", mode: "preview" })
       await settle()
-      expect(button().disabled).toBe(true)
-      expect(calls.at(-1)).toBe("check")
-      checks.shift()!.resolve({ status: "up-to-date", mode: "preview" })
-      await settle()
-      expect(button().disabled).toBe(false)
+      expect(button()).toBeNull()
+      expect(calls).not.toContain("check")
 
       // The established signed workflow still keeps download and install
       // separate. Only the explicit preview mode chains the two actions.

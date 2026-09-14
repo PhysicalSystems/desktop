@@ -40,8 +40,7 @@ import "./titlebar.css"
 import { newTabTooltipKeybind } from "./command-tooltip-keybind"
 import { normalizeSessionInfo } from "@/utils/session"
 import type { UpdaterState } from "@/updater"
-import { updaterAction } from "./updater-action"
-import { UpdaterButton, type UpdaterButtonState } from "./updater-button"
+import { UpdaterButton, updaterButtonState, type UpdaterButtonState } from "./updater-button"
 
 const legacyTitlebarHeight = 40
 const v2TitlebarHeight = 36
@@ -123,20 +122,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   const canForward = createMemo(() => history.index < history.stack.length - 1)
   const hasProjects = createMemo(() => layout.projects.list().length > 0)
   const nav = createMemo(() => (useV2Titlebar() ? settings.general.showNavigation() : true))
-  const updateState = createMemo<UpdaterButtonState>(() => {
-    const state = props.update?.state()
-    const action = updaterAction(state)
-    const version = state && "version" in state ? state.version : undefined
-    const busy = state?.status === "checking" || state?.status === "downloading" || state?.status === "installing" || (state?.status === "blocked" && !state.recoverable)
-    return {
-      visible: version !== undefined || (state?.mode === "preview" && state.status !== "disabled"),
-      installing: busy,
-      label: language.t(action.label),
-      ariaLabel: language.t(action.label),
-      title: state?.status === "blocked" || state?.status === "error" ? state.message : version ? language.t("titlebar.updateVersion", { version }) : undefined,
-      onInstall: () => props.update?.run(),
-    }
-  })
+  const updateState = createMemo(() => updaterButtonState(props.update?.state(), language, () => props.update?.run()))
   const v2RightState = createMemo<TitlebarV2RightState>(() => ({
     update: updateState(),
   }))
