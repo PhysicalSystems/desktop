@@ -1,31 +1,52 @@
-# Signed desktop updates
+# Desktop updater integration
 
-The signed update feature must remain release-disabled until authenticated in-app installation is qualified. A notification that opens a manual download is not the approved feature. `UPDATER_ENABLED` remains `false`, and `REVIEWED_UPDATER_CONFIGURATION` is deliberately absent. Runtime environment variables must not enable updates or supply the trusted feed or publisher.
+Physical Systems reuses OpenCode's update interface, IPC subscriptions, shared
+controller, and pinned `electron-updater` download machinery. Public previews use
+our release-selection and native installation adapters, described in
+[Preview installer updates](../packages/desktop/PREVIEW_UPDATES.md).
 
-The separately requested [preview installer update path](../packages/desktop/PREVIEW_UPDATES.md) supports explicit installation of the selected unsigned preview on Windows x64 NSIS and Ubuntu x64 Debian packages. It verifies official HTTPS release metadata and complete installer hashes, displays the unsigned Windows disclosure, and preserves owned-service shutdown and interruption recovery. It does not enable this signed updater gate or claim publisher-signature verification. Its native installed-app qualification must pass before a public release includes it.
+The library supports unsigned Windows NSIS and Linux Debian updates. Signing is
+an explicit release policy, not a technical prerequisite for an Update button.
+The preview flow verifies consistency with official HTTPS release metadata and
+installer hashes; it does not claim publisher-signature authentication.
 
-## Implemented source groundwork
+## Owned release selection
 
-The controller and renderer now distinguish availability, explicit download, verification completion, and confirmed restart. Both titlebar layouts and the error/settings actions use the same updater state. Cached version metadata cannot authorize installation. Native restart defaults to Later. The lifecycle coordinator reserves the installer handoff while operator/credential cleanup and owned model shutdown complete, so a concurrent ordinary relaunch cannot start the old app first.
+The download repository contains several products, with Desktop tags named
+`desktop-v<version>`. The website's selected release is the authoritative Desktop
+choice. Discovery validates that selection against GitHub release identity,
+channel, asset names, sizes and hashes before giving the selected URL and SHA-256 to the
+library's HTTP executor. The existing private cache and pre-install owned-file
+verification remain; a second library cache would duplicate those responsibilities. It never uses the upstream OpenCode release feed.
 
-`launchUpdaterInstaller` surfaces the pinned library's synchronous emitted launch failures as well as thrown errors. It is not an installer-completion monitor: asynchronous post-spawn failures, exit acknowledgement, successful restart/version readback, and recovery still require native integration and qualification before activation. `desktopUpdaterPolicy` is a tested future configuration contract, not yet an active release resolver or signature verifier. Do not present the source groundwork as a working signed update service.
+The controller owns update state, progress, concurrent requests and confirmation.
+The Physical Systems adapter adds selected-release revalidation, owned-service
+shutdown, installation observations and the attempt journal. Retained metadata
+never authorizes a download, installation or retry by itself.
 
-## Current release evidence
+## Native installation adapter
 
-The September 10, 2026 audit found one [public Desktop release, 0.1.0-beta.2](https://github.com/PhysicalSystems/physicalsystems/releases/tag/desktop-v0.1.0-beta.2), built from `5adb6c0dc798511a7292bbe0e5cf4e94810f11e5`. It contains unsigned Windows x64 NSIS, Linux x64 Debian and AppImage installers, with no updater YAML or blockmap assets. `physical-public.config.ts` uses `publish: null`. Windows signing policy and credentials were not provisioned in the desktop repository during this audit; publication credentials and its protected environment were present. Recheck provisioning before release.
+Windows runs the original interactive NSIS installer, which owns reopening the
+app. Ubuntu uses fixed asynchronous `pkexec dpkg --refuse-downgrade --install`
+arguments and confirms the installed package version before relaunching. This
+intentionally differs from the library's Debian installer, which can attempt
+package-manager repair after a failed installation.
 
-The existing beta.2 app has updates disabled, so acquiring the first signed, update-capable installer requires one manual bootstrap installation. That bootstrap is separate from the in-app update feature and does not authorize a manual-download fallback in its UI.
+Both platforms stop the operator and other owned services before installer
+handoff and preserve uncertain outcomes for explicit recovery. These app-specific
+requirements are not supplied by the upstream updater or its download cache.
 
-The download repository also contains Node releases. Pinned `electron-updater` 6.8.9's [GitHub provider](https://github.com/electron-userland/electron-builder/blob/electron-updater@6.8.9/packages/electron-updater/src/providers/GitHubProvider.ts#L72) skips component-prefixed `desktop-v*` tags during prerelease selection. `/releases/latest` does not select the Desktop preview and currently returns 404. Retain component tags and qualify a Desktop-specific version resolver feeding an owned generic provider, or separately review an owned channel feed. A version-pinned release directory alone cannot discover future versions: the future resolver must select the newer immutable Desktop release and supply its directory to policy validation. Do not embed one release version as a permanent discovery feed.
+## Future signed feed
 
-## Activation prerequisites
+`UPDATER_ENABLED` remains false for the original native feed. There is no second,
+unconnected policy resolver or runtime-environment switch. Enabling signed
+updates requires an owned feed, a configured publisher, verification of the real
+native signature checker, and tests of actual signed installers. The packaged
+configuration and selected artifacts must be bound to the reviewed release;
+a boolean or publisher name alone does not prove that verification occurred.
 
-- Provision the owned PFX or Azure signing identity through the existing signed public-build path. Pin the reviewed publisher and, where applicable, certificate thumbprint. Verify the actual executable and final NSIS installer before qualification. Never put private keys, passwords or fabricated signing identities in source or public artifacts.
-- Generate and package the owned generic feed configuration and expected publisher. The initial policy accepts only an exact HTTPS `PhysicalSystems/physicalsystems/releases/download/desktop-v<version>/` directory. Any additional feed requires a reviewed allowlist change. Validate version selection, preview/stable behavior, metadata and asset destinations, checksums, redirects, and downgrade rejection. Never reuse the upstream OpenCode feed.
-- Preserve `verifyUpdateCodeSignature: true` and establish the real native signature verifier. Read and validate the packaged `app-update.yml` publisher against the reviewed publisher. In pinned 6.8.9, [NSIS verification is skipped](https://github.com/electron-userland/electron-builder/blob/electron-updater@6.8.9/packages/electron-updater/src/NsisUpdater.ts#L109) when that file or its publisher is absent. `desktopUpdaterPolicy` checks supplied constraints only: booleans or a matching configuration do not prove a signature was checked.
-- Extend build retention, qualification inventory, publisher validation and anonymous public readback to include the exact update metadata and required differential-download artifacts. The current publisher allows only its three qualified installers and receipts. Keep `--publish never` during construction and publish through the existing protected release workflow after qualification; never attach unqualified metadata to beta.2.
-- Exercise two real signed installed Windows x64 builds through discovery, download, Authenticode verification, explicit install consent, owned-work shutdown, restart and version readback. Verify conversation/credential preservation and recovery. Reject unsigned or differently signed installers, missing/mismatched publisher configuration, corrupted downloads, downgrades and interrupted or failed installation. The current same-source lab reinstall checks do not establish this updater path or historical schema migration.
-- Keep Linux and other architectures/platforms gated until their authenticated installation and recovery paths have independent native qualification. Linux package support in electron-updater does not establish package authentication. Do not infer Linux readiness from a Windows signer or a successful AppImage replacement test.
-- Only after exact-source, exact-artifact evidence passes, populate the reviewed configuration and separately activate the global feature gate. The policy helper has no runtime-environment activation path and must continue rejecting candidate/development identities.
-
-The [electron-builder v26 update guide](https://www.electron.build/v26/docs/features/auto-update/) describes generated update metadata and supported targets. Follow [the public producer](public-producer.md) and [protected publisher](public-publisher.md) for source, signing and publication authority. This checklist and synthetic policy tests grant none of those authorities.
+A signed release must retain and validate any update metadata it publishes, test
+wrong-publisher and unsigned rejection, and qualify installation, restart and
+recovery on each supported platform. Follow the
+[public producer](public-producer.md) and [protected publisher](public-publisher.md).
+Unsigned preview test results do not qualify the signed feed.

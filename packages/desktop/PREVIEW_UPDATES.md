@@ -8,11 +8,30 @@ hands installation to the operating system after owned services have stopped.
 There is no automatic download or install on quit. Versions without this feature
 need one manual installer upgrade before the button becomes available.
 
-The preview path is separate from the disabled signed `electron-updater` policy.
-It accepts only a newer public preview selection marked as an unsigned Windows
-preview. Stable releases, candidates, development builds, AppImages, macOS and
+The preview adapter uses the shared OpenCode-derived controller and pinned
+`electron-updater` download machinery. It accepts only a newer public preview
+selection marked as an unsigned Windows preview. Stable releases, candidates, development builds, AppImages, macOS and
 other architectures do not use it. Windows may warn or block an unsigned
 installer. Ubuntu asks for system authorization through Polkit.
+
+## Reused updater implementation
+
+OpenCode already supplies the titlebar and Settings actions, application updater
+state, IPC subscriptions and update scheduling. Both the original native backend
+and the preview adapter use the same controller for state, concurrency, progress,
+confirmation and recovery orchestration.
+
+A small adapter passes the selected asset URL and SHA-256 to `electron-updater`'s
+HTTP executor, which performs streaming, checksum validation, progress and
+cancellation. The existing private cache and owned-file verification remain: the
+library's ordinary cache does not provide those checks. This transfer adapter has
+no application lifecycle or installation methods.
+
+Physical Systems retains release-selection validation, operator shutdown and the
+attempt journal. Its native installation adapter intentionally verifies Ubuntu's
+installed package without automatic dependency repair and leaves Windows reopen
+to the original interactive NSIS installer. Neither platform nor unsigned preview
+support alone requires a custom download engine.
 
 ## Release and installation boundaries
 

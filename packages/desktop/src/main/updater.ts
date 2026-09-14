@@ -1,7 +1,7 @@
 import { app, dialog } from "electron"
 import pkg from "electron-updater"
 import { UPDATER_ENABLED } from "./constants"
-import { createUpdaterController, type UpdaterReadyRecord } from "./updater-controller"
+import { createUpdaterController, createNativeUpdaterOperations, type UpdaterReadyRecord } from "./updater-controller"
 import { getLogger } from "./logging"
 import { getStore } from "./store"
 import { setAppQuitting } from "./windows"
@@ -30,38 +30,40 @@ export function setupAutoUpdater(install: (launch: () => void) => Promise<void>)
   const store = getStore("opencode.updater")
   return createUpdaterController({
     enabled: UPDATER_ENABLED,
-    currentVersion: app.getVersion(),
-    backend: {
-      checkForUpdates: () => autoUpdater.checkForUpdates(),
-      downloadUpdate: (progress) => {
-        const listener = (info: { percent: number }) => progress(info.percent)
-        autoUpdater.on("download-progress", listener)
-        return autoUpdater.downloadUpdate().finally(() => autoUpdater.removeListener("download-progress", listener))
+    operations: createNativeUpdaterOperations({
+      currentVersion: app.getVersion(),
+      backend: {
+        checkForUpdates: () => autoUpdater.checkForUpdates(),
+        downloadUpdate: (progress) => {
+          const listener = (info: { percent: number }) => progress(info.percent)
+          autoUpdater.on("download-progress", listener)
+          return autoUpdater.downloadUpdate().finally(() => autoUpdater.removeListener("download-progress", listener))
+        },
+        quitAndInstall: () => launchUpdaterInstaller(autoUpdater, setAppQuitting),
       },
-      quitAndInstall: () => launchUpdaterInstaller(autoUpdater, setAppQuitting),
-    },
-    persistence: {
-      get() {
-        const value = store.get(key)
-        if (!value || typeof value !== "object" || !("version" in value) || typeof value.version !== "string") return
-        return { version: value.version } satisfies UpdaterReadyRecord
+      persistence: {
+        get() {
+          const value = store.get(key)
+          if (!value || typeof value !== "object" || !("version" in value) || typeof value.version !== "string") return
+          return { version: value.version } satisfies UpdaterReadyRecord
+        },
+        set: (value) => store.set(key, value),
+        clear: () => store.delete(key),
       },
-      set: (value) => store.set(key, value),
-      clear: () => store.delete(key),
-    },
-    install,
-    async confirmInstall(version) {
-      const response = await dialog.showMessageBox({
-        type: "question",
-        title: nativeT("desktop.updater.dialog.ready.title"),
-        message: nativeT("desktop.updater.dialog.ready.message", { version }),
-        detail: nativeT("desktop.updater.dialog.restart.detail"),
-        buttons: [nativeT("desktop.updater.dialog.restart"), nativeT("desktop.updater.dialog.later")],
-        defaultId: 1,
-        cancelId: 1,
-      })
-      return response.response === 0
-    },
+      install,
+      async confirmInstall(version) {
+        const response = await dialog.showMessageBox({
+          type: "question",
+          title: nativeT("desktop.updater.dialog.ready.title"),
+          message: nativeT("desktop.updater.dialog.ready.message", { version }),
+          detail: nativeT("desktop.updater.dialog.restart.detail"),
+          buttons: [nativeT("desktop.updater.dialog.restart"), nativeT("desktop.updater.dialog.later")],
+          defaultId: 1,
+          cancelId: 1,
+        })
+        return response.response === 0
+      },
+    }),
     log: (message, data) => logger.log(message, data),
   })
 }

@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test"
-import { createUpdaterController, type UpdaterBackend, type UpdaterReadyRecord } from "./updater-controller"
+import {
+  createUpdaterController,
+  createNativeUpdaterOperations,
+  type UpdaterBackend,
+  type UpdaterReadyRecord,
+} from "./updater-controller"
 
 function setup(input?: {
   enabled?: boolean
   confirm?: boolean
+  confirmInstall?: () => Promise<boolean>
   currentVersion?: string
   version?: string
   ready?: UpdaterReadyRecord
@@ -24,25 +30,28 @@ function setup(input?: {
   let ready = input?.ready
   const controller = createUpdaterController({
     enabled: input?.enabled ?? true,
-    currentVersion: input?.currentVersion ?? "1.0.0",
-    backend,
-    persistence: {
-      get: () => ready,
-      set: (value) => {
-        ready = value
+    operations: createNativeUpdaterOperations({
+      currentVersion: input?.currentVersion ?? "1.0.0",
+      backend,
+      persistence: {
+        get: () => ready,
+        set: (value) => {
+          ready = value
+        },
+        clear: () => {
+          ready = undefined
+        },
       },
-      clear: () => {
-        ready = undefined
+      install: async (launch) => {
+        calls.push("stop")
+        launch()
       },
-    },
-    install: async (launch) => {
-      calls.push("stop")
-      launch()
-    },
-    confirmInstall: async () => {
-      calls.push("confirm")
-      return input?.confirm ?? true
-    },
+      confirmInstall: async () => {
+        calls.push("confirm")
+        if (input?.confirmInstall) return input.confirmInstall()
+        return input?.confirm ?? true
+      },
+    }),
   })
   return { controller, calls, backend, getReady: () => ready }
 }
@@ -115,19 +124,21 @@ describe("updater controller", () => {
 
     const failed = createUpdaterController({
       enabled: true,
-      currentVersion: "1.0.0",
-      backend: {
-        checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "2.0.0" } }),
-        downloadUpdate: async () => {},
-        quitAndInstall() {
-          throw new Error("must not install before cleanup")
+      operations: createNativeUpdaterOperations({
+        currentVersion: "1.0.0",
+        backend: {
+          checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "2.0.0" } }),
+          downloadUpdate: async () => {},
+          quitAndInstall() {
+            throw new Error("must not install before cleanup")
+          },
         },
-      },
-      persistence: { get: () => undefined, set() {}, clear() {} },
-      install: async () => {
-        throw new Error("stop failed")
-      },
-      confirmInstall: async () => true,
+        persistence: { get: () => undefined, set() {}, clear() {} },
+        install: async () => {
+          throw new Error("stop failed")
+        },
+        confirmInstall: async () => true,
+      }),
     })
     await failed.start()
     await failed.download()
@@ -236,5 +247,23 @@ describe("updater controller", () => {
     await app.controller.install()
     expect(app.calls).toEqual(["check", "download", "confirm"])
     expect(app.controller.getState().status).toBe("ready")
+  })
+
+  test("checks, downloads and recovery share pending native confirmation without installing twice", async () => {
+    const confirmation = Promise.withResolvers<boolean>()
+    const app = setup({ confirmInstall: () => confirmation.promise })
+    await app.controller.start()
+    await app.controller.download()
+    const installing = app.controller.install()
+    const checking = app.controller.check()
+    expect(app.controller.install()).toBe(installing)
+    expect(app.controller.download()).toBe(checking)
+    expect(app.controller.recover()).toBe(checking)
+    expect(app.controller.getState().status).toBe("installing")
+    expect(app.calls).toEqual(["check", "download", "confirm"])
+    confirmation.resolve(false)
+    expect((await checking).status).toBe("ready")
+    await installing
+    expect(app.calls).toEqual(["check", "download", "confirm"])
   })
 })
