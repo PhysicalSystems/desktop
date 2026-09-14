@@ -5,9 +5,9 @@ import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import { compareVersion } from "../../../physicalsystems/src/release/inputs"
+import type { PreviewUpdateRequest } from "./preview-update-transfer"
 
 export type PreviewUpdateAsset = { name: string; bytes: number; sha256: string; url: string }
-type Fetcher = (url: string, options: RequestInit) => Promise<Response>
 const failures = new Set([
   "PREVIEW_UPDATE_ASSET_INVALID",
   "PREVIEW_UPDATE_CACHE_UNSAFE",
@@ -99,7 +99,7 @@ export async function reverifyPreviewUpdate(file: string, expectedAsset: Preview
 export async function downloadPreviewUpdate(input: {
   asset: PreviewUpdateAsset
   directory: string
-  fetch?: Fetcher
+  request?: PreviewUpdateRequest
   onProgress?: (percent: number) => void
 }): Promise<string> {
   const expected = asset(input.asset)
@@ -158,73 +158,25 @@ export async function downloadPreviewUpdate(input: {
     }
     partial = join(root, `${expected.name}.${randomUUID()}.partial`)
     handle = await open(partial, "wx", 0o600)
-    const request = input.fetch ?? fetch
-    const signal = AbortSignal.timeout(5 * 60_000)
-    let url = expected.url
-    const hash = createHash("sha256")
-    let bytes = 0
+    const { transferPreviewUpdate } = await import("./preview-update-transfer")
     progress(0)
-    for (let redirects = 0; ; redirects++) {
-      const response = await request(url, {
-        method: "GET",
-        redirect: "manual",
-        credentials: "omit",
-        cache: "no-store",
-        signal,
-        headers: { Accept: "application/octet-stream" },
-      })
-      if ([301, 302, 303, 307, 308].includes(response.status)) {
-        await response.body?.cancel().catch(() => {})
-        const next = URL.parse(response.headers.get("location") ?? "")
-        if (
-          redirects >= 3 ||
-          !next ||
-          next.protocol !== "https:" ||
-          next.port ||
-          next.username ||
-          next.password ||
-          next.hash ||
-          !["release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(next.hostname)
-        )
-          throw new Error("PREVIEW_UPDATE_REDIRECT_INVALID")
-        url = next.href
-        continue
-      }
-      if (!response.ok || response.redirected || !response.body || (response.url && response.url !== url)) {
-        await response.body?.cancel().catch(() => {})
-        throw new Error("PREVIEW_UPDATE_DOWNLOAD_FAILED")
-      }
-      const length = response.headers.get("content-length")
-      if (length !== null && (!/^\d+$/.test(length) || Number(length) !== expected.bytes)) {
-        await response.body.cancel().catch(() => {})
-        throw new Error("PREVIEW_UPDATE_SIZE_MISMATCH")
-      }
-      const reader = response.body.getReader()
-      try {
-        for (;;) {
-          const chunk = await reader.read()
-          if (chunk.done) break
-          bytes += chunk.value.byteLength
-          if (bytes > expected.bytes) throw new Error("PREVIEW_UPDATE_SIZE_MISMATCH")
-          hash.update(chunk.value)
-          let offset = 0
-          while (offset < chunk.value.byteLength) {
-            const result = await handle.write(chunk.value, offset, chunk.value.byteLength - offset, null)
-            if (!result.bytesWritten) throw new Error("PREVIEW_UPDATE_DOWNLOAD_FAILED")
-            offset += result.bytesWritten
-          }
-          progress((bytes / expected.bytes) * 100)
-        }
-      } finally {
-        await reader.cancel().catch(() => {})
-      }
-      break
-    }
-    if (bytes !== expected.bytes) throw new Error("PREVIEW_UPDATE_SIZE_MISMATCH")
-    if (hash.digest("hex") !== expected.sha256) throw new Error("PREVIEW_UPDATE_HASH_MISMATCH")
+    // Keep the private owned-file cache boundary; the library owns streaming,
+    // checksum verification and progress, without an updater/app lifecycle.
+    await transferPreviewUpdate({
+      asset: expected,
+      file: partial,
+      handle,
+      request: input.request,
+      onProgress: progress,
+    })
     await handle.sync()
+    const opened = await handle.stat()
+    const current = await lstat(partial)
+    if (!ownedRegular(current) || opened.dev !== current.dev || opened.ino !== current.ino)
+      throw new Error("PREVIEW_UPDATE_FILE_CHANGED")
     await handle.close()
     handle = undefined
+    await reverifyPreviewUpdate(partial, expected)
     await rename(partial, file)
     partial = undefined
     await reverifyPreviewUpdate(file, expected)
@@ -239,6 +191,8 @@ export async function downloadPreviewUpdate(input: {
 }
 
 function sanitized(error: unknown, fallback: string) {
+  if (error instanceof Error && "code" in error && error.code === "ERR_CHECKSUM_MISMATCH")
+    return new Error("PREVIEW_UPDATE_HASH_MISMATCH")
   return new Error(error instanceof Error && failures.has(error.message) ? error.message : fallback)
 }
 

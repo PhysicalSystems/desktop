@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { launchUpdaterInstaller } from "./updater-install"
-import { createUpdaterController } from "./updater-controller"
+import { createUpdaterController, createNativeUpdaterOperations } from "./updater-controller"
 import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycle"
 
 test("surfaces the library's emitted failure and resets quitting bookkeeping", () => {
@@ -45,15 +45,17 @@ test("emitted install failure restores retryable controller state", async () => 
   })
   const controller = createUpdaterController({
     enabled: true,
-    currentVersion: "1.0.0",
-    backend: {
-      checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "2.0.0" } }),
-      downloadUpdate: async () => {},
-      quitAndInstall: () => launchUpdaterInstaller(installer, () => {}),
-    },
-    persistence: { get: () => undefined, set() {}, clear() {} },
-    confirmInstall: async () => true,
-    install: async (launch) => launch(),
+    operations: createNativeUpdaterOperations({
+      currentVersion: "1.0.0",
+      backend: {
+        checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "2.0.0" } }),
+        downloadUpdate: async () => {},
+        quitAndInstall: () => launchUpdaterInstaller(installer, () => {}),
+      },
+      persistence: { get: () => undefined, set() {}, clear() {} },
+      confirmInstall: async () => true,
+      install: async (launch) => launch(),
+    }),
   })
   await controller.start()
   await controller.download()
@@ -84,19 +86,21 @@ test("real controller and shutdown coordinator reserve cleanup through installer
     })
     const controller = createUpdaterController({
       enabled: true,
-      currentVersion: "1.0.0",
-      backend: {
-        checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "2.0.0" } }),
-        downloadUpdate: async () => {},
-        quitAndInstall: () => {
-          calls.push("installer")
+      operations: createNativeUpdaterOperations({
+        currentVersion: "1.0.0",
+        backend: {
+          checkForUpdates: async () => ({ isUpdateAvailable: true, updateInfo: { version: "2.0.0" } }),
+          downloadUpdate: async () => {},
+          quitAndInstall: () => {
+            calls.push("installer")
+          },
         },
-      },
-      persistence: { get: () => undefined, set() {}, clear() {} },
-      confirmInstall: async () => true,
-      install: async (launch) => {
-        if (!(await shutdown.update(launch))) throw new Error("UPDATE_SHUTDOWN_UNCONFIRMED")
-      },
+        persistence: { get: () => undefined, set() {}, clear() {} },
+        confirmInstall: async () => true,
+        install: async (launch) => {
+          if (!(await shutdown.update(launch))) throw new Error("UPDATE_SHUTDOWN_UNCONFIRMED")
+        },
+      }),
     })
     await controller.start()
     await controller.download()

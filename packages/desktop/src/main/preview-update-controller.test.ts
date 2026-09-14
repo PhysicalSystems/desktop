@@ -277,6 +277,7 @@ test("uncertain installation keeps lifecycle blocked until an explicit native ca
   expect(f.calls).not.toContain("recover")
   await f.controller.recover()
   expect(f.controller.getState().status).toBe("blocked")
+  expect(f.controller.getState()).toMatchObject({ message: "pending" })
   expect(f.calls).not.toContain("resume")
   expect(f.state.journal).toBeDefined()
   f.state.recovery = "not-installed"
@@ -346,4 +347,69 @@ test("an actually running newer supported version acknowledges an older pending 
   expect(f.state.journal).toBeUndefined()
   expect(f.calls).not.toContain("recover")
   expect(f.calls).not.toContain("install")
+})
+
+test("checks observe preview confirmation before Later while download and recovery wait", async () => {
+  const f = fixture()
+  const confirmation = Promise.withResolvers<boolean>()
+  const controller = createPreviewUpdateController({ ...f.input, confirm: () => confirmation.promise })
+  await controller.start()
+  await controller.download()
+  const installing = controller.install()
+  const downloading = controller.download()
+  expect(controller.install()).toBe(installing)
+  expect(controller.recover()).toBe(downloading)
+  const calls = [...f.calls]
+  expect(await controller.check()).toEqual({ status: "installing", version: release.version, mode: "preview" })
+  expect(f.calls).toEqual(calls)
+  confirmation.resolve(false)
+  expect(await downloading).toEqual({ status: "ready", version: release.version, mode: "preview" })
+  await installing
+  expect(f.calls).not.toContain("operator")
+  expect(f.state.journal).toBeUndefined()
+})
+
+test("changed selection and failed download never become ready; retry requires a fresh check", async () => {
+  for (const failure of ["selection", "download"] as const) {
+    const f = fixture()
+    let fail = true
+    const controller = createPreviewUpdateController({
+      ...f.input,
+      async download(asset, progress) {
+        if (fail && failure === "download") throw new Error("download failed")
+        return f.input.download(asset, progress)
+      },
+    })
+    await controller.start()
+    if (failure === "selection") f.state.discovery = { status: "up-to-date", version: f.input.currentVersion }
+    await controller.download()
+    expect(controller.getState()).toMatchObject({
+      status: "error",
+      message: failure === "selection" ? "changed" : "failed",
+    })
+    await expect(controller.install()).rejects.toThrow()
+    await controller.download()
+    expect(f.calls).not.toContain("download-deb")
+    expect(f.calls).not.toContain("confirm")
+    fail = false
+    f.state.discovery = structuredClone(release)
+    await controller.check()
+    await controller.download()
+    expect(controller.getState()).toEqual({ status: "ready", version: release.version, mode: "preview" })
+    expect(f.calls.filter((call) => call === "download-deb")).toHaveLength(1)
+    expect(f.calls).not.toContain("install")
+  }
+})
+
+test("a definite installer failure clears its attempt and returns a visible error without quitting", async () => {
+  const f = fixture()
+  f.state.install = async () => {
+    throw new Error("launch refused")
+  }
+  await f.controller.start()
+  await f.controller.download()
+  await expect(f.controller.install()).rejects.toThrow("failed")
+  expect(f.controller.getState()).toEqual({ status: "error", message: "failed", mode: "preview" })
+  expect(f.state.journal).toBeUndefined()
+  expect(f.calls).not.toContain("finish")
 })
