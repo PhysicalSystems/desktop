@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://physicalsystems.ai">
-    <img src="docs/images/physical-systems-mark.png" width="112" alt="Physical Systems">
+    <img src="packages/desktop/icons/physicalsystems/icon.png" width="144" alt="Physical Systems">
   </a>
 </p>
 
