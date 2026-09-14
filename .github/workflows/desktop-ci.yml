@@ -56,8 +56,6 @@ jobs:
           ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-desktop-build
-        with:
-          install-dependencies: "false"
       - name: Validate Windows recovery controller and owner protocol regressions
         working-directory: packages/physicalsystems
         run: bun test ./src/release/native-upgrade-process.test.ts ./src/release/windows-installer-owner.test.ts ./src/release/preview-update-windows.test.ts ./src/release/preview-update-windows-command-links.test.ts
