@@ -190,9 +190,36 @@ class X11DialogTests(unittest.TestCase):
         return {"id": 123, "pid": 42, "title": "Update Ready", "dialog": True, "viewable": True,
                 "width": 900, "height": 300, "depth": 24, "visual": 33, "x": 20, "y": 30, **changes}
 
+    def icon_tsv(self, symbol="@", left=47, top=5, width=15, height=15, confidence=31, duplicate=False):
+        rows = self.tsv().splitlines()
+        result = [rows[0]]
+        icon = f"5\t1\t1\t1\t1\t1\t{left}\t{top}\t{width}\t{height}\t{confidence}\t{symbol}"
+        result.extend([icon] * (2 if duplicate else 1))
+        for row in rows[1:]:
+            fields = row.split("\t")
+            fields[6] = str(int(fields[6]) + 100)
+            result.append("\t".join(fields))
+        return "\n".join(result) + "\n"
+
     def test_exact_public_copy_determines_each_button_text_center(self):
         self.assertEqual(native.dialog_ocr_point(self.tsv(), 900, 300, self.version, "install"), (171, 256))
         self.assertEqual(native.dialog_ocr_point(self.tsv(), 900, 300, self.version, "later"), (617, 256))
+
+    def test_one_observed_nontext_icon_preserves_exact_copy_confidence_and_button_points(self):
+        self.assertEqual(native.dialog_ocr_point(self.icon_tsv(), 1000, 300, self.version, "install"), (271, 256))
+        self.assertEqual(native.dialog_ocr_point(self.icon_tsv(), 1000, 300, self.version, "later"), (717, 256))
+        for value in (self.icon_tsv().replace("\tUbuntu\n", "\tAltered\n"),
+                      self.icon_tsv().replace("\t99\tLater", "\t74\tLater"),
+                      self.icon_tsv().replace("0.1.0-beta.7?", "0.1.0-beta.8?")):
+            with self.assertRaises(native.NativeDialogRecognitionError):
+                native.dialog_ocr_point(value, 1000, 300, self.version, "install")
+
+    def test_icon_rule_refuses_words_multiple_symbols_and_glyphs_outside_isolated_heading_icon_area(self):
+        for changes in ({"symbol": "A"}, {"symbol": "7"}, {"symbol": "please"}, {"symbol": "@@"},
+                        {"duplicate": True}, {"left": 150}, {"left": 100}, {"top": 80},
+                        {"width": 40}, {"width": 2, "height": 2}, {"confidence": 99}, {"left": -1}):
+            with self.subTest(changes=changes), self.assertRaises(native.NativeDialogRecognitionError):
+                native.dialog_ocr_point(self.icon_tsv(**changes), 1000, 300, self.version, "install")
 
     def test_ocr_refuses_wrong_version_unknown_text_duplicate_buttons_low_confidence_and_bad_geometry(self):
         original = self.tsv()

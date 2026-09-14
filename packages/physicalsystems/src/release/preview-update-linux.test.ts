@@ -336,7 +336,7 @@ test.skipIf(process.platform !== "linux")(
       child.once("close", resolve)
       child.once("error", reject)
     })
-    expect(output).toContain("Ran 21 tests")
+    expect(output).toContain("Ran 23 tests")
     expect(code).toBe(0)
   },
 )

@@ -341,10 +341,26 @@ def dialog_ocr_point(tsv, width, height, version, choice):
             fail("format", True)
         words.append((text, left, top, w, h))
         confidences.append(confidence)
-    diagnostic["actualWords"] = len(words)
-    diagnostic["minimumConfidence"] = max(-1, min(100, math.floor(min(confidences)))) if confidences else None
     diagnostic["rangesValid"] = all(0 <= left < width and 0 <= top < height and 0 < w <= width - left
                                     and 0 < h <= height - top for _, left, top, w, h in words)
+    # The hosted GTK missing-icon glyph is a small isolated symbol to the left
+    # of the heading. Tesseract reads its blue diamond as a low-confidence '@'.
+    # Exclude at most that one nontext glyph, only when every remaining word
+    # already matches the complete authored copy. Never discard arbitrary words
+    # or anything within the heading/body/buttons, nor relax their confidence.
+    if diagnostic["rangesValid"] and len(words) == len(expected) + 1 and [word[0] for word in words[1:]] == expected:
+        glyph, heading, text_words = words[0], words[1:5], words[1:]
+        symbol, left, top, w, h = glyph
+        heading_top = min(word[2] for word in heading)
+        heading_bottom = max(word[2] + word[4] for word in heading)
+        if (len(symbol) == 1 and not symbol.isalnum() and not symbol.isspace() and 0 <= confidences[0] < 75
+                and 8 <= w <= 32 and 8 <= h <= 32 and max(w, h) <= 2 * min(w, h)
+                and left + w <= width // 5 and left + w + 16 <= min(word[1] for word in text_words)
+                and heading_top - 8 <= top and top + h <= heading_bottom + 8
+                and top < heading_bottom and top + h > heading_top):
+            words, confidences = text_words, confidences[1:]
+    diagnostic["actualWords"] = len(words)
+    diagnostic["minimumConfidence"] = max(-1, min(100, math.floor(min(confidences)))) if confidences else None
     for index in range(max(len(expected), len(words))):
         wanted = expected[index] if index < len(expected) else None
         actual = words[index][0] if index < len(words) else None

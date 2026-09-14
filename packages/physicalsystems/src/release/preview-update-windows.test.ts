@@ -78,7 +78,7 @@ test("an observed process binds fresh creation, path, preview version and native
   const f = fixture()
   const result = f.native.observe(observation)
   expect(JSON.parse(f.calls[0]!.input)).toEqual({ ...observation, operation: "observe" })
-  expect(f.calls[0]!.timeout).toBe(12000)
+  expect(f.calls[0]!.timeout).toBe(30000)
   let settled = false
   void result.then(() => {
     settled = true
@@ -133,6 +133,7 @@ test("confirmation uses only the exact requested native action and normal close 
   for (const action of ["Later", "Install update"] as const) {
     const input = { application: baseline, version: "0.1.0-beta.7", action }
     const waiting = f.native.confirm(input)
+    expect(f.calls.at(-1)!.timeout).toBe(12000)
     f.reply({ status: "waiting" })
     expect(await waiting).toBe("waiting")
     const confirmation = f.native.confirm(input)
@@ -147,10 +148,12 @@ test("confirmation uses only the exact requested native action and normal close 
   await expect(other.native.close({ application: baseline })).rejects.toThrow("UNCONFIRMED")
   expect(other.calls).toHaveLength(1)
   const close = f.native.close({ application: baseline })
+  expect(f.calls.at(-1)!.timeout).toBe(12000)
   expect(JSON.parse(f.calls.at(-1)!.input)).toEqual({ operation: "close", application: baseline })
   f.reply({ status: "close-requested" })
   expect(await close).toBeUndefined()
   const running = f.native.exited({ application: baseline })
+  expect(f.calls.at(-1)!.timeout).toBe(12000)
   f.reply({ status: "running" })
   expect(await running).toBe(false)
   const exited = f.native.exited({ application: baseline })

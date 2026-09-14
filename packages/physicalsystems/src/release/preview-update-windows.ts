@@ -526,7 +526,13 @@ export function createPreviewUpdateWindowsTransport(
   execute: Parameters<typeof createWindowsReviewRequestTransport>[0],
   closeTimeoutMs = 500,
 ) {
-  const request = createWindowsReviewRequestTransport<Request>(execute, () => 12000, closeTimeoutMs)
+  // Cold CIM discovery shares the existing native preflight budget. Operations
+  // on an already observed app retain the shorter deadline and owner semantics.
+  const request = createWindowsReviewRequestTransport<Request>(
+    execute,
+    (input) => (input.operation === "observe" ? 30000 : 12000),
+    closeTimeoutMs,
+  )
   let mutationUncertain = false
   const perform = async (input: Request): Promise<Reply> => {
     if (mutationUncertain) throw failure()

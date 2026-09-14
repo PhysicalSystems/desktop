@@ -220,8 +220,6 @@ try {
   )
   if (polkit) {
     await polkit.authenticated
-    await polkit.stop()
-    polkit = undefined
   }
   await wait(
     () => (windows ? native.exited({ application: old }) : Promise.resolve(launch.closed())),
@@ -231,6 +229,13 @@ try {
   if (originalDeparted) await wait(originalDeparted, 60000, "ORIGINAL_DESCENDANT_EXIT_UNCONFIRMED")
   await wait(async () => launch.closed(), 10000, "ORIGINAL_CHILD_EXIT_UNCONFIRMED")
   if (!launch.cleanExit()) throw Error("PREVIEW_UPDATE_BASELINE_EXIT_NOT_SUCCESSFUL")
+  if (polkit) {
+    // The terminal success message precedes Polkit's final D-Bus reply. Keep
+    // its listener alive until the real package manager has finished.
+    await verifyPackage(executable, plan.target.version, false)
+    await polkit.stop()
+    polkit = undefined
+  }
   cdp.close()
   cdp = undefined
   await record("native-confirmation-and-old-application-exit-confirmed")
