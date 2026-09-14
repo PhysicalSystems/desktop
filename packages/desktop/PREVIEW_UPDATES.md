@@ -108,6 +108,12 @@ uses AT-SPI; for GTK dialogs absent from that tree, it recognizes the exact publ
 question and button labels in the app-owned X11 window before sending events only
 to that window. Neither path uses global keyboard or pointer input.
 
+Source CI first exercises the native controls in small owned Windows and Ubuntu
+fixtures. The Ubuntu fixture uses the pinned npm Electron engine with an empty
+offline window and no app backend, profile credentials, or installer. Its
+explicit `--no-sandbox` flag is confined to that inert engine; it does not test
+production sandboxing or alter the packaged application's launch arguments.
+
 After observing that public target close normally, a separate manual phase checks
 the exact attempt journal left by the real update. It installs the private newer
 fixture, verifies that installation preserved the journal, and explicitly launches
@@ -124,6 +130,8 @@ separately from the actual in-app update. It is separate from release
 qualification: the current beta.7 target predates the new journal acknowledgement
 code, and the test does not exercise native interrupted-installation recovery or
 complete conversation/credential migration. Ubuntu can also retain the two
-app-owned confirmation images after exact public-text verification and before
-authentication. Profiles, passwords, packages, arbitrary screenshots and raw app
-logs are not uploaded.
+app-owned confirmation images after exact public-text verification. A recognition
+failure may retain the exact owned `Update Ready` window for diagnosis after
+process, title, window-type and visibility checks. These captures happen before
+authentication and never capture the desktop. Profiles, passwords, packages,
+arbitrary screenshots and raw app logs are not uploaded.

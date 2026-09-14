@@ -8,6 +8,7 @@ accessibility tree, or arbitrary exception text is ever emitted by this helper.
 import ctypes
 import csv
 import io
+import math
 import json
 import os
 import pathlib
@@ -298,17 +299,35 @@ LINUX_CONFIRMATION_DETAIL = ("Ubuntu will ask for permission to install the down
     "confirms the new version. Stop any physical operation before continuing.")
 
 
+class NativeDialogRecognitionError(QualificationError):
+    def __init__(self, code, diagnostic):
+        super().__init__(code)
+        self.diagnostic = diagnostic
+
+
 def dialog_ocr_point(tsv, width, height, version, choice):
     """Recognize the entire public dialog, deriving a button point from its text.
 
     No fuzzy matching, guessed coordinates, focus cycling or unrelated pixels.
-    In particular an unexpected dialog is never saved to an uploaded screenshot.
+    Recognition diagnostics contain authored categories/counts only, never OCR
+    text. The terminal failure path may separately capture the exact app-owned
+    Update Ready window before any input, to explain a hosted font/OCR mismatch.
     """
-    require(isinstance(tsv, str) and len(tsv) <= 65536 and 200 <= width <= 1600 and 80 <= height <= 1000,
-            "NATIVE_DIALOG_OCR_INVALID")
+    expected = ("Install Physical Systems " + version + "? " + LINUX_CONFIRMATION_DETAIL + " Install update Later").split()
+    diagnostic = {"reason": "format", "expectedWords": len(expected), "actualWords": 0,
+                  "mismatches": [], "minimumConfidence": None, "rangesValid": False,
+                  "width": width if isinstance(width, int) and 0 <= width <= 4096 else 0,
+                  "height": height if isinstance(height, int) and 0 <= height <= 4096 else 0}
+    def fail(reason, invalid=False):
+        diagnostic["reason"] = reason
+        raise NativeDialogRecognitionError("NATIVE_DIALOG_OCR_INVALID" if invalid else "NATIVE_DIALOG_OCR_MISMATCH",
+                                           diagnostic)
+    if not (isinstance(tsv, str) and len(tsv) <= 65536 and 200 <= width <= 1600 and 80 <= height <= 1000):
+        fail("format", True)
     rows = list(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
-    require(len(rows) <= 256, "NATIVE_DIALOG_OCR_INVALID")
-    words = []
+    if len(rows) > 256:
+        fail("format", True)
+    words, confidences = [], []
     for row in rows:
         if row.get("level") != "5":
             continue
@@ -317,19 +336,41 @@ def dialog_ocr_point(tsv, width, height, version, choice):
             confidence = float(row["conf"])
             text = row["text"]
         except (KeyError, TypeError, ValueError):
-            raise QualificationError("NATIVE_DIALOG_OCR_INVALID")
-        require(isinstance(text, str) and text and 0 <= left < width and 0 <= top < height
-                and 0 < w <= width - left and 0 < h <= height - top and 75 <= confidence <= 100,
-                "NATIVE_DIALOG_OCR_MISMATCH")
+            fail("format", True)
+        if not isinstance(text, str) or not text or not math.isfinite(confidence):
+            fail("format", True)
         words.append((text, left, top, w, h))
-    expected = ("Install Physical Systems " + version + "? " + LINUX_CONFIRMATION_DETAIL + " Install update Later").split()
-    require([word[0] for word in words] == expected, "NATIVE_DIALOG_OCR_MISMATCH")
+        confidences.append(confidence)
+    diagnostic["actualWords"] = len(words)
+    diagnostic["minimumConfidence"] = max(-1, min(100, math.floor(min(confidences)))) if confidences else None
+    diagnostic["rangesValid"] = all(0 <= left < width and 0 <= top < height and 0 < w <= width - left
+                                    and 0 < h <= height - top for _, left, top, w, h in words)
+    for index in range(max(len(expected), len(words))):
+        wanted = expected[index] if index < len(expected) else None
+        actual = words[index][0] if index < len(words) else None
+        if wanted == actual:
+            continue
+        category = ("end" if index >= len(expected) else "question" if index < 3 else "version" if index == 3
+                    else "detail" if index < len(expected) - 3 else "later-button" if index == len(expected) - 1
+                    else "install-button")
+        kind = ("extra" if wanted is None else "missing" if actual is None else "case" if wanted.casefold() == actual.casefold()
+                else "punctuation" if re.sub(r"\W", "", wanted) == re.sub(r"\W", "", actual) else "word")
+        if len(diagnostic["mismatches"]) < 12:
+            diagnostic["mismatches"].append({"index": index, "expected": category, "difference": kind})
+    if not diagnostic["rangesValid"]:
+        fail("bounds")
+    if not all(75 <= confidence <= 100 for confidence in confidences):
+        fail("confidence")
+    if len(words) != len(expected):
+        fail("word-count")
+    if diagnostic["mismatches"]:
+        fail("text")
     install, update, later = words[-3:]
-    require(install[1] + install[3] < update[1] and update[1] + update[3] + 16 < later[1]
+    if not (install[1] + install[3] < update[1] and update[1] + update[3] + 16 < later[1]
             and max(x[2] for x in words[:-3]) + 4 < min(x[2] for x in words[-3:])
             and min(x[2] for x in words[-3:]) > height // 2
-            and max(x[2] for x in words[-3:]) - min(x[2] for x in words[-3:]) <= 6,
-            "NATIVE_DIALOG_OCR_MISMATCH")
+            and max(x[2] for x in words[-3:]) - min(x[2] for x in words[-3:]) <= 6):
+        fail("layout")
     # Use the middle of a recognized word, wholly inside the intended button.
     target = later if choice == "later" else update
     return (target[1] + target[3] // 2, target[2] + target[4] // 2)
@@ -483,6 +524,25 @@ def click_x11_confirmation(backend, config, start_time, identity=process_identit
     raise QualificationError("NATIVE_DIALOG_ACTION_FAILED")
 
 
+def capture_x11_diagnostic(backend, config, start_time, identity=process_identity):
+    """Terminal OCR failure only: exact owned dialog, before any input/auth.
+
+    Caller is the disposable fresh-profile qualification, never the product or
+    an arbitrary screenshot service. No capture of desktop or auth UI.
+    """
+    pid = config["applicationPid"]
+    require(identity(pid) == start_time, "APPLICATION_IDENTITY_CHANGED")
+    window = find_x11_dialog(backend.windows(pid), pid)
+    require(window is not None and backend.current(window) == window, "NATIVE_DIALOG_WINDOW_CHANGED")
+    png = backend.capture(window)
+    require(identity(pid) == start_time and backend.current(window) == window, "NATIVE_DIALOG_WINDOW_CHANGED")
+    require(len(png) <= 2000000, "NATIVE_DIALOG_CAPTURE_INVALID")
+    filename = pathlib.Path(config["root"]) / "native-dialog-diagnostic.png"
+    descriptor = os.open(filename, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(png)
+
+
 def click_confirmation(config, start_time):
     require(config.get("choice") in ("later", "install") and isinstance(config.get("version"), str)
             and re.fullmatch(r"\d+\.\d+\.\d+-beta\.\d+", config["version"]), "NATIVE_DIALOG_INPUT_INVALID")
@@ -544,6 +604,13 @@ def click_confirmation(config, start_time):
         time.sleep(0.1)
     # Authored categories/counts only. No title, message, PID, path, accessibility
     # tree, or unrelated application's content is returned to the CI report.
+    if last_ocr_failure:
+        observation["recognition"] = last_ocr_failure.diagnostic
+        try:
+            capture_x11_diagnostic(x11, config, start_time)
+            observation["diagnosticImage"] = "saved"
+        except Exception:
+            observation["diagnosticImage"] = "unavailable"
     emit("diagnostic", data=observation)
     x11.close()
     if last_ocr_failure:

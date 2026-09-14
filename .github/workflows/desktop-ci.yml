@@ -67,9 +67,51 @@ jobs:
           PHYSICALSYSTEMS_WINDOWS_REVIEW_SELECTION_FIXTURE: "1"
         run: bun ./src/release/windows-review-process-selection.hosted.ts
 
+  linux-updater-dialog:
+    name: Ubuntu updater dialog fixture
+    if: github.repository == 'PhysicalSystems/desktop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI: "true"
+      PHYSICALSYSTEMS_ALLOW_DEVICES: "0"
+      PYTHONDONTWRITEBYTECODE: "1"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      LANGUAGE: en
+      ACCESSIBILITY_ENABLED: "1"
+      NO_AT_BRIDGE: "0"
+      GTK_MODULES: atk-bridge
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-desktop-build
+      - name: Install display and recognition dependencies on the disposable runner
+        run: |
+          test -s /etc/apt/sources.list.d/ubuntu.sources
+          desktop_ubuntu_sources=(-o Dir::Etc::sourcelist=/etc/apt/sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=/dev/null)
+          sudo apt-get "${desktop_ubuntu_sources[@]}" update
+          sudo apt-get "${desktop_ubuntu_sources[@]}" install -y --no-install-recommends xvfb xauth dbus dbus-x11 gnome-keyring libsecret-tools libglib2.0-bin pkexec polkitd python3-gi python3-pyatspi gir1.2-atspi-2.0 python3-xlib tesseract-ocr tesseract-ocr-eng libatk-adaptor at-spi2-core libgtk-3-0t64 libnss3 libasound2t64 libgbm1 libxss1 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 apparmor libnotify4 libxtst6 xdg-utils libatspi2.0-0t64 libuuid1 libsecret-1-0
+      - name: Exercise both choices in the inert Electron confirmation
+        run: dbus-run-session -- xvfb-run -a bun packages/physicalsystems/test/preview-update-linux-inert.mjs
+      - name: Retain owned dialog fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: preview-update-linux-dialog-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/preview-update-linux-inert/result.json
+            ${{ runner.temp }}/preview-update-linux-inert/native-dialog-later.png
+            ${{ runner.temp }}/preview-update-linux-inert/native-dialog-install.png
+            ${{ runner.temp }}/preview-update-linux-inert/native-dialog-diagnostic.png
+          if-no-files-found: warn
+          retention-days: 7
+
   source:
     name: Source and authority checks
-    needs: [windows-installer-owner]
+    needs: [windows-installer-owner, linux-updater-dialog]
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -225,5 +267,6 @@ jobs:
             ${{ steps.prepare.outputs.root }}/result.json
             ${{ steps.prepare.outputs.root }}/native-dialog-later.png
             ${{ steps.prepare.outputs.root }}/native-dialog-install.png
+            ${{ steps.prepare.outputs.root }}/native-dialog-diagnostic.png
           if-no-files-found: warn
           retention-days: 7

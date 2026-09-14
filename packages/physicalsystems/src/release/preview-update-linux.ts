@@ -17,6 +17,21 @@ export type PreviewUpdateLinuxDialogDiagnostic = {
     install: number
     later: number
   }[]
+  recognition?: {
+    reason: "format" | "bounds" | "confidence" | "word-count" | "text" | "layout"
+    expectedWords: number
+    actualWords: number
+    minimumConfidence: number | null
+    rangesValid: boolean
+    width: number
+    height: number
+    mismatches: {
+      index: number
+      expected: "question" | "version" | "detail" | "install-button" | "later-button" | "end"
+      difference: "extra" | "missing" | "case" | "punctuation" | "word"
+    }[]
+  }
+  diagnosticImage?: "saved" | "unavailable"
 }
 
 /** The only diagnostic payload that may be retained by the native test driver. */
@@ -306,7 +321,10 @@ function validateDialogDiagnostic(value: unknown): PreviewUpdateLinuxDialogDiagn
     typeof input === "number" && Number.isSafeInteger(input) && input >= 0 && input <= 64
   if (
     !record(value) ||
-    Object.keys(value).sort().join() !== "applications,ownedApplications,windows" ||
+    ![
+      "applications,ownedApplications,windows",
+      "applications,diagnosticImage,ownedApplications,recognition,windows",
+    ].includes(Object.keys(value).sort().join()) ||
     !count(value.applications) ||
     !count(value.ownedApplications) ||
     value.ownedApplications > value.applications ||
@@ -327,6 +345,39 @@ function validateDialogDiagnostic(value: unknown): PreviewUpdateLinuxDialogDiagn
       !count(window.later)
     )
       throw new Error("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+  }
+  if ("recognition" in value) {
+    const item = value.recognition
+    const integer = (input: unknown, low: number, high: number): input is number =>
+      typeof input === "number" && Number.isSafeInteger(input) && input >= low && input <= high
+    if (
+      !record(item) ||
+      Object.keys(item).sort().join() !==
+        "actualWords,expectedWords,height,minimumConfidence,mismatches,rangesValid,reason,width" ||
+      !["saved", "unavailable"].includes(value.diagnosticImage as string) ||
+      !["format", "bounds", "confidence", "word-count", "text", "layout"].includes(item.reason as string) ||
+      !integer(item.expectedWords, 0, 256) ||
+      !integer(item.actualWords, 0, 256) ||
+      (item.minimumConfidence !== null && !integer(item.minimumConfidence, -1, 100)) ||
+      typeof item.rangesValid !== "boolean" ||
+      !integer(item.width, 0, 4096) ||
+      !integer(item.height, 0, 4096) ||
+      !Array.isArray(item.mismatches) ||
+      item.mismatches.length > 12
+    )
+      throw new Error("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+    for (const mismatch of item.mismatches) {
+      if (
+        !record(mismatch) ||
+        Object.keys(mismatch).sort().join() !== "difference,expected,index" ||
+        !integer(mismatch.index, 0, 255) ||
+        !["question", "version", "detail", "install-button", "later-button", "end"].includes(
+          mismatch.expected as string,
+        ) ||
+        !["extra", "missing", "case", "punctuation", "word"].includes(mismatch.difference as string)
+      )
+        throw new Error("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
+    }
   }
   return structuredClone(value) as PreviewUpdateLinuxDialogDiagnostic
 }

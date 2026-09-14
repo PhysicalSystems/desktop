@@ -261,10 +261,31 @@ native("native dialog failure retains only schema-checked count/category diagnos
     ownedApplications: 1,
     windows: [{ role: "frame" as const, name: "other" as const, message: false, install: 0, later: 0 }],
   }
+  const recognition = {
+    reason: "text",
+    expectedWords: 42,
+    actualWords: 42,
+    minimumConfidence: 83,
+    rangesValid: true,
+    width: 627,
+    height: 173,
+    mismatches: [{ index: 41, expected: "later-button", difference: "punctuation" }],
+  }
+  const withRecognition = { ...diagnostic, recognition, diagnosticImage: "saved" }
   for (const data of [
     diagnostic,
+    withRecognition,
     { ...diagnostic, privateTitle: "must-never-be-retained" },
     { ...diagnostic, windows: [{ ...diagnostic.windows[0], name: "private title" }] },
+    { ...withRecognition, recognition: { ...recognition, rawText: "private text" } },
+    { ...withRecognition, recognition: { ...recognition, actualWords: 257 } },
+    { ...withRecognition, recognition: { ...recognition, minimumConfidence: -2 } },
+    { ...withRecognition, recognition: { ...recognition, mismatches: Array(13).fill(recognition.mismatches[0]) } },
+    {
+      ...withRecognition,
+      recognition: { ...recognition, mismatches: [{ index: 0, expected: "private", difference: "word" }] },
+    },
+    { ...diagnostic, recognition },
   ]) {
     const events = [
       { event: "diagnostic", data },
@@ -288,9 +309,9 @@ native("native dialog failure retains only schema-checked count/category diagnos
     ).catch((error: unknown) => error)
     expect(error).toBeInstanceOf(PreviewUpdateLinuxError)
     if (!(error instanceof PreviewUpdateLinuxError)) throw new Error("unexpected helper error")
-    if (data === diagnostic) {
+    if (data === diagnostic || data === withRecognition) {
       expect(error.message).toBe("PREVIEW_UPDATE_NATIVE_DIALOG_NOT_FOUND")
-      expect(error.nativeDialog).toEqual(diagnostic)
+      expect(error.nativeDialog as unknown).toEqual(data)
     } else {
       expect(error.message).toBe("PREVIEW_UPDATE_NATIVE_HELPER_OUTPUT_INVALID")
       expect(error.nativeDialog).toBeUndefined()
@@ -315,7 +336,7 @@ test.skipIf(process.platform !== "linux")(
       child.once("close", resolve)
       child.once("error", reject)
     })
-    expect(output).toContain("Ran 18 tests")
+    expect(output).toContain("Ran 21 tests")
     expect(code).toBe(0)
   },
 )

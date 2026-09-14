@@ -215,6 +215,40 @@ test("native errors are authored and unconfirmed helper exit permanently prevent
   expect(owner.calls).toHaveLength(1)
 })
 
+test("observer transport failures retain only bounded native outcomes and helper-close uncertainty", async () => {
+  for (const [error, stdout, outcome] of [
+    [{ killed: true, message: "PRIVATE" }, "PRIVATE", "timeout"],
+    [{ code: 1, message: "PRIVATE" }, "PRIVATE", "exit"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", message: "PRIVATE" }, "PRIVATE", "output-limit"],
+    [null, "PRIVATE NOT JSON", "invalid-json"],
+  ] as const) {
+    const f = fixture()
+    const result = f.native.observe(observation)
+    f.calls[0]!.complete(error, stdout, "PRIVATE STDERR")
+    f.calls[0]!.child.emit("close", error ? 1 : 0)
+    const failure = await result.catch((value: unknown) => value)
+    expect(readPreviewUpdateWindowsObservation(failure)).toEqual({ phase: "transport", transportOutcome: outcome })
+    expect(JSON.stringify(readPreviewUpdateWindowsObservation(failure))).not.toContain("PRIVATE")
+  }
+  const f = fixture()
+  const result = f.native.observe(observation)
+  f.calls[0]!.complete(null, '{"status":"waiting"}', "")
+  const failure = await result.catch((value: unknown) => value)
+  expect(readPreviewUpdateWindowsObservation(failure)).toEqual({
+    phase: "transport",
+    transportOutcome: "unknown",
+    helperQuiescence: "unconfirmed",
+  })
+  f.calls[0]!.child.emit("close", 0)
+  await expect(f.native.observe(observation)).rejects.toThrow("UNCONFIRMED")
+  expect(f.calls).toHaveLength(1)
+  expect(
+    readPreviewUpdateWindowsObservation({
+      previewUpdateWindowsObservation: { phase: "PRIVATE", transportOutcome: "PRIVATE", helperQuiescence: "PRIVATE" },
+    }),
+  ).toEqual({ phase: "unknown" })
+})
+
 test("native confirmation failure diagnostics contain only authored phases, bounded counts and boolean observations", async () => {
   const f = fixture()
   const result = f.native.confirm({ application: baseline, version: "0.1.0-beta.7", action: "Later" })

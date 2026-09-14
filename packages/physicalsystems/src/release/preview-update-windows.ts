@@ -10,6 +10,7 @@ import {
   windowsReviewScriptBootstrap,
 } from "./windows-review-native"
 import { windowsAppShutdownNative, windowsAppShutdownSnapshot } from "./windows-app-shutdown-native"
+import { readBrowserObservation } from "./browser-observation"
 
 export type PreviewUpdateWindowsApplication = {
   pid: number
@@ -62,7 +63,9 @@ const nativePhases = [
   "close",
   "exit",
   "output",
+  "transport",
 ]
+const transportOutcomes = ["timeout", "signal", "exit", "start", "output-limit", "invalid-json", "unknown"] as const
 const countFields = [
   "ownedWindows",
   "matchingDialogs",
@@ -99,7 +102,11 @@ const booleanFields = [
   "nativeLaterEnabled",
   "nativeLaterVisible",
 ] as const
-type NativeObservation = { phase: string } & Partial<Record<(typeof countFields)[number], number>> &
+type NativeObservation = {
+  phase: string
+  transportOutcome?: (typeof transportOutcomes)[number]
+  helperQuiescence?: "settled" | "unconfirmed"
+} & Partial<Record<(typeof countFields)[number], number>> &
   Partial<Record<(typeof booleanFields)[number], boolean>>
 function nativeObservation(phase: unknown, counts: unknown): Readonly<NativeObservation> {
   const result: NativeObservation = {
@@ -111,15 +118,25 @@ function nativeObservation(phase: unknown, counts: unknown): Readonly<NativeObse
       if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 257) result[field] = value
     }
     for (const field of booleanFields) if (typeof counts[field] === "boolean") result[field] = counts[field]
+    if (transportOutcomes.includes(counts.transportOutcome as (typeof transportOutcomes)[number]))
+      result.transportOutcome = counts.transportOutcome as (typeof transportOutcomes)[number]
+    if (counts.helperQuiescence === "settled" || counts.helperQuiescence === "unconfirmed")
+      result.helperQuiescence = counts.helperQuiescence
   }
   return Object.freeze(result)
 }
 
-/** Only authored phase IDs and bounded counts/booleans may enter CI receipts. */
+/** Only authored phase/outcome IDs and bounded counts/booleans may enter CI receipts. */
 export function readPreviewUpdateWindowsObservation(error: unknown) {
   try {
-    if (!object(error) || !object(error.previewUpdateWindowsObservation)) return
-    return nativeObservation(error.previewUpdateWindowsObservation.phase, error.previewUpdateWindowsObservation)
+    if (object(error) && object(error.previewUpdateWindowsObservation))
+      return nativeObservation(error.previewUpdateWindowsObservation.phase, error.previewUpdateWindowsObservation)
+    const transport = readBrowserObservation(error)
+    if (!transport?.windowsNativeOutcome && !transport?.handoffQuiescence) return
+    return nativeObservation("transport", {
+      transportOutcome: transport.windowsNativeOutcome,
+      helperQuiescence: transport.handoffQuiescence,
+    })
   } catch {
     return
   }
@@ -330,6 +347,16 @@ function Birth($row){
 function Read-App($row,[string]$path,[string]$version){
   $script:phase='process'
   if(!$row -or !(Same-Path $row.ExecutablePath $path) -or $row.SessionId -ne $session){throw 'identity'}
+  # Renderer/utility processes share this executable but have no main window.
+  # Discard them before the repeated CIM owner and package-version queries.
+  $script:phase='window'
+  $process=[Diagnostics.Process]::GetProcessById([int]$row.ProcessId)
+  try {$process.Refresh();$handle=$process.MainWindowHandle}finally{$process.Dispose()}
+  if($handle -eq [IntPtr]::Zero -or ![PreviewUpdateWindow]::IsWindowVisible($handle)){return $null}
+  [uint32]$windowPid=0
+  $null=[PreviewUpdateWindow]::GetWindowThreadProcessId($handle,[ref]$windowPid)
+  if($windowPid -ne $row.ProcessId){throw 'window'}
+  $script:phase='process'
   $owner=Invoke-CimMethod -InputObject $row -MethodName GetOwnerSid -ErrorAction Stop
   if($owner.ReturnValue -ne 0 -or $owner.Sid -cne $sid){throw 'owner'}
   $birth=Birth $row
@@ -338,15 +365,11 @@ function Read-App($row,[string]$path,[string]$version){
   if($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'file'}
   $info=[Diagnostics.FileVersionInfo]::GetVersionInfo($path)
   if($info.ProductName -cne 'Physical Systems' -or $info.FileVersion -cne $version -or $info.ProductVersion -cne (($version -split '-')[0]+'.0')){throw 'version'}
-  $script:phase='window'
-  $process=[Diagnostics.Process]::GetProcessById([int]$row.ProcessId)
-  try {$process.Refresh();$handle=$process.MainWindowHandle}finally{$process.Dispose()}
-  if($handle -eq [IntPtr]::Zero -or ![PreviewUpdateWindow]::IsWindowVisible($handle)){return $null}
-  [uint32]$windowPid=0
-  $null=[PreviewUpdateWindow]::GetWindowThreadProcessId($handle,[ref]$windowPid)
-  if($windowPid -ne $row.ProcessId){throw 'window'}
   $again=Read-Row $row.ProcessId
   if(!$again -or (Birth $again) -cne $birth -or !(Same-Path $again.ExecutablePath $path) -or $again.SessionId -ne $session){throw 'changed'}
+  $script:phase='window'
+  $null=[PreviewUpdateWindow]::GetWindowThreadProcessId($handle,[ref]$windowPid)
+  if($windowPid -ne $row.ProcessId -or ![PreviewUpdateWindow]::IsWindowVisible($handle)){throw 'changed'}
   return @{pid=[long]$row.ProcessId;creationTime=$birth;executable=$path;version=$version;ownerSid=$sid;sessionId=$session;windowHandle=$handle.ToInt64().ToString([Globalization.CultureInfo]::InvariantCulture);versionInfo=@{ProductName=$info.ProductName;FileVersion=$info.FileVersion;ProductVersion=$info.ProductVersion}}
 }
 function Require-App($expected){

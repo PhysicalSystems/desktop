@@ -418,6 +418,7 @@ test("native updater CI is explicit, source-gated, disposable and cannot upload 
     "${{ steps.prepare.outputs.root }}/result.json",
     "${{ steps.prepare.outputs.root }}/native-dialog-later.png",
     "${{ steps.prepare.outputs.root }}/native-dialog-install.png",
+    "${{ steps.prepare.outputs.root }}/native-dialog-diagnostic.png",
   ])
   expect(job.steps.find((step) => step.run?.includes("dbus-run-session"))?.run).toContain("xvfb-run -a bun")
   expect(job.steps.filter((step) => step.run?.includes("preview-update-native.mjs"))).toHaveLength(2)

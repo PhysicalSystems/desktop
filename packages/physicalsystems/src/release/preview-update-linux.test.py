@@ -206,6 +206,28 @@ class X11DialogTests(unittest.TestCase):
         with self.assertRaisesRegex(native.QualificationError, "OCR_INVALID"):
             native.dialog_ocr_point(original, 2000, 300, self.version, "install")
 
+    def test_recognition_diagnostics_report_failure_without_raw_text(self):
+        for replacement, reason, index, difference in (
+            (self.tsv().replace("\t99\tLater", "\t74.9\tLater"), "confidence", None, None),
+            (self.tsv().replace("\tUbuntu\n", "\tPRIVATE_OCR_TEXT\n"), "text", 4, "word"),
+            (self.tsv().replace("\tLater\n", "\tLater!\n"), "text", 41, "punctuation"),
+            ("\n".join(self.tsv().splitlines()[:-1]), "word-count", 41, "missing"),
+        ):
+            with self.subTest(reason=reason), self.assertRaises(native.NativeDialogRecognitionError) as caught:
+                native.dialog_ocr_point(replacement, 900, 300, self.version, "install")
+            diagnostic = caught.exception.diagnostic
+            self.assertEqual(diagnostic["reason"], reason)
+            self.assertTrue(diagnostic["rangesValid"])
+            self.assertEqual((diagnostic["width"], diagnostic["height"]), (900, 300))
+            self.assertNotIn("PRIVATE_OCR_TEXT", json.dumps(diagnostic))
+            self.assertNotIn("Ubuntu", json.dumps(diagnostic))
+            self.assertLessEqual(len(diagnostic["mismatches"]), 12)
+            if index is not None:
+                self.assertEqual(diagnostic["mismatches"][0]["index"], index)
+                self.assertEqual(diagnostic["mismatches"][0]["difference"], difference)
+            else:
+                self.assertEqual(diagnostic["minimumConfidence"], 74)
+
     def test_window_selection_requires_owned_exact_title_dialog_type_and_one_visible_match(self):
         for change in ({"pid": 43}, {"title": "Other"}, {"dialog": False}, {"viewable": False}):
             self.assertIsNone(native.find_x11_dialog([self.window(**change)], 42))
@@ -268,6 +290,38 @@ class X11DialogTests(unittest.TestCase):
                 self.invoke(backend, root, identity=lambda _: "new process start time")
             self.assertEqual(backend.events, [])
             self.assertEqual(list(pathlib.Path(root).iterdir()), [])
+
+    def test_terminal_diagnostic_capture_saves_exact_owned_window_without_input_even_when_ocr_differs(self):
+        with tempfile.TemporaryDirectory() as root:
+            backend = self.backend(tsv=self.tsv("0.1.0-beta.8"))
+            with self.assertRaises(native.NativeDialogRecognitionError): self.invoke(backend, root)
+            native.capture_x11_diagnostic(backend, {"root": root, "applicationPid": 42}, "123", lambda _: "123")
+            screenshot = pathlib.Path(root) / "native-dialog-diagnostic.png"
+            self.assertEqual(screenshot.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(screenshot.read_bytes(), b"owned exact dialog PNG boundary")
+            self.assertEqual(backend.events, [])
+            with self.assertRaises(FileExistsError):
+                native.capture_x11_diagnostic(backend, {"root": root, "applicationPid": 42}, "123", lambda _: "123")
+
+    def test_diagnostic_capture_refuses_auth_unowned_ambiguous_changed_or_replaced_windows(self):
+        for change in ({"windows": [self.window(title="Authentication")]}, {"windows": [self.window(pid=43)]},
+                       {"windows": [self.window(dialog=False)]}, {"windows": [self.window(viewable=False)]},
+                       {"windows": [self.window(), self.window(id=124)]}, {"change_on_read": 2}):
+            with tempfile.TemporaryDirectory() as root:
+                backend = self.backend(**change)
+                with self.assertRaises(native.QualificationError):
+                    native.capture_x11_diagnostic(backend, {"root": root, "applicationPid": 42}, "123", lambda _: "123")
+                self.assertEqual(backend.events, [])
+                self.assertEqual(list(pathlib.Path(root).iterdir()), [])
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaisesRegex(native.QualificationError, "IDENTITY_CHANGED"):
+                native.capture_x11_diagnostic(self.backend(), {"root": root, "applicationPid": 42}, "123", lambda _: "456")
+            target = pathlib.Path(root) / "sentinel"
+            target.write_bytes(b"unchanged")
+            (pathlib.Path(root) / "native-dialog-diagnostic.png").symlink_to(target)
+            with self.assertRaises(FileExistsError):
+                native.capture_x11_diagnostic(self.backend(), {"root": root, "applicationPid": 42}, "123", lambda _: "123")
+            self.assertEqual(target.read_bytes(), b"unchanged")
 
 
 if __name__ == "__main__":
