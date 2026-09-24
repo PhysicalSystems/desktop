@@ -13,6 +13,19 @@ export const language = {
     ),
 }
 export const useLanguage = () => language
+export const portal = {
+  urls: [] as string[],
+  result: true as boolean | "throw",
+  notices: [] as { title: string; description: string }[],
+}
+export const usePlatform = () => ({
+  openExternal: async (url: string) => {
+    portal.urls.push(url)
+    if (portal.result === "throw") throw new Error("Synthetic browser handoff failure")
+    return portal.result
+  },
+})
+export const showToast = (notice: { title: string; description: string }) => portal.notices.push(notice)
 // Settings itself is exercised by the full Chromium appearance fixture. This
 // project-flow fixture observes the app-command boundary without loading it.
 export const useSettingsCommand = () => () => document.dispatchEvent(new CustomEvent("fixture:settings-open"))

@@ -12,6 +12,20 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
 
 const api: ElectronAPI = {
   physicalSystems: {
+    models: {
+      snapshot: () => ipcRenderer.invoke("physicalsystems:models-snapshot"),
+      refresh: () => ipcRenderer.invoke("physicalsystems:models-refresh"),
+      signIn: () => ipcRenderer.invoke("physicalsystems:models-sign-in"),
+      cancelSignIn: () => ipcRenderer.invoke("physicalsystems:models-cancel-sign-in"),
+      signOut: () => ipcRenderer.invoke("physicalsystems:models-sign-out"),
+      company: (id) => ipcRenderer.invoke("physicalsystems:models-company", id),
+      select: (selection) => ipcRenderer.invoke("physicalsystems:models-select", selection),
+      subscribe: (listener) => {
+        const handler = (_: unknown, state: Parameters<typeof listener>[0]) => listener(state)
+        ipcRenderer.on("physicalsystems:models-state", handler)
+        return () => ipcRenderer.removeListener("physicalsystems:models-state", handler)
+      },
+    },
     lelab: {
       discover: (input) => ipcRenderer.invoke("physicalsystems:lelab-discover", input),
       frame: (input) => ipcRenderer.invoke("physicalsystems:lelab-frame", input),

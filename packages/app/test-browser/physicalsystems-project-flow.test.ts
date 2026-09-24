@@ -18,11 +18,13 @@ beforeAll(async () => {
   const feature = normalizePath(resolve(import.meta.dir, "../src/physicalsystems"))
   const contexts = [
     "../context/language",
+    "../context/platform",
     "../context/server",
     "../context/tabs",
     "../context/global",
     "../components/settings-dialog",
     "../utils/persist",
+    "../utils/toast",
     "../utils/session-route",
     "@solidjs/router",
     "@opencode-ai/session-ui/message-part",
@@ -116,6 +118,79 @@ test("sidebar Settings invokes its app command without changing the managed proj
   expect(opened).toBe(1)
   expect(fixture.js("window.__fixture.calls")).toEqual([])
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+})
+
+test("company portal opens only on click and reports failed browser handoffs without changing the project", async () => {
+  const fixture = await mount()
+  expect(fixture.js("window.__fixture.portal.urls")).toEqual([])
+  fixture.js(`document.querySelector('[data-action="physicalsystems-account"]').click()`)
+  expect(fixture.window.document.querySelector("[data-ps-company-models]")?.textContent).toContain(
+    "Company models portal",
+  )
+  fixture.js(`document.querySelector('[data-ps-company-models]').click()`)
+  await settle()
+  expect(fixture.js("window.__fixture.portal.urls")).toEqual(["https://physicalsystems.ai/model-delivery"])
+  expect(fixture.js("window.__fixture.portal.notices")).toEqual([])
+  fixture.js(`window.__fixture.portal.result=false; document.querySelector('[data-ps-company-models]').click()`)
+  await settle()
+  expect(fixture.js("window.__fixture.portal.notices[0]")).toEqual({
+    title: "Could not open your browser",
+    description: "Open https://physicalsystems.ai/model-delivery in your browser to access your company models.",
+  })
+  fixture.js(`window.__fixture.portal.result='throw'; document.querySelector('[data-ps-company-models]').click()`)
+  await settle()
+  expect(fixture.js("window.__fixture.portal.notices.length")).toBe(2)
+  expect(fixture.window.document.querySelector("[data-ps-company-models]")?.hasAttribute("disabled")).toBe(false)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+})
+
+test("native account menu and separate robot picker keep company selection and logout isolated from chat and devices", async () => {
+  const fixture = await mount()
+  fixture.js(
+    `document.querySelector('[data-action="physicalsystems-account"]').click(); document.querySelector('[data-model-sign-in]').click()`,
+  )
+  await settle()
+  expect(fixture.js("window.__fixture.models.calls")).toEqual(["signIn"])
+  expect(fixture.window.document.body.textContent).toContain("1234567890ABCDEF")
+  fixture.js("window.__fixture.models.approve()")
+  expect(fixture.window.document.querySelector('[data-action="physicalsystems-account"]')?.textContent).toContain(
+    "Lienert Fixture",
+  )
+  fixture.js(
+    `document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape'})); document.querySelector('[data-action="prompt-robot-model"]').click()`,
+  )
+  expect(fixture.window.document.body.textContent).toContain("Company models")
+  expect(fixture.window.document.body.textContent).toContain("SmolVLA base")
+  expect(fixture.window.document.body.textContent).toContain("download reported ready")
+  fixture.js(
+    `Array.from(document.querySelectorAll('.ps-model-option button')).find(x=>x.textContent.includes('Collars')).click()`,
+  )
+  await settle()
+  expect(fixture.js("window.__fixture.models.state.selection")).toMatchObject({
+    kind: "company",
+    companyId: "company-a",
+    releaseId: "release-a",
+  })
+  expect(fixture.window.document.querySelector('[data-action="prompt-robot-model"]')?.textContent).toContain(
+    "Collars to tray",
+  )
+  fixture.js(
+    `const select=document.querySelector('[data-model-company]'); select.value='company-b'; select.dispatchEvent(new window.Event('change',{bubbles:true}));`,
+  )
+  await settle()
+  expect(fixture.js("window.__fixture.models.state.selection")).toBeNull()
+  expect(fixture.window.document.body.textContent).not.toContain("Collars to tray")
+  fixture.js(`document.querySelector('.ps-model-option button').click()`)
+  await settle()
+  expect(fixture.js("window.__fixture.models.state.selection.kind")).toBe("generic")
+  fixture.js(
+    `document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape'})); document.querySelector('[data-action="physicalsystems-account"]').click(); document.querySelector('[data-model-sign-out]').click()`,
+  )
+  await settle()
+  expect(fixture.js("window.__fixture.models.state.selection")).toBeNull()
+  expect(fixture.window.document.body.textContent).not.toContain("fixture@example.invalid")
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
 })
 
 test("creating a project from a linked old chat opens its own conversation without reselecting the old project", async () => {

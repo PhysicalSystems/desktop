@@ -2,10 +2,12 @@ import { render, Dynamic, Portal } from "solid-js/web"
 import { PhysicalSystemsProvider } from "../../../src/physicalsystems/context"
 import { PhysicalSystemsLayout } from "../../../src/physicalsystems/layout"
 import { PhysicalOperations } from "../../../src/physicalsystems/operations"
-import { ToolRegistry, setLocation, location, sessions, setTabInfo, tabKey, navigation } from "./mocks"
+import { ToolRegistry, setLocation, location, sessions, setTabInfo, tabKey, navigation, portal } from "./mocks"
 import type { PhysicalCommand, PhysicalSnapshot } from "../../../src/physicalsystems/types"
 import { createStore } from "solid-js/store"
 import { Show } from "solid-js"
+import { modelBridge, models } from "./models"
+import { RobotModelPicker } from "../../../src/physicalsystems/robot-model-picker"
 
 const [fixture, setFixture] = createStore({ gate: true, forged: false })
 const state: PhysicalSnapshot = {
@@ -97,6 +99,8 @@ if ((window as typeof window & { __fixtureEmpty?: boolean }).__fixtureEmpty) {
 }
 const fixtureWindow = window as typeof window & {
   __fixture: {
+    models: typeof models
+    portal: typeof portal
     state: PhysicalSnapshot
     calls: PhysicalCommand[]
     emit: (patch?: Partial<PhysicalSnapshot>) => void
@@ -123,6 +127,8 @@ const fixtureWindow = window as typeof window & {
 }
 const listeners = new Set<(value: PhysicalSnapshot) => void>()
 fixtureWindow.__fixture = {
+  models,
+  portal,
   state,
   calls: [],
   hold: false,
@@ -205,6 +211,7 @@ window.addEventListener("error", (event) => fixtureWindow.__fixture.errors.push(
 window.addEventListener("unhandledrejection", (event) => fixtureWindow.__fixture.errors.push(String(event.reason)))
 window.api = {
   physicalSystems: {
+    models: modelBridge,
     snapshot: async () => structuredClone(state),
     async recover() {
       fixtureWindow.__fixture.recoverCalls++
@@ -390,6 +397,7 @@ render(
           <div style={{ padding: "24px", overflow: "auto" }}>
             <p>Fixture native conversation content</p>
             <ComposerFixture name="inside" />
+            <RobotModelPicker />
             <Dynamic
               component={ToolRegistry.render("propose_local_experiment")}
               tool="propose_local_experiment"

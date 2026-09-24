@@ -1,6 +1,56 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.portal.label": "Company models portal",
+  "physicalsystems.portal.open": "Open Company models portal in your browser",
+  "physicalsystems.portal.failed": "Could not open your browser",
+  "physicalsystems.portal.openManually": "Open {{url}} in your browser to access your company models.",
+  "physicalsystems.account.title": "Physical Systems account",
+  "physicalsystems.account.signIn": "Sign in",
+  "physicalsystems.account.google": "Sign in with Google",
+  "physicalsystems.account.signOut": "Sign out",
+  "physicalsystems.account.company": "Company",
+  "physicalsystems.account.noCompanies":
+    "Your account does not belong to a company yet. Use the portal to create one or ask your company owner to add you.",
+  "physicalsystems.account.completeSignIn":
+    "Complete sign-in in your browser and approve this code. This app will update automatically.",
+  "physicalsystems.account.cancel": "Cancel sign-in",
+  "physicalsystems.account.refresh": "Refresh",
+  "physicalsystems.account.error.UNAVAILABLE": "Cannot reach Physical Systems. Refresh to try again.",
+  "physicalsystems.account.error.INVALID_RESPONSE":
+    "The account service returned an unreadable response. Refresh to try again.",
+  "physicalsystems.account.error.SECURE_STORE_UNAVAILABLE":
+    "Unlock your system keyring to save this account securely, then try again.",
+  "physicalsystems.account.error.SESSION_EXPIRED": "Your account session expired or was revoked. Sign in again.",
+  "physicalsystems.account.error.ACCESS_REVOKED":
+    "Company access is no longer available. Refresh your account to update its companies.",
+  "physicalsystems.account.error.SIGN_IN_EXPIRED": "This sign-in request expired. Start sign-in again.",
+  "physicalsystems.account.error.SIGN_IN_DENIED": "This sign-in request was declined or cancelled.",
+  "physicalsystems.account.error.INVALID_SELECTION":
+    "This robot model is no longer available to your account. Refresh and select again.",
+  "physicalsystems.account.error.BROWSER_UNAVAILABLE":
+    "Could not open your browser. Open the address shown below and approve the code to finish signing in.",
+  "physicalsystems.models.label": "Robot model",
+  "physicalsystems.models.choose": "Choose a robot model",
+  "physicalsystems.models.referenceOnly":
+    "Selection saves a model reference. It does not download, activate or run a robot policy.",
+  "physicalsystems.models.company": "Company models",
+  "physicalsystems.models.signInHelp": "Sign in using the account menu above Settings to see your company models.",
+  "physicalsystems.models.noReleases": "No published models are available for this company.",
+  "physicalsystems.models.generic": "Pretrained models",
+  "physicalsystems.models.catalogUnavailable": "The pretrained model catalog is unavailable. Refresh to try again.",
+  "physicalsystems.models.trainingBase":
+    "Training base · runtime setup and robot compatibility checks required. Not ready to run.",
+  "physicalsystems.models.signature": "Signature verified at publication",
+  "physicalsystems.models.supervised": "Supervised evaluation",
+  "physicalsystems.models.offline": "Offline evaluation",
+  "physicalsystems.models.noCompatibleDevice": "No compatible registered device reported for this model configuration.",
+  "physicalsystems.models.deviceStatus": "{{name}}: {{status}}",
+  "physicalsystems.models.statusUnknown": "download status unknown or stale",
+  "physicalsystems.models.statusFailed": "last device report failed",
+  "physicalsystems.models.statusStaged": "download reported ready; execution is not authorized",
+  "physicalsystems.models.statusNotStaged": "this version is not reported downloaded",
+  "physicalsystems.models.clear": "Clear selection",
   "physicalsystems.lelab.title": "Cameras",
   "physicalsystems.lelab.on": "On",
   "physicalsystems.lelab.off": "Off",

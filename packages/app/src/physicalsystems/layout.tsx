@@ -17,6 +17,7 @@ import { pathKey } from "../utils/path-key"
 import { usePhysicalSystems } from "./context"
 import { PhysicalPanel } from "./panel"
 import { LeLabCameras } from "./lelab-cameras"
+import { ModelAccountMenu } from "./robot-model-picker"
 import { MigrationHistory } from "./migration"
 import { ProjectCredentials } from "./credentials"
 import { physicalTimestamp } from "./state"
@@ -538,6 +539,7 @@ function PhysicalWorkspace(props: ParentProps) {
           </Show>
         </div>
         <MigrationHistory />
+        <ModelAccountMenu expanded={physical.state.sidebarOpen} />
         <button
           type="button"
           class="ps-settings-button"
