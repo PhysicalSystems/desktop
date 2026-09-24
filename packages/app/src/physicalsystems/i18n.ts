@@ -1,6 +1,38 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.lelab.title": "Cameras",
+  "physicalsystems.lelab.on": "On",
+  "physicalsystems.lelab.off": "Off",
+  "physicalsystems.lelab.connection": "LeLab connection",
+  "physicalsystems.lelab.address": "LeLab address",
+  "physicalsystems.lelab.connectionHelp":
+    "Use LeLab on this computer or a local SSH-forwarded address. Camera names and settings come from LeLab.",
+  "physicalsystems.lelab.connect": "Connect to LeLab",
+  "physicalsystems.lelab.loading": "Loading attached cameras…",
+  "physicalsystems.lelab.robot": "Robot",
+  "physicalsystems.lelab.selectRobot": "Select a configured robot",
+  "physicalsystems.lelab.noRobots": "No configured robots found. Set up a robot in LeLab first.",
+  "physicalsystems.lelab.noCameras": "This robot has no attached cameras configured in LeLab.",
+  "physicalsystems.lelab.waiting": "Waiting for camera…",
+  "physicalsystems.lelab.frame": "{{name}} camera preview",
+  "physicalsystems.lelab.error.INVALID_URL":
+    "Enter a local LeLab address, such as http://127.0.0.1:8000, or a local SSH-forwarded address.",
+  "physicalsystems.lelab.error.INVALID_REQUEST": "The preview request could not be made. Reconnect to LeLab.",
+  "physicalsystems.lelab.error.UNAVAILABLE":
+    "Cannot reach LeLab. Check that LeLab and any SSH connection are running, then reconnect.",
+  "physicalsystems.lelab.error.INVALID_RESPONSE":
+    "LeLab returned an unreadable response. Check the connection and refresh.",
+  "physicalsystems.lelab.error.UNSUPPORTED_CAMERA":
+    "This camera does not support LeLab previews through this connection.",
+  "physicalsystems.lelab.error.CAMERA_BUSY":
+    "Preview is unavailable while the camera is in use or its settings are changing. Retrying…",
+  "physicalsystems.lelab.error.CAMERA_MISSING": "This camera is disconnected or is no longer configured in LeLab.",
+  "physicalsystems.lelab.error.CONFIG_CHANGED":
+    "Camera settings changed in LeLab. Refresh to load the updated configuration.",
+  "physicalsystems.lelab.error.TIMEOUT": "No current camera frame. Retrying…",
+  "physicalsystems.lelab.error.CANCELLED": "Preview stopped.",
+  "physicalsystems.lelab.error.CAPACITY": "Too many preview requests are active. Switch cameras off, then try again.",
   "physicalsystems.name": "Physical Systems",
   "physicalsystems.commissioning.title": "Gripper check",
   "physicalsystems.commissioning.stopState": "Stop status",

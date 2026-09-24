@@ -108,6 +108,7 @@ export function createPhysicalSystems(
     state,
     setState,
     enabled: Boolean(bridge),
+    lelab: bridge?.lelab,
     project,
     bound,
     scope,

@@ -12,6 +12,11 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
 
 const api: ElectronAPI = {
   physicalSystems: {
+    lelab: {
+      discover: (input) => ipcRenderer.invoke("physicalsystems:lelab-discover", input),
+      frame: (input) => ipcRenderer.invoke("physicalsystems:lelab-frame", input),
+      stop: (input) => ipcRenderer.invoke("physicalsystems:lelab-stop", input),
+    },
     recover: () => ipcRenderer.invoke("physicalsystems:recover"),
     migration: {
       preview: () => ipcRenderer.invoke("physicalsystems:import-preview"),
