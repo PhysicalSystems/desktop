@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Public renderer contract. Credentials and agent tokens never cross this boundary. */
 import type { LegacyMigrationBridge } from "../../../physicalsystems/src/migration-types"
+import type { LeLabCameraBridge } from "../../../physicalsystems/src/lelab-types"
 export type PhysicalScope = {
   projectId: string
   conversationId: string
@@ -419,6 +420,8 @@ export type PhysicalCommand =
     } & PhysicalScope)
 
 export type PhysicalSystemsBridge = {
+  models?: import("../../../physicalsystems/src/model-account-types").ModelAccountBridge
+  lelab?: LeLabCameraBridge
   recover?(): Promise<PhysicalSnapshot>
   migration?: LegacyMigrationBridge
   snapshot(): Promise<PhysicalSnapshot>

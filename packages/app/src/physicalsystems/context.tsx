@@ -3,6 +3,7 @@ import { createContext, createMemo, onCleanup, onMount, useContext, type ParentP
 import { createStore, reconcile } from "solid-js/store"
 import { useLanguage } from "../context/language"
 import { acceptsSnapshot } from "./state"
+import { ModelAccountProvider } from "./model-account"
 import type { PhysicalCommand, PhysicalScope, PhysicalSnapshot, PhysicalSystemsBridge } from "./types"
 
 export function createPhysicalSystems(
@@ -108,6 +109,7 @@ export function createPhysicalSystems(
     state,
     setState,
     enabled: Boolean(bridge),
+    lelab: bridge?.lelab,
     project,
     bound,
     scope,
@@ -155,7 +157,13 @@ export function PhysicalSystemsProvider(props: ParentProps<{ bridge?: PhysicalSy
     void controller.refresh()
     onCleanup(() => unsubscribe?.())
   })
-  return <Context.Provider value={controller}>{props.children}</Context.Provider>
+  return (
+    <Context.Provider value={controller}>
+      <ModelAccountProvider bridge={(props.bridge ?? window.api?.physicalSystems)?.models}>
+        {props.children}
+      </ModelAccountProvider>
+    </Context.Provider>
+  )
 }
 
 export function usePhysicalSystems() {

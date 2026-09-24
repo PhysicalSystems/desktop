@@ -16,6 +16,8 @@ import { requireServerKey } from "../utils/session-route"
 import { pathKey } from "../utils/path-key"
 import { usePhysicalSystems } from "./context"
 import { PhysicalPanel } from "./panel"
+import { LeLabCameras } from "./lelab-cameras"
+import { ModelAccountMenu } from "./robot-model-picker"
 import { MigrationHistory } from "./migration"
 import { ProjectCredentials } from "./credentials"
 import { physicalTimestamp } from "./state"
@@ -537,6 +539,7 @@ function PhysicalWorkspace(props: ParentProps) {
           </Show>
         </div>
         <MigrationHistory />
+        <ModelAccountMenu expanded={physical.state.sidebarOpen} />
         <button
           type="button"
           class="ps-settings-button"
@@ -631,6 +634,9 @@ function PhysicalWorkspace(props: ParentProps) {
             </Show>
           </div>
         </div>
+        <Show when={physical.lelab}>
+          {(bridge) => <LeLabCameras bridge={bridge()} scope={JSON.stringify([physical.project()?.id, route()])} />}
+        </Show>
         <Show
           when={
             physical.state.failures.binding || physical.state.failures.selection || physical.state.failures.conversation

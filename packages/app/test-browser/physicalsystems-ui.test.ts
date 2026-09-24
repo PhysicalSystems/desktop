@@ -7,6 +7,9 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { setTimeout } from "node:timers/promises"
+import { resolveThemeVariant, themeToCss } from "../../ui/src/theme/resolve"
+import oc2 from "../../ui/src/theme/themes/oc-2.json"
+import type { DesktopTheme } from "../../ui/src/theme/types"
 
 // Actual Solid feature components, a fake IPC bridge, and isolated upstream app
 // contexts. No model, provider, Node connection, camera, or hardware is opened.
@@ -20,11 +23,13 @@ test.skipIf(!enabled)(
     const feature = resolve(import.meta.dir, "../src/physicalsystems")
     const contexts = [
       "../context/language",
+      "../context/platform",
       "../context/server",
       "../context/tabs",
       "../context/global",
       "../components/settings-dialog",
       "../utils/persist",
+      "../utils/toast",
       "../utils/session-route",
       "@solidjs/router",
       "@opencode-ai/session-ui/message-part",
@@ -120,6 +125,84 @@ test.skipIf(!enabled)(
       await wd(`/session/${session.id}/window/rect`, { width: 1280, height: 900 })
       await wd(`/session/${session.id}/url`, { url: `http://127.0.0.1:${address.port}/` })
       await until(() => js("return !!document.querySelector('[data-ps-project-row]')"))
+      await js("document.querySelector('[data-action=physicalsystems-account]').click()")
+      expect(await js("return window.__fixture.portal.urls")).toEqual([])
+      expect(await js("return document.querySelector('[data-ps-company-models]').textContent")).toContain(
+        "Company models portal",
+      )
+      await js("document.querySelector('[data-ps-company-models]').click()")
+      await until(() => js("return window.__fixture.portal.urls.length === 1"))
+      expect(await js("return window.__fixture.portal.urls[0]")).toBe("https://physicalsystems.ai/model-delivery")
+      if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
+        const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
+        await Bun.write(
+          join(process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE, "company-models-portal.png"),
+          Buffer.from(screenshot, "base64"),
+        )
+      }
+      await js("document.querySelector('[data-model-sign-in]').click()")
+      await until(() => js("return window.__fixture.models.calls.includes('signIn')"))
+      await js("window.__fixture.models.approve()")
+      expect(await js("return document.querySelector('[data-action=physicalsystems-account]').textContent")).toContain(
+        "Lienert Fixture",
+      )
+      if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
+        const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
+        await Bun.write(
+          join(process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE, "native-account-menu.png"),
+          Buffer.from(screenshot, "base64"),
+        )
+      }
+      await js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))")
+      await js("document.querySelector('[data-action=prompt-robot-model]').click()")
+      expect(await js("return document.querySelector('.ps-model-menu').textContent")).toContain("SmolVLA base")
+      expect(await js("return document.querySelector('.ps-model-menu').textContent")).toContain(
+        "download reported ready",
+      )
+      expect(
+        await js(
+          "const bounds=document.querySelector('.ps-model-menu').getBoundingClientRect(); return bounds.top >= 0 && bounds.bottom <= innerHeight",
+        ),
+      ).toBe(true)
+      await js("document.querySelector('.ps-model-menu').dispatchEvent(new Event('scroll'))")
+      expect(await js("return !!document.querySelector('.ps-model-menu')")).toBe(true)
+      if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
+        const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
+        await Bun.write(
+          join(process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE, "native-robot-model-picker.png"),
+          Buffer.from(screenshot, "base64"),
+        )
+      }
+      await js(
+        "const style=document.createElement('style'); style.id='fixture-light-theme'; style.textContent=arguments[0]; document.head.append(style)",
+        [
+          `:root {${themeToCss(resolveThemeVariant((oc2 as DesktopTheme).light, false))}} html,body,#root {background:var(--background-base);color:var(--text-base)}`,
+        ],
+      )
+      expect(
+        await js(
+          "return getComputedStyle(document.querySelector('.ps-model-menu')).backgroundColor === getComputedStyle(document.body).backgroundColor",
+        ),
+      ).toBe(true)
+      if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
+        const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
+        await Bun.write(
+          join(process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE, "native-robot-model-picker-light.png"),
+          Buffer.from(screenshot, "base64"),
+        )
+      }
+      await js(
+        "document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); document.querySelector('[data-action=physicalsystems-account]').click()",
+      )
+      if (process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE) {
+        const screenshot = (await wd(`/session/${session.id}/screenshot`)) as unknown as string
+        await Bun.write(
+          join(process.env.PHYSICALSYSTEMS_UI_BROWSER_EVIDENCE, "native-account-menu-light.png"),
+          Buffer.from(screenshot, "base64"),
+        )
+      }
+      await js("document.getElementById('fixture-light-theme').remove()")
+      await js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))")
       await js(`window.__fixture.composerStyles=(name)=>Object.fromEntries(
         Array.from(document.querySelectorAll('[data-fixture-composer="'+name+'"] [data-fixture-control]')).map(element=>{
           const computed=getComputedStyle(element);

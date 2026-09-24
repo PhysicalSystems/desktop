@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
+import { createLeLabCameraClient } from "../../../physicalsystems/src/lelab"
+import { createDesktopModelAccount } from "./model-account"
+import type { LeLabConnection, LeLabFrameRequest } from "../../../physicalsystems/src/lelab-types"
 import { previewLegacyImport, commitLegacyImport, listLegacyImports, readLegacyImport } from "../../../physicalsystems/src/migration"
 import type { LegacyImportPreview } from "../../../physicalsystems/src/migration"
 import { execFile } from "node:child_process"
@@ -68,6 +71,39 @@ export function registerIpcHandlers(deps: Deps) {
     const url = event.senderFrame?.url
     if (!trustedRenderer({ windowMatches: Boolean(window && window.webContents === event.sender), mainFrame: event.senderFrame === event.sender.mainFrame, url, developmentURL: process.env.ELECTRON_RENDERER_URL, packaged: app.isPackaged })) throw new Error("INVALID_OPERATOR_SENDER")
   }
+  const models = createDesktopModelAccount()
+  ipcMain.handle("physicalsystems:models-snapshot", (event) => { assertPhysicalSender(event); return models.snapshot() })
+  ipcMain.handle("physicalsystems:models-refresh", (event) => { assertPhysicalSender(event); return models.refresh() })
+  ipcMain.handle("physicalsystems:models-sign-in", (event) => { assertPhysicalSender(event); return models.signIn() })
+  ipcMain.handle("physicalsystems:models-cancel-sign-in", (event) => { assertPhysicalSender(event); return models.cancelSignIn() })
+  ipcMain.handle("physicalsystems:models-sign-out", (event) => { assertPhysicalSender(event); return models.signOut() })
+  ipcMain.handle("physicalsystems:models-company", (event, id: string) => { assertPhysicalSender(event); return models.company(id) })
+  ipcMain.handle("physicalsystems:models-select", (event, selection: unknown) => { assertPhysicalSender(event); return models.select(selection) })
+  app.once("will-quit", () => models.dispose())
+  const lelabClients = new Map<number, { client: ReturnType<typeof createLeLabCameraClient>; clear: () => void }>()
+  const lelabClient = (event: IpcMainInvokeEvent) => {
+    assertPhysicalSender(event)
+    const existing = lelabClients.get(event.sender.id)
+    if (existing) return existing.client
+    const client = createLeLabCameraClient()
+    const clear = () => {
+      client.dispose()
+      lelabClients.delete(event.sender.id)
+      event.sender.removeListener("destroyed", clear)
+      event.sender.removeListener("did-start-navigation", navigating)
+    }
+    const navigating = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
+      if (mainFrame && !inPlace) clear()
+    }
+    event.sender.once("destroyed", clear)
+    event.sender.on("did-start-navigation", navigating)
+    lelabClients.set(event.sender.id, { client, clear })
+    return client
+  }
+  ipcMain.handle("physicalsystems:lelab-discover", (event, input: LeLabConnection) => lelabClient(event).discover(input))
+  ipcMain.handle("physicalsystems:lelab-frame", (event, input: LeLabFrameRequest) => lelabClient(event).frame(input))
+  ipcMain.handle("physicalsystems:lelab-stop", (event, input: { clientId: string }) => lelabClient(event).stop(input))
+  app.once("will-quit", () => { for (const item of lelabClients.values()) item.clear() })
   ipcMain.handle("physicalsystems:snapshot", (event) => {
     assertPhysicalSender(event)
     return deps.physical.snapshot()

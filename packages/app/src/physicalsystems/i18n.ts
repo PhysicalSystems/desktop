@@ -1,6 +1,88 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.portal.label": "Company models portal",
+  "physicalsystems.portal.open": "Open Company models portal in your browser",
+  "physicalsystems.portal.failed": "Could not open your browser",
+  "physicalsystems.portal.openManually": "Open {{url}} in your browser to access your company models.",
+  "physicalsystems.account.title": "Physical Systems account",
+  "physicalsystems.account.signIn": "Sign in",
+  "physicalsystems.account.google": "Sign in with Google",
+  "physicalsystems.account.signOut": "Sign out",
+  "physicalsystems.account.company": "Company",
+  "physicalsystems.account.noCompanies":
+    "Your account does not belong to a company yet. Use the portal to create one or ask your company owner to add you.",
+  "physicalsystems.account.completeSignIn":
+    "Complete sign-in in your browser and approve this code. This app will update automatically.",
+  "physicalsystems.account.cancel": "Cancel sign-in",
+  "physicalsystems.account.refresh": "Refresh",
+  "physicalsystems.account.error.UNAVAILABLE": "Cannot reach Physical Systems. Refresh to try again.",
+  "physicalsystems.account.error.INVALID_RESPONSE":
+    "The account service returned an unreadable response. Refresh to try again.",
+  "physicalsystems.account.error.SECURE_STORE_UNAVAILABLE":
+    "Unlock your system keyring to save this account securely, then try again.",
+  "physicalsystems.account.error.SESSION_EXPIRED": "Your account session expired or was revoked. Sign in again.",
+  "physicalsystems.account.error.ACCESS_REVOKED":
+    "Company access is no longer available. Refresh your account to update its companies.",
+  "physicalsystems.account.error.SIGN_IN_EXPIRED": "This sign-in request expired. Start sign-in again.",
+  "physicalsystems.account.error.SIGN_IN_DENIED": "This sign-in request was declined or cancelled.",
+  "physicalsystems.account.error.INVALID_SELECTION":
+    "This robot model is no longer available to your account. Refresh and select again.",
+  "physicalsystems.account.error.BROWSER_UNAVAILABLE":
+    "Could not open your browser. Open the address shown below and approve the code to finish signing in.",
+  "physicalsystems.models.label": "Robot model",
+  "physicalsystems.models.choose": "Choose a robot model",
+  "physicalsystems.models.referenceOnly":
+    "Selection saves a model reference. It does not download, activate or run a robot policy.",
+  "physicalsystems.models.company": "Company models",
+  "physicalsystems.models.signInHelp": "Sign in using the account menu above Settings to see your company models.",
+  "physicalsystems.models.noReleases": "No published models are available for this company.",
+  "physicalsystems.models.generic": "Pretrained models",
+  "physicalsystems.models.catalogUnavailable": "The pretrained model catalog is unavailable. Refresh to try again.",
+  "physicalsystems.models.trainingBase":
+    "Training base · runtime setup and robot compatibility checks required. Not ready to run.",
+  "physicalsystems.models.signature": "Signature verified at publication",
+  "physicalsystems.models.supervised": "Supervised evaluation",
+  "physicalsystems.models.offline": "Offline evaluation",
+  "physicalsystems.models.noCompatibleDevice": "No compatible registered device reported for this model configuration.",
+  "physicalsystems.models.deviceStatus": "{{name}}: {{status}}",
+  "physicalsystems.models.statusUnknown": "download status unknown or stale",
+  "physicalsystems.models.statusFailed": "last device report failed",
+  "physicalsystems.models.statusStaged": "download reported ready; execution is not authorized",
+  "physicalsystems.models.statusNotStaged": "this version is not reported downloaded",
+  "physicalsystems.models.clear": "Clear selection",
+  "physicalsystems.lelab.title": "Cameras",
+  "physicalsystems.lelab.on": "On",
+  "physicalsystems.lelab.off": "Off",
+  "physicalsystems.lelab.connection": "LeLab connection",
+  "physicalsystems.lelab.address": "LeLab address",
+  "physicalsystems.lelab.connectionHelp":
+    "Use LeLab on this computer or a local SSH-forwarded address. Camera names and settings come from LeLab.",
+  "physicalsystems.lelab.connect": "Connect to LeLab",
+  "physicalsystems.lelab.loading": "Loading attached cameras…",
+  "physicalsystems.lelab.robot": "Robot",
+  "physicalsystems.lelab.selectRobot": "Select a configured robot",
+  "physicalsystems.lelab.noRobots": "No configured robots found. Set up a robot in LeLab first.",
+  "physicalsystems.lelab.noCameras": "This robot has no attached cameras configured in LeLab.",
+  "physicalsystems.lelab.waiting": "Waiting for camera…",
+  "physicalsystems.lelab.frame": "{{name}} camera preview",
+  "physicalsystems.lelab.error.INVALID_URL":
+    "Enter a local LeLab address, such as http://127.0.0.1:8000, or a local SSH-forwarded address.",
+  "physicalsystems.lelab.error.INVALID_REQUEST": "The preview request could not be made. Reconnect to LeLab.",
+  "physicalsystems.lelab.error.UNAVAILABLE":
+    "Cannot reach LeLab. Check that LeLab and any SSH connection are running, then reconnect.",
+  "physicalsystems.lelab.error.INVALID_RESPONSE":
+    "LeLab returned an unreadable response. Check the connection and refresh.",
+  "physicalsystems.lelab.error.UNSUPPORTED_CAMERA":
+    "This camera does not support LeLab previews through this connection.",
+  "physicalsystems.lelab.error.CAMERA_BUSY":
+    "Preview is unavailable while the camera is in use or its settings are changing. Retrying…",
+  "physicalsystems.lelab.error.CAMERA_MISSING": "This camera is disconnected or is no longer configured in LeLab.",
+  "physicalsystems.lelab.error.CONFIG_CHANGED":
+    "Camera settings changed in LeLab. Refresh to load the updated configuration.",
+  "physicalsystems.lelab.error.TIMEOUT": "No current camera frame. Retrying…",
+  "physicalsystems.lelab.error.CANCELLED": "Preview stopped.",
+  "physicalsystems.lelab.error.CAPACITY": "Too many preview requests are active. Switch cameras off, then try again.",
   "physicalsystems.name": "Physical Systems",
   "physicalsystems.commissioning.title": "Gripper check",
   "physicalsystems.commissioning.stopState": "Stop status",
