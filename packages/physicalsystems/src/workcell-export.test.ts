@@ -9,8 +9,22 @@ import { exportWorkcellRoom } from "../script/export-workcell-room.mjs"
 
 const source = "packages/app/src/physicalsystems/rooms"
 const names = ["types.ts", "copy.ts", "state.ts", "room.tsx", "mount.tsx", "room.css"]
+// Isolate fixture Git configuration from CI's process-level core.autocrlf=false.
+// Child processes get their own environment; other tests keep the original one.
+const environment = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)$/.test(key)),
+)
 const git = (root: string, ...args: string[]) =>
-  execFileSync("git", args, { cwd: root, stdio: ["ignore", "pipe", "pipe"] })
+  execFileSync("git", args, { cwd: root, env: environment, stdio: ["ignore", "pipe", "pipe"] })
+const exportFixture = (root: string, output: string) =>
+  execFileSync(
+    process.execPath,
+    [
+      "--eval",
+      `const { exportWorkcellRoom } = await import(${JSON.stringify(new URL("../script/export-workcell-room.mjs", import.meta.url).href)}); await exportWorkcellRoom(${JSON.stringify({ root, output })});`,
+    ],
+    { env: environment, stdio: ["ignore", "pipe", "pipe"] },
+  )
 
 async function fixture(run: (temporary: string, repository: string) => Promise<void>) {
   const temporary = await mkdtemp(join(tmpdir(), "physicalsystems-room-export-"))
@@ -51,9 +65,11 @@ test("pinned exports are byte-identical from actual LF and CRLF Git checkouts", 
     git(temporary, "clone", "--quiet", "--config", "core.autocrlf=true", repository, crlf)
     expect((await readFile(join(lf, source, "types.ts"), "utf8")).includes("\r\n")).toBe(false)
     expect((await readFile(join(crlf, source, "types.ts"), "utf8")).includes("\r\n")).toBe(true)
+    expect(git(lf, "status", "--porcelain").toString()).toBe("")
+    expect(git(crlf, "status", "--porcelain").toString()).toBe("")
     const outputs = [join(temporary, "lf-export"), join(temporary, "crlf-export")]
-    await exportWorkcellRoom({ root: lf, output: outputs[0] })
-    await exportWorkcellRoom({ root: crlf, output: outputs[1] })
+    exportFixture(lf, outputs[0])
+    exportFixture(crlf, outputs[1])
     for (const name of [...names, "LICENSE", "README.md", "provenance.json"])
       expect(await readFile(join(outputs[0], name))).toEqual(await readFile(join(outputs[1], name)))
     const manifest = JSON.parse(await readFile(join(outputs[0], "provenance.json"), "utf8"))
