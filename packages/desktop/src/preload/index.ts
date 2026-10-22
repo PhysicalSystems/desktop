@@ -12,6 +12,19 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
 
 const api: ElectronAPI = {
   physicalSystems: {
+    rooms: {
+      snapshot: () => ipcRenderer.invoke("physicalsystems:workcells-snapshot"),
+      refresh: () => ipcRenderer.invoke("physicalsystems:workcells-refresh"),
+      signIn: () => ipcRenderer.invoke("physicalsystems:workcells-sign-in"),
+      cancelSignIn: () => ipcRenderer.invoke("physicalsystems:workcells-cancel-sign-in"),
+      signOut: () => ipcRenderer.invoke("physicalsystems:workcells-sign-out"),
+      request: (method,path,body) => ipcRenderer.invoke("physicalsystems:workcells-request",method,path,body),
+      subscribe: (listener) => {
+        const handler = (_: unknown, state: Parameters<typeof listener>[0]) => listener(state)
+        ipcRenderer.on("physicalsystems:workcells-state",handler)
+        return () => ipcRenderer.removeListener("physicalsystems:workcells-state",handler)
+      },
+    },
     models: {
       snapshot: () => ipcRenderer.invoke("physicalsystems:models-snapshot"),
       refresh: () => ipcRenderer.invoke("physicalsystems:models-refresh"),

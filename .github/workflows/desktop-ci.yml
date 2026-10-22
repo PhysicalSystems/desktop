@@ -146,7 +146,7 @@ jobs:
 
       - name: Rendered composer and provider sign-in regressions
         working-directory: packages/app
-        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts ./test-browser/preview-update-button.test.ts
+        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts ./test-browser/preview-update-button.test.ts ./test-browser/workcell-room.test.ts
 
       - name: Provider attempt lifecycle regression
         working-directory: packages/app
