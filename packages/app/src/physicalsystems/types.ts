@@ -420,6 +420,7 @@ export type PhysicalCommand =
     } & PhysicalScope)
 
 export type PhysicalSystemsBridge = {
+  rooms?: import("../../../physicalsystems/src/workcell-account-types").WorkcellAccountBridge
   models?: import("../../../physicalsystems/src/model-account-types").ModelAccountBridge
   lelab?: LeLabCameraBridge
   recover?(): Promise<PhysicalSnapshot>

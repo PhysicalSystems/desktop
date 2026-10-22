@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
 import { createLeLabCameraClient } from "../../../physicalsystems/src/lelab"
 import { createDesktopModelAccount } from "./model-account"
+import { createDesktopWorkcellAccount } from "./workcell-account"
 import type { LeLabConnection, LeLabFrameRequest } from "../../../physicalsystems/src/lelab-types"
 import { previewLegacyImport, commitLegacyImport, listLegacyImports, readLegacyImport } from "../../../physicalsystems/src/migration"
 import type { LegacyImportPreview } from "../../../physicalsystems/src/migration"
@@ -72,6 +73,14 @@ export function registerIpcHandlers(deps: Deps) {
     if (!trustedRenderer({ windowMatches: Boolean(window && window.webContents === event.sender), mainFrame: event.senderFrame === event.sender.mainFrame, url, developmentURL: process.env.ELECTRON_RENDERER_URL, packaged: app.isPackaged })) throw new Error("INVALID_OPERATOR_SENDER")
   }
   const models = createDesktopModelAccount()
+  const rooms = createDesktopWorkcellAccount()
+  ipcMain.handle("physicalsystems:workcells-snapshot", (event) => { assertPhysicalSender(event); return rooms.snapshot() })
+  ipcMain.handle("physicalsystems:workcells-refresh", (event) => { assertPhysicalSender(event); return rooms.refresh() })
+  ipcMain.handle("physicalsystems:workcells-sign-in", (event) => { assertPhysicalSender(event); return rooms.signIn() })
+  ipcMain.handle("physicalsystems:workcells-cancel-sign-in", (event) => { assertPhysicalSender(event); return rooms.cancelSignIn() })
+  ipcMain.handle("physicalsystems:workcells-sign-out", (event) => { assertPhysicalSender(event); return rooms.signOut() })
+  ipcMain.handle("physicalsystems:workcells-request", (event, method: unknown, path: unknown, body: unknown) => { assertPhysicalSender(event); return rooms.request(method,path,body) })
+  app.once("will-quit", () => rooms.dispose())
   ipcMain.handle("physicalsystems:models-snapshot", (event) => { assertPhysicalSender(event); return models.snapshot() })
   ipcMain.handle("physicalsystems:models-refresh", (event) => { assertPhysicalSender(event); return models.refresh() })
   ipcMain.handle("physicalsystems:models-sign-in", (event) => { assertPhysicalSender(event); return models.signIn() })

@@ -833,3 +833,4 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ps-cloud-rooms{height:100%;overflow:auto;padding:18px}.ps-cloud-room-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:16px 0}.ps-cloud-room-toolbar select{max-width:320px}.ps-cloud-rooms>.ps-stack{max-width:620px;padding:24px 0}
