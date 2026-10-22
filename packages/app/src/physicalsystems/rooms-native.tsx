@@ -35,15 +35,18 @@ export function NativeWorkcellRooms(props: {
   })
   const load = async () => {
     const revision = state.account?.revision
-    await props.bridge.request("GET", "/api/workcells").then(
-      (value) => {
+    await props.bridge
+      .request("GET", "/api/workcells")
+      .then((value) => {
         const rooms = (value as { workcells: WorkcellRoomData[] }).workcells
         if (state.account?.status !== "signed_in" || state.account.revision !== revision) return
-        setState("rooms", rooms)
+        if (!Array.isArray(rooms)) throw new Error("INVALID_WORKCELL_LIST")
+        setState({ rooms, error: false })
         if (!rooms.some((room) => room.id === state.selected)) setState("selected", rooms[0]?.id ?? "")
-      },
-      () => setState("error", true),
-    )
+      })
+      .catch(() => {
+        if (state.account?.revision === revision) setState("error", true)
+      })
   }
   createEffect(() => {
     if (state.account?.status === "signed_in") void load()
