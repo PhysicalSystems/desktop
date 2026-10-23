@@ -14,8 +14,6 @@ on:
       - package.json
       - patches/**
       - .github/workflows/cloud-conversations.yml
-  push:
-    branches: [cloud-conversations]
   workflow_dispatch:
 
 permissions:

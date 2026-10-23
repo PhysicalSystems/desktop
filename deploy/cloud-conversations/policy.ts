@@ -37,6 +37,26 @@ export function verifiedAgent(value: unknown, policy: Policy) {
   return { ...value, data: [agent] }
 }
 
+/** Engine health precedes asynchronous plugin initialization; never expose the listener during this gap. */
+export async function awaitVerifiedAgent(
+  read: () => Promise<unknown>,
+  policy: Policy,
+  options: { alive: () => boolean; timeoutMs?: number; intervalMs?: number },
+) {
+  const deadline = Date.now() + (options.timeoutMs ?? 120000)
+  while (true) {
+    if (!options.alive()) throw new Error("CLOUD_WORKER_EXITED")
+    const agent = await read()
+      .then((value) => verifiedAgent(value, policy))
+      .catch(() => undefined)
+    if (!options.alive()) throw new Error("CLOUD_WORKER_EXITED")
+    if (agent) return agent
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) throw new Error("CLOUD_POLICY_UNAVAILABLE")
+    await Bun.sleep(Math.min(options.intervalMs ?? 200, remaining))
+  }
+}
+
 export function verifiedSession(value: unknown, id: string, policy: Policy) {
   if (!record(value) || !record(value.data)) return false
   const session = value.data

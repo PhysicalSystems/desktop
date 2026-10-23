@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test"
 import { resolve } from "node:path"
 import { cloudProfile } from "./profile"
-import { permittedRequest, verifiedAgent, verifiedSession } from "./policy"
+import { awaitVerifiedAgent, permittedRequest, verifiedAgent, verifiedSession } from "./policy"
 const env = {
   OPENCODE_SERVER_PASSWORD: "fixture-worker-password-long-enough-123",
   PHYSICALSYSTEMS_AI_API_KEY: "fixture-provider-key",
@@ -99,6 +99,31 @@ test("private listener forwards only fixed agent sessions, text prompts and boun
   expect(permittedRequest("GET", url("/api/agent?directory=" + encodeURIComponent(profile.workspace)), profile)).toBe(
     false,
   )
+})
+test("startup waits for the exact configured policy after engine health is ready", async () => {
+  const envelope = { location: { directory: profile.workspace }, data: [agent] }
+  let reads = 0
+  const ready = await awaitVerifiedAgent(
+    async () => {
+      reads++
+      if (reads === 1) return { ...envelope, data: [] }
+      if (reads === 2) return { ...envelope, data: [{ ...agent, permissions: [] }] }
+      return envelope
+    },
+    profile,
+    { alive: () => true, timeoutMs: 1000, intervalMs: 1 },
+  )
+  expect(reads).toBe(3)
+  expect(ready.data).toEqual([agent])
+})
+test("startup fails closed for a missing policy or an exited worker", async () => {
+  const unavailable = async () => ({ location: { directory: profile.workspace }, data: [] })
+  await expect(
+    awaitVerifiedAgent(unavailable, profile, { alive: () => true, timeoutMs: 5, intervalMs: 1 }),
+  ).rejects.toThrow("CLOUD_POLICY_UNAVAILABLE")
+  await expect(
+    awaitVerifiedAgent(unavailable, profile, { alive: () => false, timeoutMs: 1000, intervalMs: 1 }),
+  ).rejects.toThrow("CLOUD_WORKER_EXITED")
 })
 test("an adopted old session cannot change the fixed execution binding", () => {
   const data = {

@@ -2,7 +2,7 @@
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
 import { cloudProfile } from "./profile"
-import { permittedRequest, verifiedAgent, verifiedSession } from "./policy"
+import { awaitVerifiedAgent, permittedRequest, verifiedAgent, verifiedSession } from "./policy"
 
 if (Bun.version !== "1.3.14") throw new Error("Cloud worker requires Bun 1.3.14")
 const profile = cloudProfile(process.env)
@@ -51,14 +51,15 @@ const upstream = (path: string, options: { method?: string; body?: unknown } = {
     signal: AbortSignal.timeout(30000),
     redirect: "error",
   })
-async function policy() {
+async function readPolicy() {
   const response = await fetch(origin + agentPath, {
     headers: { Authorization: authorization },
     signal: AbortSignal.timeout(10000),
   })
   if (!response.ok) throw new Error("CLOUD_POLICY_UNAVAILABLE")
-  return verifiedAgent(await response.json(), profile)
+  return response.json()
 }
+const policy = async () => verifiedAgent(await readPolicy(), profile)
 let ready = false
 for (let i = 0; i < 600; i++) {
   if (child.exitCode !== null) process.exit(child.exitCode || 1)
@@ -76,7 +77,7 @@ if (!ready) {
   child.kill()
   throw new Error("Cloud worker did not become healthy")
 }
-await policy().catch((error) => {
+await awaitVerifiedAgent(readPolicy, profile, { alive: () => child.exitCode === null }).catch((error) => {
   child.kill()
   throw error
 })
