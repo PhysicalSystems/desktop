@@ -359,6 +359,16 @@ window.api = {
         state.activeConversationId = conversation.id
         state.conversation = conversation
       }
+      if (request.type === "inference.refresh") state.modelRuntime ??= {
+        contractVersion: "physicalsystems-inference-v1", phase: "STOPPED", runtimeId: null,
+        manifestSha256: "b".repeat(64), generation: 1, releaseId: "release-a", image: "sha256:" + "c".repeat(64),
+        details: null, error: null, motorCommandsSent: 0,
+      }
+      if (request.type === "inference.start") state.modelRuntime = {
+        ...state.modelRuntime!, phase: "READY", runtimeId: "d".repeat(32),
+        details: { ready: true, gpu: "Fixture Thor", warmupMs: 12, chunkSize: 100 },
+      }
+      if (request.type === "inference.stop") state.modelRuntime = { ...state.modelRuntime!, phase: "STOPPED", runtimeId: null }
       if (request.type === "experiment.stop") state.activeExperiments = []
       if (request.type === "workcell.camera.stop") {
         state.workcell!.camera!.stopPending = true

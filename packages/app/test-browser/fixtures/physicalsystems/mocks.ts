@@ -100,6 +100,8 @@ export const useTabs = () => ({
   },
 })
 export const Persist = { window: (key: string) => key }
+// The browser fixture does not render session tool cards.
+export const ToolRegistry = { register: (_tool: unknown) => {} }
 export const persisted = (_key: unknown, _schema: unknown, initial: object) => [
   ...createStore(initial),
   undefined,

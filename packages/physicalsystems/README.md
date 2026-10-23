@@ -35,6 +35,37 @@ after the operator selects an observed camera and presses **Start preview**.
 Robot execution still requires Node configuration and its existing operation
 approval flow; a completed synthetic experiment does not qualify the robot.
 
+### Load a staged ACT model
+
+The robot-model menu includes **Model on device** for a connected project. Select
+the company release that matches the signed package already staged and selected
+on Node, then choose **Load model on device**. The Node execution credential
+authorizes this operation. **Ready for predictions** means strict weight loading
+and GPU warm-up succeeded. **Stop model** removes its inference container.
+Neither operation issues robot actions. Disconnecting the app leaves this
+Node-owned prediction service running; reconnect to inspect or stop it.
+
+This initial integration requires the Node `physicalsystems-inference-v1` API,
+its administrator-configured local Docker image and a compatible signed ACT
+package. Selecting a personal Artefact or raw Hugging Face model does not download,
+stage or load it. Node's `docs/act-inference-runtime.md` describes host setup and
+the prediction endpoint. Image provisioning, generic model staging and live
+camera-to-robot control are separate from these controls.
+
+The renderer fixture exercises loading and stopping with an exact release digest
+and generation. Run its focused mode from `packages/app`:
+
+```sh
+PHYSICALSYSTEMS_UI_BROWSER_TESTS=1 PHYSICALSYSTEMS_INFERENCE_ONLY=1 \
+  bun test --conditions=browser --isolate --preload ../ui/test/solid-jsx.ts \
+  --preload ./happydom.ts ./test-browser/physicalsystems-ui.test.ts
+```
+
+It uses a local Firefox/WebDriver fixture. It does not connect to real equipment
+or replace a packaged Windows installation test.
+
+![Model controls in the synthetic browser fixture](docs/model-runtime-ready.png)
+
 ### First gripper check
 
 The **Setup → Gripper check** controls use the optional Node
