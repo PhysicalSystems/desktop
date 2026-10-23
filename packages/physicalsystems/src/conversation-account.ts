@@ -330,7 +330,14 @@ export function validateConversationRequest(method: unknown, path: unknown, body
   const room = `/api/workcells/${uuid}`
   const conversations = `${room}/conversations`
   const conversation = `${conversations}/${uuid}`
-  if (typeof path !== "string" || path.length > 400) throw new Error("INVALID_CONVERSATION_REQUEST")
+  if (typeof path !== "string" || path.length > 1200) throw new Error("INVALID_CONVERSATION_REQUEST")
+  if (
+    method === "GET" &&
+    body === undefined &&
+    (new RegExp(`^${conversations}\\?(?:cursor=[A-Za-z0-9_-]{1,512}&)?limit=(?:[1-9]\\d?|1\\d\\d|200)$`).test(path) ||
+      new RegExp(`^${conversation}/messages\\?(?:before=[1-9]\\d{0,14}&)?limit=(?:[1-9]\\d?|100)$`).test(path))
+  )
+    return
   if (
     method === "GET" &&
     body === undefined &&

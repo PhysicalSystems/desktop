@@ -98,3 +98,47 @@
   opacity: 0.45;
   cursor: not-allowed;
 }
+.ps-cloud-members h2,
+.ps-cloud-ai-history h2 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 16px 0;
+}
+.ps-cloud-member {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border-weak-base);
+}
+.ps-cloud-member header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-weak);
+}
+.ps-cloud-member p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+  padding-top: 8px;
+  font-size: 14px;
+}
+.ps-cloud-mode {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+}
+.ps-cloud-mode button,
+.ps-cloud-earlier {
+  border: 1px solid var(--border-base);
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 13px;
+}
+.ps-cloud-mode button[aria-pressed="true"] {
+  background: var(--background-strong);
+  color: var(--text-strong);
+}
+.ps-cloud-ai-history {
+  margin-top: 24px;
+  border-top: 1px solid var(--border-weak-base);
+}

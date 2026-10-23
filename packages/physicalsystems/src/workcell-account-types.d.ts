@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 export type WorkcellAccountState = {
   revision: number
+  /** Public grant identifier for account-bound draft recovery; never a credential. */
+  sessionId: string | null
   status: "signed_out" | "signing_in" | "signed_in" | "unavailable"
   account: { id: string; name: string; email: string } | null
   pending: { userCode: string; verificationUrl: string; expiresAt: string; browserOpened: boolean } | null

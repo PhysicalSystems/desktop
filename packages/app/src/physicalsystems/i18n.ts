@@ -1,6 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.shared.workcells": "Workcells",
+  "physicalsystems.shared.newWorkcell": "New workcell",
+  "physicalsystems.shared.createWorkcell": "Create workcell",
+  "physicalsystems.shared.artefacts": "Artefacts",
+  "physicalsystems.shared.skills": "Skills",
+  "physicalsystems.shared.planned": "Planned",
+  "physicalsystems.shared.local": "Local workspace",
+  "physicalsystems.shared.open": "Shared workcells",
+  "physicalsystems.shared.ai": "Cloud AI conversations",
+  "physicalsystems.shared.synced": "Shared across Windows, Linux and the web",
+  "physicalsystems.shared.welcome": "Your workcells, together",
+  "physicalsystems.shared.signInDescription":
+    "Sign in with your website account to share workcells and messages across your devices. Existing local conversations stay in Local workspace.",
+  "physicalsystems.shared.empty":
+    "Create a workcell to start a conversation across your devices, or connect an existing local project from Local workspace.",
+  "physicalsystems.shared.online": "Robot online",
+  "physicalsystems.shared.offline": "Robot offline",
+  "physicalsystems.shared.unknown": "Robot status unknown",
   "physicalsystems.projectWebsite.button": "Website workcell",
   "physicalsystems.projectWebsite.title": "Connect {{name}} to the website",
   "physicalsystems.projectWebsite.close": "Close",

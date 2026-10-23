@@ -26,7 +26,34 @@ export type CloudConversationOptions = {
   workcellId: string
   conversationId: string
   transport: WorkcellTransport
+  /** Workcell-only grants can exchange saved messages without requesting AI execution scope. */
+  allowAi?: boolean
   theme?: "light" | "dark"
   /** Optional authenticated room context; never treated as assistant history. */
   workcell?: WorkcellRoomData
+}
+
+export type MemberMessage = {
+  id: string
+  workcellId: string
+  conversationId: string
+  sequence: number
+  role: "user" | "system"
+  authorId: string | null
+  authorName: string | null
+  content: string
+  createdAt: string
+}
+
+export type MemberConversation = {
+  id: string
+  workcellId: string
+  title: string
+  visibility: "private" | "team"
+  permissions: { canRead: true; canPost: boolean }
+  messages: MemberMessage[]
+  messagesHasMore: boolean
+  messagesBefore: number | null
+  lastEventSequence: number
+  catchingUp?: boolean
 }

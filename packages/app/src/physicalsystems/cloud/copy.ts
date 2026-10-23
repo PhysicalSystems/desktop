@@ -21,6 +21,22 @@ export const cloudEnglish = {
   length: "Keep your message between 1 and 32,000 characters.",
   promptFailed: "Your message was not accepted. Review it and try again.",
   sending: "Sending…",
+  messages: "Messages",
+  earlier: "Load earlier messages",
+  emptyMessages: "Send a message to this conversation. It will be available on your connected devices.",
+  system: "System",
+  member: "Member",
+  catchingUp: "Loading messages sent while you were away…",
+  aiHistory: "AI conversation",
+  sendMode: "Message action",
+  messageMode: "Message",
+  aiMode: "Ask AI",
+  messagePlaceholder: "Write a message…",
+  messageHint: "Saved to this conversation and shared with its members. This does not ask AI or run the robot.",
+  aiHint: "Sends this draft to the cloud assistant. Member messages are not automatically supplied as AI context.",
+  memberLength: "Keep your message between 1 and 8,000 characters.",
+  queued: "Your message is queued on this device. It will retry safely when connected; Retry checks the same send.",
+  storageFailed: "This device could not save the draft or pending send. Keep a copy before leaving; sending is paused.",
 } as const
 
 export function cloudText(key: keyof typeof cloudEnglish) {
