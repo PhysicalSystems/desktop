@@ -1,6 +1,48 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.projectWebsite.button": "Website workcell",
+  "physicalsystems.projectWebsite.title": "Connect {{name}} to the website",
+  "physicalsystems.projectWebsite.close": "Close",
+  "physicalsystems.projectWebsite.description":
+    "Share this project's workcell name and task with your website account. Review the details below. Local conversations, files and robot credentials stay on this computer. Robot connection status is separate.",
+  "physicalsystems.projectWebsite.signIn":
+    "Connect the same Physical Systems account you use on the website, then create or choose the workcell for this project.",
+  "physicalsystems.projectWebsite.account": "Website account: {{email}}",
+  "physicalsystems.projectWebsite.loading": "Checking website connection…",
+  "physicalsystems.projectWebsite.status.signed_out": "Sign in to connect this project.",
+  "physicalsystems.projectWebsite.status.local": "Local only · choose how to connect this project.",
+  "physicalsystems.projectWebsite.status.linked": "Connected to website · changes can be synchronized below.",
+  "physicalsystems.projectWebsite.status.pending": "Update pending · retry the saved request to confirm it.",
+  "physicalsystems.projectWebsite.status.conflict":
+    "The website workcell has changed. Read the latest version before editing.",
+  "physicalsystems.projectWebsite.status.unavailable": "The website connection could not be verified.",
+  "physicalsystems.projectWebsite.action": "Connect this project",
+  "physicalsystems.projectWebsite.create": "Create personal workcell",
+  "physicalsystems.projectWebsite.existing": "Link existing workcell",
+  "physicalsystems.projectWebsite.choose": "Choose a website workcell",
+  "physicalsystems.projectWebsite.link": "Link this workcell",
+  "physicalsystems.projectWebsite.name": "Workcell name",
+  "physicalsystems.projectWebsite.task": "Task description",
+  "physicalsystems.projectWebsite.details": "More task details",
+  "physicalsystems.projectWebsite.objects": "Objects and materials",
+  "physicalsystems.projectWebsite.volume": "Expected volume",
+  "physicalsystems.projectWebsite.location": "Workcell location",
+  "physicalsystems.projectWebsite.sync": "Sync changes to website",
+  "physicalsystems.projectWebsite.retry": "Retry saved request",
+  "physicalsystems.projectWebsite.readLatest": "Read latest website version",
+  "physicalsystems.projectWebsite.open": "Open website workcell",
+  "physicalsystems.projectWebsite.error":
+    "The connection could not be confirmed. Check your account and connection, then refresh or retry the saved request.",
+  "physicalsystems.projectWebsite.listError": "The website workcell list could not be loaded. Refresh to try again.",
+  "physicalsystems.projectWebsite.conflict":
+    "Another update changed this workcell. Read its latest details, review them, and submit your changes again.",
+  "physicalsystems.projectWebsite.revoked":
+    "This account can no longer access the linked workcell. Check your website account or ask the company owner to restore access.",
+  "physicalsystems.projectWebsite.storageError":
+    "The app could not save this project's website connection. Check access to the app's local storage before trying again.",
+  "physicalsystems.projectWebsite.readOnly":
+    "You can view this workcell. Editing its details requires an owner or operator role.",
   "physicalsystems.menu": "Physical Systems menu",
   "physicalsystems.conversations.title": "Workcell conversations",
   "physicalsystems.conversations.updates": "Workcell updates",

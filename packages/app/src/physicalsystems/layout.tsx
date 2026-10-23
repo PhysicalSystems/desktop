@@ -24,6 +24,7 @@ import { NativeCloudConversations } from "./conversations-native"
 import { prepareTaskPrompt } from "./rooms/state"
 import { MigrationHistory } from "./migration"
 import { ProjectCredentials } from "./credentials"
+import { ProjectWorkcell } from "./project-workcell"
 import { physicalTimestamp } from "./state"
 import type { PhysicalCommand, PhysicalConversation, PhysicalProject } from "./types"
 import "./physicalsystems.css"
@@ -234,6 +235,7 @@ function PhysicalWorkspace(props: ParentProps) {
     initializing: false,
     navigation: undefined as { from: string; serverId: string; sessionId: string } | undefined,
     credentials: "",
+    websiteProject: "",
     creatingConversation: false,
     hover: "",
     pinned: false,
@@ -598,6 +600,17 @@ function PhysicalWorkspace(props: ParentProps) {
             </Show>
           </div>
           <div class="ps-actions">
+            <Show
+              when={
+                physical.project() &&
+                window.api?.physicalSystems?.projectWorkcells &&
+                window.api?.physicalSystems?.rooms
+              }
+            >
+              <button type="button" onClick={() => setState("websiteProject", physical.project()!.id)}>
+                {language.t("physicalsystems.projectWebsite.button")}
+              </button>
+            </Show>
             <Show when={canLinkConversation()}>
               <button
                 type="button"
@@ -915,6 +928,18 @@ function PhysicalWorkspace(props: ParentProps) {
       </Show>
       <Show when={physical.state.snapshot?.projects.find((project) => project.id === state.credentials)}>
         {(project) => <ProjectCredentials project={project()} close={() => setState("credentials", "")} />}
+      </Show>
+      <Show keyed when={physical.state.snapshot?.projects.find((project) => project.id === state.websiteProject)}>
+        {(project) => (
+          <Show when={window.api?.physicalSystems?.projectWorkcells && window.api?.physicalSystems?.rooms}>
+            <ProjectWorkcell
+              project={project}
+              bridge={window.api!.physicalSystems!.projectWorkcells!}
+              account={window.api!.physicalSystems!.rooms!}
+              close={() => setState("websiteProject", "")}
+            />
+          </Show>
+        )}
       </Show>
       <Show when={state.create}>
         <ProjectCreate

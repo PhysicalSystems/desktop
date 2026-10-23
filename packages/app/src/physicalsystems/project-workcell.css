@@ -1,0 +1,42 @@
+.ps-project-website {
+  width: min(38rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+}
+.ps-project-website::backdrop {
+  background: #0007;
+}
+.ps-project-website .ps-heading {
+  align-items: start;
+  gap: 1rem;
+}
+.ps-project-website h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+.ps-project-website fieldset {
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.ps-project-website label {
+  display: grid;
+  gap: 0.4rem;
+}
+.ps-project-website textarea {
+  width: 100%;
+  resize: vertical;
+}
+.ps-project-website summary {
+  cursor: pointer;
+  margin-block: 0.5rem;
+}
+.ps-project-website-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: space-between;
+  overflow-wrap: anywhere;
+}
