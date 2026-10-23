@@ -1,0 +1,29 @@
+name: Setup desktop APT downloads
+description: Official Ubuntu mirrors and bounded downloads for disposable desktop CI runners
+runs:
+  using: composite
+  steps:
+    - name: Configure official Ubuntu archives
+      shell: bash
+      run: |
+        test "$RUNNER_OS" = Linux
+        test -s /etc/apt/sources.list.d/ubuntu.sources
+        grep -Fq 'mirror+file:/etc/apt/apt-mirrors.txt' /etc/apt/sources.list.d/ubuntu.sources
+
+        # The hosted image prioritizes Azure, whose slow downloads can exhaust
+        # qualification jobs before falling back. Keep the two official HTTPS
+        # alternatives; leave suites, components and Signed-By untouched.
+        printf '%s\tpriority:%s\n' \
+          'https://archive.ubuntu.com/ubuntu/' 1 \
+          'https://security.ubuntu.com/ubuntu/' 2 \
+          | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+
+        # Playwright invokes APT itself, so it must inherit the same bounds and
+        # Ubuntu-only sources as native qualification. Signature checks remain on.
+        sudo tee /etc/apt/apt.conf.d/99physicalsystems-ci >/dev/null <<'APT'
+        Acquire::Retries "1";
+        Acquire::http::Timeout "20";
+        Acquire::https::Timeout "20";
+        Dir::Etc::sourcelist "/etc/apt/sources.list.d/ubuntu.sources";
+        Dir::Etc::sourceparts "/dev/null";
+        APT
