@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 /** @jsxImportSource solid-js */
-import { createEffect, For, onCleanup, Show, untrack } from "solid-js"
+import { createEffect, For, on, onCleanup, Show, untrack } from "solid-js"
 import { createStore } from "solid-js/store"
 import { roomText } from "./copy"
 import { acceptsRoom, roomAccessDenied, roomResourceHref, workcellPath } from "./state"
@@ -21,10 +21,13 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
     historyMore: true,
     historyPending: false,
     preparing: false,
+    contextOpen: false,
   })
   let refresh = () => Promise.resolve()
   let request: { content: string; requestId: string } | undefined
   let active: AbortController | undefined
+  let timeline: HTMLDivElement | undefined
+  let followLatest = true
   const denied = () => {
     request = undefined
     active?.abort()
@@ -43,6 +46,7 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
     const transport = props.transport
     const abort = new AbortController()
     active = abort
+    followLatest = true
     setState({
       room: undefined,
       draft: "",
@@ -55,6 +59,7 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
       historyMore: true,
       historyPending: false,
       preparing: false,
+      contextOpen: false,
     })
     request = undefined
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -123,6 +128,7 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
         if (abort?.signal.aborted) return
         const next = (value as { workcell: WorkcellRoomData }).workcell
         if (!acceptsRoom(state.room, next, id)) throw new Error("INVALID_WORKCELL_RESPONSE")
+        followLatest = true
         setState("room", next)
         setState("draft", "")
         request = undefined
@@ -178,6 +184,17 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
     [
       ...new Map([...state.history, ...(state.room?.messages ?? [])].map((message) => [message.id, message])).values(),
     ].sort((a, b) => a.sequence - b.sequence)
+  createEffect(
+    on(
+      () => messages().at(-1)?.id,
+      () => {
+        const abort = active
+        queueMicrotask(() => {
+          if (timeline && followLatest && !abort?.signal.aborted) timeline.scrollTop = timeline.scrollHeight
+        })
+      },
+    ),
+  )
   const prepare = async () => {
     const room = state.room
     const callback = props.onPrepareTask
@@ -241,39 +258,62 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
                 <p class="pwr-eyebrow">{room().companyName ?? roomText("updates")}</p>
                 <h1>{room().name}</h1>
               </div>
-              <span class="pwr-badge">{room().status}</span>
-            </header>
-            <Show when={props.onPrepareTask}>
-              <div class="pwr-task-action">
-                <button disabled={state.preparing} onClick={() => void prepare()}>
-                  {roomText("prepare")}
+              <div class="pwr-heading-actions">
+                <span class="pwr-badge">{room().status}</span>
+                <button
+                  type="button"
+                  aria-expanded={state.contextOpen}
+                  aria-controls={`pwr-context-${props.workcellId}`}
+                  onClick={() => setState("contextOpen", !state.contextOpen)}
+                >
+                  {roomText("details")}
                 </button>
-                <p class="pwr-muted">{roomText("prepareHint")}</p>
               </div>
-            </Show>
-            <div class="pwr-grid">
+            </header>
+            <div class="pwr-grid" data-context-open={state.contextOpen}>
               <section class="pwr-conversation">
-                <h2>{roomText("updates")}</h2>
-                <Show when={room().messagesHasMore && state.historyMore}>
-                  <p class="pwr-muted">{roomText(state.historyCursor ? "historyPartial" : "older")}</p>
-                  <button disabled={state.historyPending} onClick={() => void history()}>
-                    {roomText(
-                      state.historyPending ? "historyLoading" : state.historyCursor ? "historyMore" : "history",
-                    )}
-                  </button>
-                </Show>
-                <div class="pwr-messages" role="log" aria-live="polite" aria-relevant="additions">
-                  <For each={messages()} fallback={<p class="pwr-muted">{roomText("empty")}</p>}>
-                    {(message) => (
-                      <article class="pwr-message" data-role={message.role}>
-                        <div>
-                          <strong>{message.role === "system" ? roomText("system") : message.authorName}</strong>
-                          <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
-                        </div>
-                        <p>{message.content}</p>
-                      </article>
-                    )}
-                  </For>
+                <div
+                  class="pwr-production-status"
+                  data-status={room().telemetry.status}
+                  role={/^(?:error|failed|blocked)$/.test(room().telemetry.status) ? "alert" : "status"}
+                >
+                  <strong>{roomText("telemetry")}</strong>
+                  <p>{room().telemetry.reason || roomText("noTelemetry")}</p>
+                </div>
+                <div
+                  ref={timeline}
+                  class="pwr-timeline"
+                  tabindex="0"
+                  aria-label={roomText("updates")}
+                  onScroll={(event) => {
+                    const element = event.currentTarget
+                    followLatest = element.scrollHeight - element.clientHeight - element.scrollTop < 80
+                  }}
+                >
+                  <h2>{roomText("updates")}</h2>
+                  <Show when={room().messagesHasMore && state.historyMore}>
+                    <div class="pwr-history">
+                      <p class="pwr-muted">{roomText(state.historyCursor ? "historyPartial" : "older")}</p>
+                      <button disabled={state.historyPending} onClick={() => void history()}>
+                        {roomText(
+                          state.historyPending ? "historyLoading" : state.historyCursor ? "historyMore" : "history",
+                        )}
+                      </button>
+                    </div>
+                  </Show>
+                  <div class="pwr-messages" role="log" aria-live="polite" aria-relevant="additions">
+                    <For each={messages()} fallback={<p class="pwr-muted">{roomText("empty")}</p>}>
+                      {(message) => (
+                        <article class="pwr-message" data-role={message.role}>
+                          <div>
+                            <strong>{message.role === "system" ? roomText("system") : message.authorName}</strong>
+                            <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleString()}</time>
+                          </div>
+                          <p>{message.content}</p>
+                        </article>
+                      )}
+                    </For>
+                  </div>
                 </div>
                 <form class="pwr-compose" onSubmit={post}>
                   <label for={`pwr-update-${props.workcellId}`}>{roomText("add")}</label>
@@ -297,70 +337,92 @@ export function WorkcellRoom(props: WorkcellRoomOptions) {
                   </div>
                 </form>
               </section>
-              <aside class="pwr-sidebar">
-                <section class="pwr-card">
-                  <h2>{roomText("task")}</h2>
-                  <p>{room().task}</p>
-                  <dl>
-                    <For
-                      each={
-                        [
-                          ["objects", room().objects],
-                          ["volume", room().volume],
-                          ["location", room().location],
-                        ] as const
-                      }
-                    >
-                      {(item) => (
-                        <>
-                          <dt>{roomText(item[0])}</dt>
-                          <dd>{item[1] || roomText("unprovided")}</dd>
-                        </>
-                      )}
-                    </For>
-                  </dl>
-                </section>
-                <section class="pwr-card">
-                  <h2>{roomText("setup")}</h2>
-                  <ol class="pwr-steps">
-                    <For each={room().setupStages}>
-                      {(stage) => (
-                        <li data-complete={stage.status === "complete"}>
-                          <strong>{stage.label}</strong>
-                          <p>{stage.detail}</p>
-                        </li>
-                      )}
-                    </For>
-                  </ol>
-                </section>
-                <section class="pwr-card">
-                  <h2>{roomText("telemetry")}</h2>
-                  <p>{room().telemetry.reason || roomText("noTelemetry")}</p>
-                  <Show when={room().telemetry.observedAt}>
+              <aside
+                class="pwr-sidebar"
+                id={`pwr-context-${props.workcellId}`}
+                aria-label={roomText("details")}
+                hidden={!state.contextOpen}
+              >
+                <Show when={state.contextOpen}>
+                  <details class="pwr-card" open>
+                    <summary>{roomText("taskEquipment")}</summary>
+                    <h2>{roomText("task")}</h2>
+                    <p>{room().task}</p>
+                    <dl>
+                      <For
+                        each={
+                          [
+                            ["objects", room().objects],
+                            ["volume", room().volume],
+                            ["location", room().location],
+                          ] as const
+                        }
+                      >
+                        {(item) => (
+                          <>
+                            <dt>{roomText(item[0])}</dt>
+                            <dd>{item[1] || roomText("unprovided")}</dd>
+                          </>
+                        )}
+                      </For>
+                    </dl>
+                    <h3>{roomText("equipment")}</h3>
+                    <p>{room().robot.status === "not_connected" ? roomText("disconnected") : room().robot.status}</p>
+                    <Show when={room().robot.deviceId}>
+                      <p class="pwr-muted">{room().robot.deviceId}</p>
+                    </Show>
+                    <Show when={room().telemetry.observedAt}>
+                      <p class="pwr-muted">
+                        {roomText("observed")}: {room().telemetry.observedAt}
+                      </p>
+                    </Show>
+                    <h3>{roomText("setup")}</h3>
+                    <ol class="pwr-steps">
+                      <For each={room().setupStages}>
+                        {(stage) => (
+                          <li data-complete={stage.status === "complete"}>
+                            <strong>{stage.label}</strong>
+                            <p>{stage.detail}</p>
+                          </li>
+                        )}
+                      </For>
+                    </ol>
+                    <Show when={props.onPrepareTask}>
+                      <div class="pwr-task-action">
+                        <button disabled={state.preparing} onClick={() => void prepare()}>
+                          {roomText("prepare")}
+                        </button>
+                        <p class="pwr-muted">{roomText("prepareHint")}</p>
+                      </div>
+                    </Show>
+                  </details>
+                  <details class="pwr-card">
+                    <summary>{roomText("models")}</summary>
                     <p class="pwr-muted">
-                      {roomText("observed")}: {room().telemetry.observedAt}
+                      {roomText(room().resources.scope === "company" ? "resourcesNote" : "personalResourcesNote")}
                     </p>
-                  </Show>
-                </section>
-                <section class="pwr-card">
-                  <h2>{roomText(room().resources.scope === "company" ? "resources" : "personalResources")}</h2>
-                  <p class="pwr-muted">
-                    {roomText(room().resources.scope === "company" ? "resourcesNote" : "personalResourcesNote")}
-                  </p>
-                  <h3>{roomText("services")}</h3>
-                  <For each={room().resources.services} fallback={<p class="pwr-muted">{roomText("noServices")}</p>}>
-                    {(service) => <p>{link(service.href, `${service.workstation} · ${service.status}`)}</p>}
-                  </For>
-                  <h3>{roomText("models")}</h3>
-                  <For each={room().resources.models} fallback={<p class="pwr-muted">{roomText("noModels")}</p>}>
-                    {(model) => <p>{link(model.href, `${model.modelId} · ${model.version}`)}</p>}
-                  </For>
-                  <nav>
-                    {link(room().resources.links.services, roomText("openServices"))}
-                    {link(room().resources.links.models, roomText("openModels"))}
-                    {link(room().resources.links.computeBilling, roomText("billing"))}
-                  </nav>
-                </section>
+                    <For each={room().resources.models} fallback={<p class="pwr-muted">{roomText("noModels")}</p>}>
+                      {(model) => <p>{link(model.href, `${model.modelId} · ${model.version}`)}</p>}
+                    </For>
+                    <nav>{link(room().resources.links.models, roomText("openModels"))}</nav>
+                  </details>
+                  <details class="pwr-card">
+                    <summary>{roomText("skillsServices")}</summary>
+                    <p class="pwr-muted">{roomText("skillsNote")}</p>
+                    <p>{link(room().resources.links.services, roomText("openCapabilities"))}</p>
+                    <h3>{roomText("services")}</h3>
+                    <p class="pwr-muted">
+                      {roomText(room().resources.scope === "company" ? "resourcesNote" : "personalResourcesNote")}
+                    </p>
+                    <For each={room().resources.services} fallback={<p class="pwr-muted">{roomText("noServices")}</p>}>
+                      {(service) => <p>{link(service.href, `${service.workstation} · ${service.status}`)}</p>}
+                    </For>
+                    <nav>
+                      {link(room().resources.links.services, roomText("openServices"))}
+                      {link(room().resources.links.computeBilling, roomText("billing"))}
+                    </nav>
+                  </details>
+                </Show>
               </aside>
             </div>
           </>

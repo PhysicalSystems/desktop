@@ -42,7 +42,15 @@ const room = (id = "cell-a", sequence = 103): WorkcellRoomData => ({
   resources: {
     scope: "company",
     services: [],
-    models: [],
+    models: [
+      {
+        releaseId: "recorded-release",
+        modelId: "recorded-company-model",
+        version: "1.0",
+        createdAt: "2026-10-20T00:00:00Z",
+        href: "/model-delivery",
+      },
+    ],
     links: {
       pilots: "/pilots",
       services: "/dashboard/services",
@@ -132,15 +140,26 @@ test("the actual shared room preserves drafts, replays history and clears revoke
     expect(gets).toBe(1) // A reactive initialization loop used to restart on each loaded response.
     expect(container.querySelector("h1")?.textContent).toBe("cell-a")
     expect(container.querySelector("textarea")?.maxLength).toBe(8000)
+    expect(container.querySelector<HTMLElement>(".pwr-sidebar")?.hidden).toBe(true)
+    expect(container.querySelector(".pwr-sidebar")?.textContent).not.toContain("recorded-company-model")
+    expect(container.querySelector(".pwr-production-status")?.textContent).toContain("No production telemetry")
     const click = async (label: string) => {
       const button = [...container.querySelectorAll("button")].find((item) => item.textContent === label)
       expect(button).toBeDefined()
       button!.click()
       await settle()
     }
+    await click("Workcell details")
+    expect(container.querySelector<HTMLElement>(".pwr-sidebar")?.hidden).toBe(false)
+    expect(container.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe("true")
+    expect(container.querySelector(".pwr-sidebar")?.textContent).toContain("No robot connected")
+    expect(container.querySelector(".pwr-sidebar")?.textContent).toContain("recorded-company-model · 1.0")
+    expect(container.querySelector(".pwr-sidebar")?.textContent).toContain("View accepted capabilities")
     await click("Prepare in Assistant")
     expect(briefs).toEqual(["cell-a"])
     expect(writes).toHaveLength(0)
+    await click("Workcell details")
+    expect(container.querySelector<HTMLElement>(".pwr-sidebar")?.hidden).toBe(true)
     await click("Load earlier updates")
     expect(container.textContent).toContain("Earlier retained update")
     await click("Load more history")
@@ -151,8 +170,15 @@ test("the actual shared room preserves drafts, replays history and clears revoke
       ),
     ).toHaveLength(1)
     const input = container.querySelector("textarea")!
+    const timeline = container.querySelector<HTMLElement>(".pwr-timeline")!
+    Object.defineProperties(timeline, { scrollHeight: { value: 1000 }, clientHeight: { value: 300 } })
+    timeline.scrollTop = 100
+    timeline.dispatchEvent(new Event("scroll"))
     input.value = "Keep this draft"
     input.dispatchEvent(new Event("input", { bubbles: true }))
+    await click("Workcell details")
+    await click("Workcell details")
+    expect(input.value).toBe("Keep this draft")
     const submit = () =>
       container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }))
     submit()
@@ -174,18 +200,26 @@ test("the actual shared room preserves drafts, replays history and clears revoke
     writes[1].resolve({ workcell: activeRoom })
     await settle()
     expect(input.value).toBe("")
+    expect(timeline.scrollTop).toBe(1000)
     expect(gets).toBe(2)
     input.value = "Old room pending"
     input.dispatchEvent(new Event("input", { bubbles: true }))
     submit()
     await settle()
-    activeRoom = room("cell-b")
+    activeRoom = {
+      ...room("cell-b"),
+      telemetry: { status: "blocked", observedAt: null, metrics: null, reason: "Recorded commissioning block" },
+    }
     instance.update({ workcellId: "cell-b" })
     await settle()
     writes[2].resolve({ workcell: room("cell-a", 106) })
     await settle()
     expect(container.querySelector("h1")?.textContent).toBe("cell-b")
     expect(container.querySelector("textarea")?.value).toBe("")
+    expect(container.querySelector<HTMLElement>(".pwr-sidebar")?.hidden).toBe(true)
+    expect(container.querySelector('.pwr-production-status[role="alert"]')?.textContent).toContain(
+      "Recorded commissioning block",
+    )
     const next = container.querySelector("textarea")!
     next.value = "Revoked account draft"
     next.dispatchEvent(new Event("input", { bubbles: true }))
