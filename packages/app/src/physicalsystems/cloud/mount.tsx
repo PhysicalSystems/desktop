@@ -10,6 +10,7 @@ import { CloudConversation } from "./conversation"
 import type { CloudConversationOptions } from "./types"
 import "./cloud.css"
 export type { CloudConversationOptions, CloudConversationSnapshot, CloudPromptAdmission } from "./types"
+export type { WorkcellRoomData } from "../rooms/types"
 
 /** Mount in the host's isolated frame document to keep canonical styles and portals together. */
 export function mountCloudConversation(element: HTMLElement, options: CloudConversationOptions) {

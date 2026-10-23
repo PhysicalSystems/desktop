@@ -82,6 +82,34 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
       conversationId: "chat-1",
       transport,
       theme: "light",
+      workcell: {
+        id: "room-1",
+        name: "Local sorting fixture",
+        task: "Sort the supplied metal plates",
+        objects: "Small metal plates",
+        location: "Local QA bench",
+        volume: "",
+        companyId: null,
+        companyName: null,
+        status: "task_received",
+        setupStage: "review",
+        createdAt: "2026-10-23",
+        updatedAt: "2026-10-23",
+        version: 1,
+        lastEventSequence: 0,
+        setupStages: [],
+        robot: { status: "not_connected", deviceId: null },
+        telemetry: { status: "unavailable", observedAt: null, metrics: null, reason: "No device" },
+        permissions: { canRead: true, canPost: true },
+        messages: [],
+        messagesHasMore: false,
+        resources: {
+          scope: "personal",
+          services: [],
+          models: [],
+          links: { pilots: "", services: "", credits: "", computeBilling: "", models: "" },
+        },
+      },
     })
     dispose = mounted.dispose
     await settle()
@@ -89,6 +117,26 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
     expect(container.textContent).toContain("Private workcell planning")
     const editor = container.querySelector<HTMLElement>('[contenteditable="true"]')!
     expect(editor).not.toBeNull()
+    const taskDetails = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Use task details",
+    )!
+    expect(taskDetails.disabled).toBe(false)
+    expect(writes).toHaveLength(0)
+    taskDetails.click()
+    await settle()
+    expect(writes).toHaveLength(0)
+    expect(editor.textContent).toContain("Saved workcell details supplied by the user (not live observations):")
+    expect(editor.textContent).toContain('"name": "Local sorting fixture"')
+    expect(editor.textContent).toContain('"task": "Sort the supplied metal plates"')
+    expect(editor.textContent).toContain('"objects": "Small metal plates"')
+    expect(editor.textContent).toContain('"location": "Local QA bench"')
+    expect(taskDetails.disabled).toBe(true)
+    editor.textContent = "My edited question"
+    editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: "My edited question" }))
+    taskDetails.click()
+    await settle()
+    expect(editor.textContent).toBe("My edited question")
+    expect(writes).toHaveLength(0)
     editor.textContent = "!"
     editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: "!" }))
     await settle()
@@ -106,6 +154,9 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
     await settle()
     expect(container.textContent).toContain("Your message has not been confirmed")
     expect(container.querySelector('[contenteditable="false"]')).not.toBeNull()
+    expect(taskDetails.disabled).toBe(true)
+    taskDetails.click()
+    expect(writes).toHaveLength(1)
     const retry = [...container.querySelectorAll("button")].find((button) => button.textContent === "Retry")!
     retry.click()
     await settle()
@@ -161,6 +212,7 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
     expect(container.textContent).toContain("Access to this conversation has changed")
     expect(container.textContent).not.toContain("Private workcell planning")
     expect(container.querySelector("form")).toBeNull()
+    expect(container.textContent).not.toContain("Sort the supplied metal plates")
   } finally {
     dispose?.()
     container.remove()

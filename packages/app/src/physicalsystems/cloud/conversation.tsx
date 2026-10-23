@@ -147,6 +147,17 @@ function CloudConversationContent(props: CloudConversationOptions) {
       composer.dispatch({ type: "popover.close" })
     },
   }
+  const canUseTaskDetails = () =>
+    writable() && !state.sending && !state.uncertain && text().length === 0 && !client.pending()
+  const useTaskDetails = () => {
+    const room = props.workcell
+    if (!room || room.id !== props.workcellId || !canUseTaskDetails()) return
+    const value = `${cloudText("taskDetailsPrompt")}\n${JSON.stringify({ name: room.name, task: room.task, objects: room.objects, location: room.location }, null, 2)}\n\n`
+    draft[1]("prompt", [{ type: "text", content: value, start: 0, end: value.length }])
+    draft[1]("cursor", value.length)
+    setState("promptError", "")
+    composer.restoreFocus(value.length)
+  }
   createEffect(() => {
     untrack(() => void refresh())
   })
@@ -181,7 +192,7 @@ function CloudConversationContent(props: CloudConversationOptions) {
       <Show when={state.snapshot}>
         <h1>{state.snapshot!.conversation.title}</h1>
       </Show>
-      <Show when={props.workcell?.id === props.workcellId && props.workcell}>
+      <Show when={state.snapshot && !denied() && props.workcell?.id === props.workcellId && props.workcell}>
         {(room) => (
           <details class="ps-cloud-context">
             <summary>{cloudText("task")}</summary>
@@ -193,6 +204,12 @@ function CloudConversationContent(props: CloudConversationOptions) {
               <dt>{roomText("location")}</dt>
               <dd>{room().location || roomText("unprovided")}</dd>
             </dl>
+            <div class="ps-cloud-notice">
+              <button type="button" disabled={!canUseTaskDetails()} onClick={useTaskDetails}>
+                {cloudText("useTaskDetails")}
+              </button>
+              <p>{cloudText("taskDetailsHint")}</p>
+            </div>
           </details>
         )}
       </Show>
