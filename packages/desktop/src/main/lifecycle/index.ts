@@ -18,6 +18,7 @@ import { marks } from "./marks"
 import { initializeFirstLaunchOnboarding } from "./onboarding"
 import { Shutdown } from "./shutdown"
 import { consoleReturnWindow } from "./deep-link"
+import { desktopLaunch, releaseEarlyDesktopLaunch } from "./desktop-launch"
 
 export interface Interface {
   readonly relaunch: () => void
@@ -105,6 +106,7 @@ const runtime = Layer.effect(
     const relaunch = () => { void coordinator.request("relaunch") }
 
     const secondInstance = (_event: Event, argv: string[]) => {
+      if (argv.some((value) => desktopLaunch.receive(value, getLastFocusedWindow()))) return
       const urls = argv.filter((arg) => arg.startsWith("opencode://"))
 
       if (urls.length) {
@@ -117,6 +119,8 @@ const runtime = Layer.effect(
 
     const openUrl = (event: Event, url: string) => {
       event.preventDefault()
+      if (desktopLaunch.receive(url, getLastFocusedWindow())) return
+      if (!url.startsWith("opencode://")) return
       runFork(Effect.logInfo("deep link received via open-url", { url }))
       focusWindow(emitDeepLinks([url]) ?? null)
     }
@@ -161,6 +165,7 @@ const runtime = Layer.effect(
 
     app.on("second-instance", secondInstance)
     app.on("open-url", openUrl)
+    releaseEarlyDesktopLaunch()
     app.on("before-quit", beforeQuit)
     if (startupQuit) requestQuit()
     app.on("will-quit", willQuit)
@@ -196,7 +201,12 @@ const runtime = Layer.effect(
           app.on("activate", activate)
         }
 
-        return restoreWindows()
+        const restored = restoreWindows()
+        for (const win of restored) {
+          if (win.isVisible()) desktopLaunch.ready(win)
+          else win.once("ready-to-show", () => desktopLaunch.ready(win))
+        }
+        return restored
       },
     })
   }),

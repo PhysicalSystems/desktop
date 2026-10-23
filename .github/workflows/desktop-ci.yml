@@ -181,7 +181,7 @@ jobs:
 
       - name: Desktop startup diagnostic regression tests
         working-directory: packages/desktop
-        run: bun test --timeout 30000 ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/files/external-url.test.ts ./src/main/provider-account-trace.test.ts ./src/main/storage/legacy.test.ts
+        run: bun test --timeout 30000 ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/files/external-url.test.ts ./src/main/provider-account-trace.test.ts ./src/main/storage/legacy.test.ts ./src/main/desktop-launch.test.ts ./physical-launch.config.test.ts
 
       - name: Shared updater controller and install handoff regressions
         working-directory: packages/desktop

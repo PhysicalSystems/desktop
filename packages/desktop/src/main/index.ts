@@ -3,6 +3,7 @@ import { startupTrace } from "./startup-trace"
 import { marks } from "./lifecycle/marks"
 import { app } from "electron"
 import { acquireApplicationLock, configureApplication } from "./lifecycle/configure"
+import { captureEarlyDesktopLaunch } from "./lifecycle/desktop-launch"
 import { registerStorageSnapshotHandler } from "./storage/snapshot"
 import { createEarlyWindow } from "./windows/early"
 import { rendererAssetsServed } from "./windows/protocol"
@@ -17,6 +18,7 @@ configureApplication()
 startupTrace("PROFILE_READY")
 
 if (acquireApplicationLock()) {
+  captureEarlyDesktopLaunch()
   registerRendererScheme()
   // Window first, then the bundle: starting the import before ready delays ready itself, because the
   // module graph evaluates on the same thread Chromium needs to finish initialising.
