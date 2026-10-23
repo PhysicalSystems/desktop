@@ -34,6 +34,9 @@ const config: Configuration = {
     author: "Physical Systems",
   },
   asar: true,
+  // The public installation owns this launch-only link; isolated candidate and
+  // review builds must not replace its handler or the upstream OpenCode handler.
+  protocols: { name: identity.productName, schemes: ["physicalsystems"] },
   publish: null,
   forceCodeSigning: inputs.windowsSigning.provider !== "unsigned-preview",
   win: {

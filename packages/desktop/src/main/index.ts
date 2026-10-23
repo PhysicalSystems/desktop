@@ -49,6 +49,7 @@ import { createShutdownCoordinator } from "../../../physicalsystems/src/lifecycl
 import { desktopIdentity } from "../../../physicalsystems/src/release/identity"
 import { startupTrace } from "./startup-trace"
 import { shutdownTrace } from "./shutdown-trace"
+import { createDesktopLaunchController } from "./desktop-launch"
 const TEST_ONBOARDING = process.env.OPENCODE_TEST_ONBOARDING === "1"
 // Physical Systems' reviewed tool adapter currently targets the bundled v1 server.
 const SIDECAR_VERSION = "v1"
@@ -62,6 +63,7 @@ let quitAllowed = false
 let shutdownStarted = false
 
 const pendingDeepLinks: string[] = []
+const desktopLaunch = createDesktopLaunchController()
 
 function useEnvProxy() {
   try {
@@ -231,11 +233,13 @@ const main = Effect.gen(function* () {
     return
   }
   startupTrace("INSTANCE_LOCK_ACQUIRED")
+  process.argv.some((value) => desktopLaunch.receive(value))
 
   // Keep the scoped development environment; do not reload ambient provider/config variables from a login shell.
   process.env.OPENCODE_CLIENT = "desktop"
 
   app.on("second-instance", (_event: Event, argv: string[]) => {
+    if (argv.some((value) => desktopLaunch.receive(value, getLastFocusedWindow()))) return
     const urls = argv.filter((arg: string) => arg.startsWith("opencode://"))
     if (urls.length) {
       logger.log("deep link received via second-instance", { urls })
@@ -250,6 +254,8 @@ const main = Effect.gen(function* () {
 
   app.on("open-url", (event: Event, url: string) => {
     event.preventDefault()
+    if (desktopLaunch.receive(url, getLastFocusedWindow())) return
+    if (!url.startsWith("opencode://")) return
     logger.log("deep link received via open-url", { url })
     emitDeepLinks([url])
   })
@@ -460,6 +466,7 @@ const main = Effect.gen(function* () {
   })
 
   const windows = restoreMainWindows()
+  for (const window of windows) window.once("ready-to-show", () => desktopLaunch.ready(window))
   if (windows.length) createMenu(menuDeps)
 })
 
