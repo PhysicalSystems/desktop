@@ -6,6 +6,8 @@ import { Icon } from "@opencode/ui/icon"
 import { Portal } from "solid-js/web"
 import { useLocation } from "@solidjs/router"
 import { useLanguage } from "../runtime/i18n/language"
+import { usePlatform } from "../runtime/platform/platform"
+import { showToast } from "../shell/notifications/toast"
 import { useSettingsCommand } from "../settings/command"
 import { ServerConnection, useServers } from "../runtime/server/registry"
 import { tabKey, useTabs } from "../shell/tabs/tabs"
@@ -205,6 +207,18 @@ export function PhysicalSystemsLayout(props: ParentProps) {
 function PhysicalWorkspace(props: ParentProps) {
   const physical = usePhysicalSystems()!
   const language = useLanguage()
+  const platform = usePlatform()
+  const openPortal = async (page: string) => {
+    const url = `https://physicalsystems.ai/dashboard/${page}`
+    const opened = await Promise.resolve()
+      .then(async () => await platform.openExternal(url))
+      .catch(() => false)
+    if (opened === false)
+      showToast({
+        title: language.t("physicalsystems.portal.failed"),
+        description: language.t("physicalsystems.portal.openManually", { url }),
+      })
+  }
   const tabs = useTabs()
   const global = useGlobal()
   const servers = useServers()
@@ -226,6 +240,7 @@ function PhysicalWorkspace(props: ParentProps) {
   )
   const [state, setState] = createStore({
     create: false,
+    search: "",
     cloudRooms: Boolean(window.api?.physicalSystems?.rooms),
     cloudAi: false,
     creatingProject: false,
@@ -515,17 +530,8 @@ function PhysicalWorkspace(props: ParentProps) {
         >
           <div class="ps-heading">
             <Show when={physical.state.sidebarOpen}>
-              <strong>{language.t("physicalsystems.shared.local")}</strong>
+              <strong class="ps-brand">{language.t("physicalsystems.name")}</strong>
             </Show>
-            <button
-              type="button"
-              class="ps-create-project"
-              aria-label={language.t("physicalsystems.project.create")}
-              disabled={state.creatingProject || state.creatingConversation}
-              onClick={() => setState("create", true)}
-            >
-              +
-            </button>
             <button
               type="button"
               aria-label={language.t(
@@ -540,8 +546,67 @@ function PhysicalWorkspace(props: ParentProps) {
               {physical.state.sidebarOpen ? "‹" : "›"}
             </button>
           </div>
+          <div class="ps-primary-navigation">
+            <button
+              class="ps-nav-action ps-create-project"
+              type="button"
+              title={language.t("physicalsystems.project.create")}
+              aria-label={language.t("physicalsystems.project.create")}
+              disabled={state.creatingProject || state.creatingConversation}
+              onClick={() => setState("create", true)}
+            >
+              <Icon name="plus" />
+              <Show when={physical.state.sidebarOpen}>
+                <span>{language.t("physicalsystems.project.create")}</span>
+              </Show>
+            </button>
+            <Show when={physical.state.sidebarOpen}>
+              <label class="ps-workcell-search">
+                <Icon name="magnifying-glass" />
+                <input
+                  type="search"
+                  value={state.search}
+                  aria-label={language.t("physicalsystems.navigation.search")}
+                  placeholder={language.t("physicalsystems.navigation.search")}
+                  onInput={(event) => setState("search", event.currentTarget.value)}
+                />
+              </label>
+            </Show>
+            <For
+              each={
+                [
+                  { page: "artefacts", icon: "cube", key: "physicalsystems.navigation.artefacts" },
+                  { page: "skills", icon: "brain", key: "physicalsystems.navigation.skills" },
+                  { page: "planned", icon: "checklist", key: "physicalsystems.navigation.planned" },
+                ] as const
+              }
+            >
+              {(item) => (
+                <button
+                  class="ps-nav-action"
+                  type="button"
+                  title={language.t("physicalsystems.navigation.browser", { name: language.t(item.key) })}
+                  aria-label={language.t("physicalsystems.navigation.browser", { name: language.t(item.key) })}
+                  onClick={() => void openPortal(item.page)}
+                >
+                  <Icon name={item.icon} />
+                  <Show when={physical.state.sidebarOpen}>
+                    <span>{language.t(item.key)}</span>
+                    <Icon name="outline-square-arrow" size="small" />
+                  </Show>
+                </button>
+              )}
+            </For>
+          </div>
+          <Show when={physical.state.sidebarOpen}>
+            <div class="ps-section-label">{language.t("physicalsystems.projects")}</div>
+          </Show>
           <div class="ps-project-list">
-            <For each={physical.state.snapshot?.projects}>
+            <For
+              each={physical.state.snapshot?.projects.filter((project) =>
+                project.name.toLocaleLowerCase().includes(state.search.trim().toLocaleLowerCase()),
+              )}
+            >
               {(project) => (
                 <button
                   type="button"
@@ -582,6 +647,18 @@ function PhysicalWorkspace(props: ParentProps) {
                 </button>
               )}
             </For>
+            <Show
+              when={
+                state.search.trim() &&
+                physical.state.snapshot?.projects.length &&
+                !physical.state.snapshot.projects.some((project) =>
+                  project.name.toLocaleLowerCase().includes(state.search.trim().toLocaleLowerCase()),
+                ) &&
+                physical.state.sidebarOpen
+              }
+            >
+              <p class="ps-muted">{language.t("physicalsystems.navigation.noResults")}</p>
+            </Show>
             <Show when={!physical.state.snapshot?.projects.length && physical.state.sidebarOpen}>
               <p class="ps-muted">{language.t("physicalsystems.project.empty")}</p>
             </Show>
@@ -594,14 +671,13 @@ function PhysicalWorkspace(props: ParentProps) {
               aria-label={language.t("physicalsystems.shared.open")}
               onClick={() => {
                 close()
-                setState("cloudRooms", true)
+                setState({ cloudRooms: true, cloudAi: false })
               }}
             >
               <Icon name="chat" />
               <Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.shared.open")}</Show>
             </button>
           </Show>
-          <ModelAccountMenu expanded={physical.state.sidebarOpen} />
           <button
             type="button"
             class="ps-settings-button"
@@ -613,6 +689,9 @@ function PhysicalWorkspace(props: ParentProps) {
             <Icon name="settings-gear" />
             <Show when={physical.state.sidebarOpen}>{language.t("desktop.menu.settings")}</Show>
           </button>
+          <div class="ps-account-footer">
+            <ModelAccountMenu expanded={physical.state.sidebarOpen} />
+          </div>
         </nav>
         <div class="ps-conversation">
           <div class="ps-contextbar">

@@ -48,7 +48,9 @@ test("System follows operating system changes and settings remain available in s
 }) => {
   await page.emulateMedia({ colorScheme: "light" })
   await page.goto("/")
-  const shared = page.getByRole("navigation", { name: "Workcells", exact: true })
+  const shared = page.getByRole("navigation", { name: "Workcells", exact: true }).filter({
+    has: page.getByRole("button", { name: "Local workspace", exact: true }),
+  })
   await expect(shared.getByRole("button", { name: "Collapse projects", exact: true })).toBeEnabled()
   const modifier = await page.evaluate(() => (/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? "Meta" : "Control"))
   await page.keyboard.press(`${modifier}+,`)
@@ -77,7 +79,9 @@ test("System follows operating system changes and settings remain available in s
   await page.keyboard.press("Escape")
   await expect(dialog).toHaveCount(0)
   await shared.getByRole("button", { name: "Local workspace", exact: true }).click()
-  const projects = page.getByRole("navigation", { name: "Projects", exact: true })
+  const projects = page.getByRole("navigation", { name: "Workcells", exact: true }).filter({
+    has: page.getByRole("button", { name: "Shared workcells", exact: true }),
+  })
   await expect(shared).toHaveCount(0)
   await projects.getByRole("button", { name: "Collapse projects", exact: true }).click()
   await projects.getByRole("button", { name: "Open settings", exact: true }).click()
