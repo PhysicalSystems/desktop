@@ -1344,7 +1344,8 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       await providerReview.review({
         child,
         attachment: attached,
-        openBrowser: (url) => evaluate(`window.api.openExternal(${JSON.stringify(url)})`),
+        // The acknowledged IPC path is required; openExternal only sends a notification.
+        openBrowser: (url) => evaluate(`window.api.openBrowser(${JSON.stringify(url)})`),
       })
       return
     }
