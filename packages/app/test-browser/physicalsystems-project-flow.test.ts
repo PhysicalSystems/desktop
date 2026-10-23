@@ -66,13 +66,14 @@ afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
 })
 
-async function mount(empty = false, failProjectCreate = false, withoutBridge = false, cloud = false) {
+async function mount(empty = false, failProjectCreate = false, withoutBridge = false, cloud = false, projectLink = false) {
   const window = new Window({ url: "http://fixture.invalid" })
   windows.push(window)
   window.__fixtureEmpty = empty
   window.__fixtureFailProjectCreate = failProjectCreate
   window.__fixtureWithoutBridge = withoutBridge
   window.__fixtureCloud = cloud
+  window.__fixtureProjectLink = projectLink
   window.document.body.innerHTML = '<div id="root"></div>'
   const context = createContext({
     ...Object.fromEntries(
@@ -214,6 +215,27 @@ test("optional native cloud conversations and saved updates preserve the local s
   expect(fixture.js("window.__fixture.models.calls")).toEqual([])
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
   expect(fixture.js("window.__fixture.state.conversation.sessionId")).toBe("session-a")
+})
+
+test("confirming a pending website workcell unlocks editing and clears its retry and error state", async () => {
+  const fixture = await mount(false, false, false, true, true)
+  fixture.js(`Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Website workcell').click()`)
+  await settle()
+  const dialog = () => fixture.window.document.querySelector<HTMLDialogElement>(".ps-project-website")!
+  const name = () => dialog().querySelector<HTMLInputElement>('input[maxlength="120"]')!
+  const fields = () => dialog().querySelector<HTMLFieldSetElement>("fieldset")!
+  expect(name().value).toBe("Pending workcell")
+  expect(fields().disabled).toBe(true)
+  expect(dialog().querySelector('[role="alert"]')).not.toBeNull()
+  fixture.js(`Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Retry saved request').click()`)
+  await settle()
+  expect(name().value).toBe("Confirmed workcell")
+  expect(fields().disabled).toBe(false)
+  expect(dialog().textContent).not.toContain("Retry saved request")
+  expect(dialog().querySelector('[role="alert"]')).toBeNull()
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["rooms:refresh", "project:retry"])
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
 })
 
 test("company portal opens only on click and reports failed browser handoffs without changing the project", async () => {

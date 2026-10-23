@@ -12,6 +12,6 @@ export type WorkcellAccountBridge = {
   signIn(): Promise<WorkcellAccountState>
   cancelSignIn(): Promise<WorkcellAccountState>
   signOut(): Promise<WorkcellAccountState>
-  request(method: "GET" | "POST", path: string, body?: unknown): Promise<unknown>
+  request(method: "GET" | "POST" | "PATCH", path: string, body?: unknown): Promise<unknown>
   subscribe(listener: (state: WorkcellAccountState) => void): () => void
 }

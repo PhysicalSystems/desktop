@@ -21,6 +21,7 @@ function fixture() {
     available: true,
     missing: false,
     slow: undefined as Promise<Response> | undefined,
+    metadataError: undefined as { status: number; code: string } | undefined,
   }
   const client = createWorkcellAccount({
     store: {
@@ -64,6 +65,8 @@ function fixture() {
       expect(new Headers(options?.headers).get("Authorization")).toBe(`Bearer ${token}`)
       if (path.endsWith("/slow") && control.slow) return control.slow
       if (control.missing) return new Response("", { status: 404 })
+      if (control.metadataError)
+        return Response.json({ code: control.metadataError.code }, { status: control.metadataError.status })
       return control.revoked ? new Response("", { status: 403 }) : Response.json({ workcells: [], accepted: true })
     },
   })
@@ -178,4 +181,57 @@ test("a removed room fails closed without discarding a valid account for other r
   control.missing = true
   await expect(client.request("GET", "/api/workcells/missing")).rejects.toThrow("WORKCELL_ACCESS_REVOKED")
   expect(client.snapshot().status).toBe("signed_in")
+})
+
+test("native creation and metadata updates accept only the exact bounded non-executing schema", () => {
+  const id = "fce739a6-cb75-4c86-b376-d4b6414f1766"
+  const create = { requestId: id, name: "Workcell", task: "Sort blocks" }
+  expect(() => validateRoomRequest("POST", "/api/workcells", create)).not.toThrow()
+  expect(() => validateRoomRequest("PATCH", `/api/workcells/${id}`, { ...create, expectedRevision: 0 })).not.toThrow()
+  for (const body of [
+    { ...create, companyId: id },
+    { ...create, cwd: "C:/private" },
+    { ...create, connection: {} },
+    { ...create, ownerUserId: "other" },
+    { ...create, runtimeSessionId: "session" },
+    { ...create, robot: { status: "online" } },
+    { ...create, task: "" },
+    { ...create, objects: "x".repeat(2001) },
+  ])
+    expect(() => validateRoomRequest("POST", "/api/workcells", body)).toThrow()
+  for (const revision of [undefined, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "0"])
+    expect(() =>
+      validateRoomRequest("PATCH", `/api/workcells/${id}`, { ...create, expectedRevision: revision }),
+    ).toThrow()
+  for (const path of [
+    "/api/workcells/a",
+    `/api/workcells/${id}/messages`,
+    `/api/workcells/${id}?x=1`,
+    "https://foreign.invalid",
+  ])
+    expect(() => validateRoomRequest("PATCH", path, { ...create, expectedRevision: 0 })).toThrow()
+})
+
+test("metadata conflicts and a read-only workcell preserve the separate native account grant", async () => {
+  const { client, control } = fixture()
+  await client.signIn()
+  await until(() => client.snapshot().status === "signed_in")
+  const id = "fce739a6-cb75-4c86-b376-d4b6414f1766"
+  for (const [status, code, expected] of [
+    [409, "metadata_conflict", "METADATA_CONFLICT"],
+    [409, "idempotency_conflict", "IDEMPOTENCY_CONFLICT"],
+    [403, "read_only", "WORKCELL_READ_ONLY"],
+  ] as const) {
+    control.metadataError = { status, code }
+    await expect(
+      client.request("PATCH", `/api/workcells/${id}`, {
+        requestId: id,
+        expectedRevision: 0,
+        name: "Workcell",
+        task: "Task",
+      }),
+    ).rejects.toThrow(expected)
+    expect(client.snapshot().status).toBe("signed_in")
+    expect(control.stored).toBeDefined()
+  }
 })

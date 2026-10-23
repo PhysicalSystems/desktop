@@ -13,7 +13,7 @@ import { createStore } from "solid-js/store"
 import { For, Show } from "solid-js"
 import { modelBridge, models } from "./models"
 import { RobotModelPicker } from "../../../src/physicalsystems/robot-model-picker"
-import { cloudAccounts, conversationBridge, roomsBridge } from "./cloud-accounts"
+import { cloudAccounts, conversationBridge, roomsBridge, projectWorkcellBridge } from "./cloud-accounts"
 
 const [fixture, setFixture] = createStore({
   gate: true,
@@ -230,6 +230,9 @@ window.api = {
   physicalSystems: {
     ...((window as typeof window & { __fixtureCloud?: boolean }).__fixtureCloud
       ? { conversations: conversationBridge, rooms: roomsBridge }
+      : {}),
+    ...((window as typeof window & { __fixtureProjectLink?: boolean }).__fixtureProjectLink
+      ? { projectWorkcells: projectWorkcellBridge }
       : {}),
     models: modelBridge,
     snapshot: async () => structuredClone(state),

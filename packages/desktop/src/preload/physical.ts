@@ -18,6 +18,19 @@ install(): Promise<void>
 recover(): Promise<UpdaterState>
 } } = {
   physicalSystems: {
+    projectWorkcells: {
+      inspect: (projectId) =>
+        ipcRenderer.invoke("physicalsystems:project-workcell", { operation: "inspect", projectId }),
+      refresh: (projectId) =>
+        ipcRenderer.invoke("physicalsystems:project-workcell", { operation: "refresh", projectId }),
+      create: (projectId, metadata) =>
+        ipcRenderer.invoke("physicalsystems:project-workcell", { operation: "create", projectId, metadata }),
+      link: (projectId, workcellId) =>
+        ipcRenderer.invoke("physicalsystems:project-workcell", { operation: "link", projectId, workcellId }),
+      sync: (projectId, metadata) =>
+        ipcRenderer.invoke("physicalsystems:project-workcell", { operation: "sync", projectId, metadata }),
+      retry: (projectId) => ipcRenderer.invoke("physicalsystems:project-workcell", { operation: "retry", projectId }),
+    },
     conversations: {
       snapshot: () => ipcRenderer.invoke("physicalsystems:conversations-snapshot"),
       refresh: () => ipcRenderer.invoke("physicalsystems:conversations-refresh"),
