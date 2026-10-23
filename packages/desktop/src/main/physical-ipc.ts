@@ -14,9 +14,11 @@ import {
 import type { LegacyImportPreview } from "../../../physicalsystems/src/migration"
 import type { PhysicalCommand } from "@opencode/app/physicalsystems-types"
 import { createDesktopModelAccount } from "./model-account"
+import { createDesktopIdentity } from "./desktop-account"
 import { createDesktopWorkcellAccount } from "./workcell-account"
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { createProjectWorkcells } from "../../../physicalsystems/src/workcell-project"
+import { createWorkcellSync } from "../../../physicalsystems/src/workcell-sync"
 import { createDesktopConversationAccount } from "./conversation-account"
 import { conversationRequestFailure } from "../../../physicalsystems/src/conversation-account"
 import { workcellRequestFailure } from "../../../physicalsystems/src/workcell-account"
@@ -39,8 +41,10 @@ export function registerPhysicalIpc(deps: { physical: PhysicalHost; updater: Upd
     )
       throw new Error("INVALID_OPERATOR_SENDER")
   }
-  const models = createDesktopModelAccount()
-  const rooms = createDesktopWorkcellAccount()
+  const account = createDesktopIdentity()
+  const models = createDesktopModelAccount(account)
+  const rooms = createDesktopWorkcellAccount(account)
+  app.once("will-quit", () => account.dispose())
   // Reuse the bounded, serialized encrypted vault's atomic replacement for this small
   // metadata journal. No operator schema migration or additional SQLite runtime is needed.
   const projectJournal = createCredentialVault(join(app.getPath("userData"), "workcell-projects.enc"), safeStorage)
@@ -54,8 +58,19 @@ export function registerPhysicalIpc(deps: { physical: PhysicalHost; updater: Upd
       },
     },
   })
-  ipcMain.handle("physicalsystems:project-workcell", (event, request: unknown) => {
+  const workcellSync = createWorkcellSync({ account: rooms, projects: deps.physical, links: projectWorkcells })
+  app.once("will-quit", () => workcellSync.dispose())
+  // Restore the unified account and reconcile workcells even before any renderer mounts.
+  void account.refresh().catch(() => {})
+  ipcMain.handle("physicalsystems:project-workcell", async (event, request: unknown) => {
     assertPhysicalSender(event)
+    if (
+      request &&
+      typeof request === "object" &&
+      "operation" in request &&
+      ["inspect", "refresh"].includes(String(request.operation))
+    )
+      await workcellSync.sync()
     return projectWorkcells.dispatch(request)
   })
   ipcMain.handle("physicalsystems:workcells-snapshot", (event) => {

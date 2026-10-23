@@ -25,6 +25,7 @@ export async function createPhysicalHost(dataDir: string) {
   const vault = createCredentialVault(join(dataDir, "provider-credentials.enc"), safeStorage)
   const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>()
   let last: PhysicalSnapshot | undefined
+  const listeners = new Set<() => void>()
   let attachment: DesktopAttachment | undefined
   let attachmentQueue = Promise.resolve()
   let attachmentCleanup: Promise<void> | undefined
@@ -46,6 +47,7 @@ export async function createPhysicalHost(dataDir: string) {
   function broadcast(snapshot: PhysicalSnapshot) {
     last = snapshot
     updateAttachment()
+    for (const listener of listeners) listener()
     for (const window of BrowserWindow.getAllWindows()) {
       if (!window.isDestroyed()) window.webContents.send("physicalsystems:snapshot", snapshot)
     }
@@ -105,6 +107,10 @@ export async function createPhysicalHost(dataDir: string) {
   process.env.PHYSICALSYSTEMS_AUTH_URL = ready.url + "/auth"
   return {
     snapshot: () => last ? Promise.resolve(last) : request("snapshot") as Promise<PhysicalSnapshot>,
+    subscribe(listener: () => void) {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
     async command(command: PhysicalCommand) {
       return await request("command", { request: command }, command.type.endsWith(".stop"), ["workcell.commissioning.inspect", "workcell.commissioning.recoveryInspect", "workcell.commissioning.recoveryConfirm"].includes(command.type) ? 40_000 : 6500) as PhysicalSnapshot
     },

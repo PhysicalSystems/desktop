@@ -4,7 +4,7 @@ import type { WorkcellAccountState } from "./workcell-account-types"
 import type { ProjectWorkcellMetadata, ProjectWorkcellState, ProjectWorkcellSummary } from "./workcell-project-types"
 
 type Pending = {
-  operation: "create" | "sync"
+  operation: "create" | "sync" | "ensure"
   requestId: string
   metadata: ProjectWorkcellMetadata
   expectedRevision?: number
@@ -23,6 +23,7 @@ type Input = {
   account: {
     snapshot(): WorkcellAccountState
     generation(): number
+    automaticSyncEnabled?(): boolean
     request(method: unknown, path: unknown, body?: unknown): Promise<unknown>
   }
   projectExists(id: string): Promise<boolean>
@@ -50,7 +51,7 @@ export function createProjectWorkcells(input: Input) {
     const request = record(raw)
     if (
       !Object.keys(request).every((key) => ["operation", "projectId", "metadata", "workcellId"].includes(key)) ||
-      !["inspect", "refresh", "create", "link", "sync", "retry"].includes(String(request.operation)) ||
+      !["inspect", "refresh", "create", "link", "sync", "retry", "ensure"].includes(String(request.operation)) ||
       typeof request.projectId !== "string" ||
       !request.projectId ||
       request.projectId.length > 200
@@ -59,11 +60,17 @@ export function createProjectWorkcells(input: Input) {
     const projectId = request.projectId
     const operation = request.operation as string
     if (
-      (operation === "create" || operation === "sync") !== (request.metadata !== undefined) ||
+      ["create", "sync", "ensure"].includes(operation) !== (request.metadata !== undefined) ||
       (operation === "link") !== (request.workcellId !== undefined)
     )
       throw new Error("INVALID_PROJECT_REQUEST")
-    const metadata = request.metadata === undefined ? undefined : readProjectMetadata(request.metadata)
+    const metadata =
+      request.metadata === undefined ? undefined : readProjectMetadata(request.metadata, operation === "ensure")
+    if (
+      operation === "ensure" &&
+      (/\p{Cc}/u.test(projectId) || Object.keys(metadata!).some((key) => !["name", "task"].includes(key)))
+    )
+      throw new Error("INVALID_PROJECT_REQUEST")
     if (operation === "link" && (typeof request.workcellId !== "string" || !uuid.test(request.workcellId)))
       throw new Error("INVALID_PROJECT_REQUEST")
     const account = input.account.snapshot()
@@ -84,9 +91,12 @@ export function createProjectWorkcells(input: Input) {
       input.account.snapshot().account?.id === accountId
     const guard = () => {
       if (!current()) throw new Error("WORKCELL_SESSION_CHANGED")
+      if (operation === "ensure" && !input.account.automaticSyncEnabled?.()) throw new Error("AUTOMATIC_SYNC_DISABLED")
     }
     if (!(await input.projectExists(projectId))) return empty("unavailable", "PROJECT_NOT_FOUND")
     if (!accountId) return empty("signed_out", "WORKCELL_SIGN_IN_REQUIRED")
+    if (operation === "ensure" && !input.account.automaticSyncEnabled?.())
+      return empty("unavailable", "AUTOMATIC_SYNC_DISABLED")
     if (!current()) return empty("unavailable", "WORKCELL_SESSION_CHANGED")
     let journal: Journal
     try {
@@ -98,6 +108,15 @@ export function createProjectWorkcells(input: Input) {
     const key = createHash("sha256")
       .update(JSON.stringify([origin, accountId, projectId]))
       .digest("hex")
+    // The first durable entry is also the local ownership record. Never upload a
+    // previously associated project to a newly signed-in account automatically.
+    if (
+      !journal.entries[key] &&
+      Object.values(journal.entries).some(
+        (item) => item.origin === origin && item.projectId === projectId && item.accountId !== accountId,
+      )
+    )
+      return empty("unavailable", "PROJECT_ACCOUNT_MISMATCH")
     let entry: Entry = journal.entries[key] ?? { origin, accountId, projectId, workcell: null }
     if (entry.origin !== origin || entry.accountId !== accountId || entry.projectId !== projectId)
       return empty("unavailable", "PROJECT_LINK_STORE_UNAVAILABLE")
@@ -140,18 +159,23 @@ export function createProjectWorkcells(input: Input) {
       if (!(await input.projectExists(projectId))) throw new Error("PROJECT_NOT_FOUND")
       guard()
       const result = await input.account.request(
-        pending.operation === "create" ? "POST" : "PATCH",
-        pending.operation === "create" ? "/api/workcells" : `/api/workcells/${entry.workcell!.id}`,
+        pending.operation === "sync" ? "PATCH" : "POST",
+        pending.operation === "ensure"
+          ? "/api/workcells/ensure"
+          : pending.operation === "create"
+            ? "/api/workcells"
+            : `/api/workcells/${entry.workcell!.id}`,
         {
           requestId: pending.requestId,
           ...pending.metadata,
+          ...(pending.operation === "ensure" ? { localProjectId: projectId } : {}),
           ...(pending.operation === "sync" ? { expectedRevision: pending.expectedRevision } : {}),
         },
       )
       guard()
       const workcell = readWorkcell(record(result).workcell)
       if (pending.operation === "sync" && workcell.id !== entry.workcell?.id) throw new Error("INVALID_RESPONSE")
-      if (pending.operation === "create" && record(record(result).workcell).companyId !== null)
+      if (pending.operation !== "sync" && record(record(result).workcell).companyId !== null)
         throw new Error("INVALID_RESPONSE")
       await save({ origin, accountId, projectId, workcell })
       return state()
@@ -159,6 +183,12 @@ export function createProjectWorkcells(input: Input) {
     try {
       if (operation === "inspect") return state()
       if (operation === "retry") return await send()
+      if (operation === "ensure") {
+        guard()
+        if (entry.accessLost || entry.conflict) return state()
+        if (entry.pending) return await send()
+        if (entry.workcell) return state()
+      }
       if (operation === "refresh") {
         // A lost response must be reconciled with the same UUID and exact payload.
         if (entry.pending && !entry.conflict) return state()
@@ -184,7 +214,7 @@ export function createProjectWorkcells(input: Input) {
       if (operation === "create" && entry.workcell) return state("PROJECT_ALREADY_LINKED")
       if (operation === "sync" && (!entry.workcell || !entry.workcell.canWrite)) return state("WORKCELL_READ_ONLY")
       const pending: Pending = {
-        operation: operation as "create" | "sync",
+        operation: operation as Pending["operation"],
         requestId: randomUUID(),
         metadata: metadata!,
         ...(operation === "sync" ? { expectedRevision: entry.workcell!.metadataRevision } : {}),
@@ -236,7 +266,7 @@ export function createProjectWorkcells(input: Input) {
   }
 }
 
-export function readProjectMetadata(value: unknown): ProjectWorkcellMetadata {
+export function readProjectMetadata(value: unknown, draft = false): ProjectWorkcellMetadata {
   const data = record(value)
   if (!Object.keys(data).every((key) => metadataFields.includes(key))) throw new Error("INVALID_PROJECT_METADATA")
   for (const [key, maximum] of [
@@ -248,7 +278,11 @@ export function readProjectMetadata(value: unknown): ProjectWorkcellMetadata {
   ] as const) {
     const field = data[key]
     if (field === undefined && key !== "name" && key !== "task") continue
-    if (typeof field !== "string" || field.length > maximum || ((key === "name" || key === "task") && !field.trim()))
+    if (
+      typeof field !== "string" ||
+      field.length > maximum ||
+      ((key === "name" || (key === "task" && !draft)) && !field.trim())
+    )
       throw new Error("INVALID_PROJECT_METADATA")
   }
   return Object.fromEntries(
@@ -268,7 +302,7 @@ function readWorkcell(value: unknown): ProjectWorkcellSummary {
     typeof record(data.permissions).canPost !== "boolean"
   )
     throw new Error("INVALID_RESPONSE")
-  const metadata = readProjectMetadata(Object.fromEntries(metadataFields.map((key) => [key, data[key]])))
+  const metadata = readProjectMetadata(Object.fromEntries(metadataFields.map((key) => [key, data[key]])), true)
   if (metadataFields.some((key) => typeof data[key] !== "string")) throw new Error("INVALID_RESPONSE")
   return {
     ...(metadata as Required<ProjectWorkcellMetadata>),
@@ -314,19 +348,21 @@ function readJournal(value: unknown): Journal {
     if (entry.pending !== undefined) {
       const pending = record(entry.pending)
       if (
-        !["create", "sync"].includes(String(pending.operation)) ||
+        !["create", "sync", "ensure"].includes(String(pending.operation)) ||
         typeof pending.requestId !== "string" ||
         !uuid.test(pending.requestId) ||
         Object.keys(pending).some((key) => !["operation", "requestId", "metadata", "expectedRevision"].includes(key))
       )
         throw new Error("INVALID_PROJECT_JOURNAL")
-      readProjectMetadata(pending.metadata)
+      const metadata = readProjectMetadata(pending.metadata, pending.operation === "ensure")
+      if (pending.operation === "ensure" && Object.keys(metadata).some((key) => !["name", "task"].includes(key)))
+        throw new Error("INVALID_PROJECT_JOURNAL")
       if (
         pending.operation === "sync" &&
         (!entry.workcell || !Number.isSafeInteger(pending.expectedRevision) || Number(pending.expectedRevision) < 0)
       )
         throw new Error("INVALID_PROJECT_JOURNAL")
-      if (pending.operation === "create" && (entry.workcell !== null || pending.expectedRevision !== undefined))
+      if (pending.operation !== "sync" && (entry.workcell !== null || pending.expectedRevision !== undefined))
         throw new Error("INVALID_PROJECT_JOURNAL")
     }
   }

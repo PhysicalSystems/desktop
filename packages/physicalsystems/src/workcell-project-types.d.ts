@@ -17,7 +17,7 @@ export type ProjectWorkcellState = {
   status: "signed_out" | "local" | "linked" | "pending" | "conflict" | "unavailable"
   workcell: ProjectWorkcellSummary | null
   pendingMetadata?: ProjectWorkcellMetadata
-  pendingOperation?: "create" | "sync"
+  pendingOperation?: "create" | "sync" | "ensure"
   errorCode?: string
 }
 export type ProjectWorkcellBridge = {

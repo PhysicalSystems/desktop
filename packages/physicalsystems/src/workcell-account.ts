@@ -342,6 +342,24 @@ export function workcellRequestFailure(error: unknown) {
 
 export function validateRoomRequest(method: unknown, path: unknown, body?: unknown) {
   if (typeof path !== "string" || path.length > 1200) throw new Error("INVALID_WORKCELL_REQUEST")
+  if (method === "POST" && path === "/api/workcells/ensure") {
+    const value = record(body)
+    if (
+      Object.keys(value).every((key) => ["requestId", "localProjectId", "name", "task"].includes(key)) &&
+      typeof value.requestId === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.requestId) &&
+      typeof value.localProjectId === "string" &&
+      value.localProjectId.length > 0 &&
+      value.localProjectId.length <= 200 &&
+      !/[\u0000-\u001f\u007f]/.test(value.localProjectId) &&
+      typeof value.name === "string" &&
+      value.name.trim().length > 0 &&
+      value.name.length <= 120 &&
+      (value.task === undefined || (typeof value.task === "string" && value.task.length <= 8000))
+    )
+      return
+    throw new Error("INVALID_WORKCELL_REQUEST")
+  }
   const conversation = /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/conversations(?:\/[A-Za-z0-9_-]{1,160})?$/
   if (
     method === "GET" &&

@@ -171,9 +171,19 @@ export function ModelAccountMenu(props: { expanded: boolean }) {
         <Show when={account!.state.snapshot?.pending}>
           {(pending) => (
             <>
-              <p>{language.t("physicalsystems.account.completeSignIn")}</p>
-              <code class="ps-model-code">{pending().userCode}</code>
-              <p class="ps-model-muted">{pending().verificationUrl}</p>
+              <p>
+                {language.t(
+                  pending().userCode
+                    ? "physicalsystems.account.completeSignIn"
+                    : "physicalsystems.account.browserSignIn",
+                )}
+              </p>
+              <Show when={pending().userCode}>
+                <code class="ps-model-code">{pending().userCode}</code>
+              </Show>
+              <button onClick={() => void platform.openExternal(pending().verificationUrl)}>
+                {language.t("physicalsystems.rooms.openBrowser")}
+              </button>
               <button disabled={account!.state.pending} onClick={() => void account!.cancel()}>
                 {language.t("physicalsystems.account.cancel")}
               </button>
@@ -186,6 +196,11 @@ export function ModelAccountMenu(props: { expanded: boolean }) {
           </button>
         </Show>
         <CompanyChoice />
+        <Show when={account!.state.snapshot?.status === "signed_in" && !account!.state.snapshot?.syncEnabled}>
+          <button disabled={account!.state.pending} onClick={() => void account!.signIn()}>
+            {language.t("physicalsystems.account.enableSync")}
+          </button>
+        </Show>
         <button data-ps-company-models onClick={() => void openPortal()}>
           <Icon name="outline-square-arrow" />
           {language.t("physicalsystems.portal.label")}
