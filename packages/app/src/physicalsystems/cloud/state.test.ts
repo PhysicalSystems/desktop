@@ -13,6 +13,10 @@ function storage() {
     removeItem: (key: string) => {
       values.delete(key)
     },
+    key: (index: number) => [...values.keys()][index] ?? null,
+    get length() {
+      return values.size
+    },
     values,
   }
 }
@@ -81,7 +85,9 @@ test("prompt recovery remains scoped to account and conversation, without any cr
   await expect(first.submit("Private task")).rejects.toThrow()
   const other = createCloudConversationClient({ ...options(async () => snapshot), accountKey: "user-b" }, saved)
   expect(other.pending()).toBeUndefined()
-  expect([...saved.values.keys()]).toEqual(["physicalsystems.cloud-prompt.v1.user-a.room-1.chat-1"])
+  expect([...saved.values.keys()]).toEqual([
+    `physicalsystems.cloud-prompt.v2.user-a.room-1.chat-1.${first.pending()!.requestId}`,
+  ])
   expect([...saved.values.values()][0]).not.toContain("token")
 })
 
@@ -141,6 +147,8 @@ test("corrupt or inaccessible recovery storage never dispatches a new prompt", a
     getItem: () => "bad-json",
     setItem: () => {},
     removeItem: () => {},
+    key: () => "physicalsystems.cloud-prompt.v2.user-a.room-1.chat-1.corrupt",
+    length: 1,
   })
   await expect(client.snapshot()).resolves.toEqual(snapshot)
   await expect(client.submit("Task")).rejects.toThrow("CLOUD_PROMPT_RECOVERY_REQUIRED")
@@ -160,4 +168,58 @@ test("prompt length matches the 32,000-character gateway contract", async () => 
   expect(calls).toBe(0)
   await expect(client.submit("a".repeat(32000))).resolves.toMatchObject({ admitted: true })
   expect(calls).toBe(1)
+})
+
+test("separate AI request records survive another tab's receipt and require explicit retry after expiry", async () => {
+  const saved = storage()
+  let expired = false
+  const calls: unknown[] = []
+  const input = options(async (_method, path, body) => {
+    calls.push(body)
+    expect(path).toEndWith("/prompts")
+    if (expired) throw Object.assign(new Error("expired"), { status: 401 })
+    if ((body as { text: string }).text === "First" && calls.length === 1) throw new Error("lost receipt")
+    return { ...(body as object), admitted: true }
+  })
+  const first = createCloudConversationClient(input, saved)
+  const second = createCloudConversationClient(input, saved)
+  await expect(first.submit("First")).rejects.toThrow("lost receipt")
+  const pending = first.pending()!
+  await second.submit("Second")
+  expect(saved.length).toBe(1)
+  expect(first.pending()).toEqual(pending)
+  expired = true
+  await expect(first.submit("First")).rejects.toThrow("expired")
+  first.dispose()
+  second.dispose()
+  const recovered = createCloudConversationClient(input, saved)
+  expect(recovered.pending()).toEqual(pending)
+  expect(calls).toHaveLength(3)
+  expired = false
+  await recovered.submit("First")
+  expect(calls.at(-1)).toEqual(calls[0])
+  expect(saved.length).toBe(0)
+})
+
+test("legacy session-only AI receipts migrate to durable storage without dispatching AI", () => {
+  const accountKey = `migration-${crypto.randomUUID()}`
+  const request = { requestId: crypto.randomUUID(), text: "Explicit retry only" }
+  const legacy = `physicalsystems.cloud-prompt.v1.${accountKey}.room-1.chat-1`
+  const durable = `physicalsystems.cloud-prompt.v2.${accountKey}.room-1.chat-1.${request.requestId}`
+  sessionStorage.setItem(legacy, JSON.stringify(request))
+  try {
+    const client = createCloudConversationClient({
+      ...options(async () => {
+        throw new Error("Must not execute")
+      }),
+      accountKey,
+    })
+    expect(client.pending()).toEqual(request)
+    expect(sessionStorage.getItem(legacy)).toBeNull()
+    expect(JSON.parse(localStorage.getItem(durable)!)).toEqual(request)
+    client.dispose()
+  } finally {
+    sessionStorage.removeItem(legacy)
+    localStorage.removeItem(durable)
+  }
 })

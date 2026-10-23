@@ -127,6 +127,10 @@ test("the renderer can only address bounded cloud conversation operations", () =
     `${conversationPath}/runtime/`,
     `${conversationPath}/events?after=0&limit=101`,
     `${conversationPath}/events?after=0&limit=10&token=x`,
+    `${conversationPath}/messages?before=0&limit=100`,
+    `${conversationPath}/messages?before=1&limit=101`,
+    `/api/workcells/${roomId}/conversations?limit=201`,
+    `/api/workcells/${roomId}/conversations?cursor=x&limit=100&token=x`,
   ])
     expect(() => validateConversationRequest("GET", path)).toThrow()
   for (const path of [
@@ -136,6 +140,9 @@ test("the renderer can only address bounded cloud conversation operations", () =
     conversationPath,
     `${conversationPath}/runtime`,
     `${conversationPath}/events?after=0&limit=100`,
+    `${conversationPath}/messages?before=50&limit=100`,
+    `/api/workcells/${roomId}/conversations?limit=100`,
+    `/api/workcells/${roomId}/conversations?cursor=page_2&limit=100`,
   ])
     expect(() => validateConversationRequest("GET", path)).not.toThrow()
   expect(() => validateConversationRequest("GET", conversationPath, {})).toThrow()
@@ -239,7 +246,7 @@ test("a removed room fails closed without discarding a valid account for other r
   await expect(client.request("GET", `/api/workcells/${roomId}`)).rejects.toThrow("CONVERSATION_ACCESS_REVOKED")
   expect(client.snapshot().status).toBe("signed_in")
 })
-test("legacy workcell renderer authority cannot address cloud conversations", () => {
+test("workcell renderer authority cannot address AI runtime or prompts", () => {
   expect(() => validateRoomRequest("GET", `${conversationPath}/runtime`)).toThrow()
   expect(() =>
     validateRoomRequest("POST", `${conversationPath}/prompts`, { requestId: crypto.randomUUID(), text: "Hi" }),

@@ -1,32 +1,267 @@
-.ps-native-conversations .ps-native-conversation-create {
+.ps-native-conversations {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  color: var(--text-base);
+  background: var(--background-base);
+  font-size: 13px;
+  line-height: var(--line-height-base, 20px);
+}
+.ps-native-conversations[data-sidebar-open="false"] {
+  grid-template-columns: 48px minmax(0, 1fr);
+}
+.ps-shared-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border-weak-base);
+  background: var(--background-weak);
+}
+.ps-native-conversations button {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-weak-base);
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.ps-native-conversations button:hover {
+  background: var(--background-strong);
+}
+.ps-native-conversations button:focus-visible {
+  outline: 2px solid var(--text-interactive-base);
+  outline-offset: 1px;
+}
+.ps-native-conversations button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ps-shared-sidebar .ps-heading {
+  padding: 0 4px 14px;
+}
+.ps-shared-sidebar .ps-heading strong {
+  flex: 1;
+}
+.ps-shared-sidebar .ps-heading button {
+  border: 0;
+  padding-inline: 7px;
+}
+.ps-shared-links,
+.ps-shared-sidebar-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ps-shared-sidebar button {
+  width: 100%;
+  border-color: transparent;
+}
+.ps-shared-sidebar svg {
+  flex-shrink: 0;
+}
+.ps-shared-workcells {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 24px;
+}
+.ps-shared-workcells > p {
+  padding-inline: 10px;
+}
+.ps-shared-workcell-name > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-shared-workcell-name {
+  font-weight: 600;
+}
+.ps-shared-status {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-weak);
+}
+.ps-shared-status[data-status="online"] {
+  background: var(--icon-success-base, #3b9c6e);
+}
+.ps-shared-status[data-status="offline"] {
+  background: var(--icon-critical-base, #c95f5f);
+}
+.ps-shared-conversation-list {
+  margin-left: 14px;
+}
+.ps-shared-conversation-list button {
+  font-size: 12px;
+  line-height: var(--line-height-compact, 16px);
+}
+.ps-shared-conversation-list button > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-shared-conversation-list [aria-current="page"] {
+  background: var(--background-strong);
+}
+.ps-shared-sidebar-footer {
+  margin-top: auto;
+  padding-top: 12px;
+}
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-sidebar {
+  padding-inline: 4px;
+}
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-sidebar-footer > button,
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-account summary {
+  justify-content: center;
+  padding-inline: 4px;
+}
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-account-menu {
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 0;
+  width: 240px;
+  max-width: calc(100vw - 64px);
+  padding: 8px;
+  border: 1px solid var(--border-weak-base);
+  border-radius: 7px;
+  background: var(--background-base);
+  z-index: 20;
+}
+.ps-shared-account {
+  position: relative;
+}
+.ps-shared-account summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  padding: 9px;
+  list-style: none;
+  border-radius: 7px;
+}
+.ps-shared-account[open] {
+  border: 1px solid var(--border-weak-base);
+  border-radius: 7px;
+}
+.ps-shared-account p {
+  margin: 0;
+  padding: 4px 10px;
+  overflow-wrap: anywhere;
+  color: var(--text-weak);
+}
+.ps-shared-content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ps-shared-content > .ps-error {
+  margin: 12px 20px;
+}
+.ps-shared-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border-weak-base);
+}
+.ps-shared-context > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ps-shared-context .ps-muted {
+  font-size: 12px;
+}
+.ps-shared-welcome {
+  max-width: 660px;
+  width: 100%;
+  margin: auto;
+  padding: 32px;
+}
+.ps-shared-welcome h1 {
+  font-size: 30px;
+  line-height: 1.3;
+  margin-bottom: 12px;
+}
+.ps-shared-welcome p {
+  margin: 12px 0 20px;
+  color: var(--text-weak);
+}
+.ps-shared-welcome button {
+  margin: 0 8px 8px 0;
+}
+.ps-shared-content > .ps-cloud-root {
+  flex: 1;
+  min-height: 0;
+}
+.ps-native-conversation-create {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
   gap: 12px;
-  margin: 0 0 20px;
+  padding: 28px;
+}
+.ps-native-conversation-create h2 {
+  width: 100%;
+  font-size: 20px;
 }
 .ps-native-conversation-create label {
   display: grid;
   gap: 5px;
-  font-size: 12px;
   max-width: 100%;
 }
 .ps-native-conversation-create input,
-.ps-native-conversation-create select {
+.ps-native-conversation-create select,
+.ps-native-conversation-create textarea {
   border: 1px solid var(--border-base);
   background: var(--background-base);
   border-radius: 6px;
-  padding: 7px 9px;
+  padding: 8px 10px;
   max-width: 100%;
   color: inherit;
 }
-.ps-native-conversation-create input {
-  min-width: 180px;
+.ps-native-conversation-create textarea {
+  min-width: 240px;
+  min-height: 100px;
+  resize: vertical;
 }
-.ps-native-conversations .ps-cloud-room-toolbar label {
-  min-width: 0;
-  max-width: 100%;
+@media (max-width: 720px) {
+  .ps-native-conversations {
+    grid-template-columns: 200px minmax(0, 1fr);
+  }
+  .ps-shared-context {
+    align-items: flex-start;
+    padding: 12px;
+  }
+  .ps-shared-context .ps-muted {
+    display: none;
+  }
+  .ps-native-conversation-create {
+    padding: 16px;
+  }
 }
-.ps-native-conversations .ps-cloud-room-toolbar select {
-  max-width: min(320px, 100%);
+@media (max-width: 480px) {
+  .ps-native-conversations[data-sidebar-open="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ps-native-conversations[data-sidebar-open="true"] .ps-shared-content {
+    display: none;
+  }
+  .ps-shared-welcome {
+    padding: 20px;
+  }
 }

@@ -10,8 +10,16 @@ import { startDeepLinks } from "./startup/deep-links"
 import { requireRendererRoot } from "./startup/root"
 import { desktopVersion } from "./startup/sentry"
 import { conversationAccountBridge } from "../shared/conversation-account"
+import { workcellAccountBridge } from "../shared/workcell-account"
 
-window.api = { ...api, physicalSystems: { ...window.electron.physicalSystems, conversations: conversationAccountBridge(window.electron.physicalSystems.conversations) } }
+window.api = {
+  ...api,
+  physicalSystems: {
+    ...window.electron.physicalSystems,
+    conversations: conversationAccountBridge(window.electron.physicalSystems.conversations),
+    rooms: workcellAccountBridge(window.electron.physicalSystems.rooms),
+  },
+}
 
 const root = requireRendererRoot()
 
@@ -22,4 +30,3 @@ startDesktopMenu(api)
 startDeepLinks(api)
 
 render(() => <DesktopApp api={api} version={version} />, root)
-
