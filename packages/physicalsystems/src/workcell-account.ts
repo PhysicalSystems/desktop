@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash, randomBytes } from "node:crypto"
 import type { WorkcellAccountState } from "./workcell-account-types"
+import { readProjectMetadata } from "./workcell-project"
 
 export const WORKCELL_SCOPE = "workcells:read workcells:write"
 type Session = {
@@ -74,9 +75,10 @@ export function createWorkcellAccount(input: Input) {
     })
     if (response.status === 404 && /^\/api\/workcells\/[A-Za-z0-9_-]+(?:\/|$)/.test(path))
       throw new Error("WORKCELL_ACCESS_REVOKED")
+    if (response.status === 403 && options.method === "PATCH") throw new Error("WORKCELL_READ_ONLY")
     if ([401, 403, 410].includes(response.status))
       throw new Error(response.status === 410 ? "SIGN_IN_EXPIRED" : "ACCESS_REVOKED")
-    if (!response.ok) throw new Error("UNAVAILABLE")
+    if (!response.ok && response.status !== 409) throw new Error("UNAVAILABLE")
     if (response.status === 204) return {}
     const reader = response.body?.getReader()
     if (!reader) throw new Error("INVALID_RESPONSE")
@@ -91,7 +93,13 @@ export function createWorkcellAccount(input: Input) {
         if (bytes > 2000000) throw new Error("INVALID_RESPONSE")
         body += decoder.decode(part.value, { stream: true })
       }
-      return record(JSON.parse(body + decoder.decode()))
+      const value = record(JSON.parse(body + decoder.decode()))
+      if (!response.ok) {
+        if (value.code === "metadata_conflict") throw new Error("METADATA_CONFLICT")
+        if (value.code === "idempotency_conflict") throw new Error("IDEMPOTENCY_CONFLICT")
+        throw new Error("UNAVAILABLE")
+      }
+      return value
     } finally {
       await reader.cancel().catch(() => {})
       reader.releaseLock()
@@ -277,6 +285,7 @@ export function createWorkcellAccount(input: Input) {
   }
   return {
     snapshot,
+    generation: () => epoch,
     refresh,
     signIn,
     cancelSignIn,
@@ -298,6 +307,27 @@ export function validateRoomRequest(method: unknown, path: unknown, body?: unkno
     /^\/api\/workcells(?:\/[A-Za-z0-9_-]{1,160}(?:\/events\?after=\d{1,15}&limit=(?:[1-9]\d?|100))?)?$/.test(path)
   )
     return
+  if (
+    (method === "POST" && path === "/api/workcells") ||
+    (method === "PATCH" &&
+      /^\/api\/workcells\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(path))
+  ) {
+    const value = record(body)
+    if (
+      typeof value.requestId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.requestId)
+    )
+      throw new Error("INVALID_WORKCELL_REQUEST")
+    const { requestId, expectedRevision, ...metadata } = value
+    if (
+      method === "PATCH"
+        ? !Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0
+        : expectedRevision !== undefined
+    )
+      throw new Error("INVALID_WORKCELL_REQUEST")
+    readProjectMetadata(metadata)
+    return
+  }
   if (method === "POST" && /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/messages$/.test(path)) {
     const value = record(body)
     if (

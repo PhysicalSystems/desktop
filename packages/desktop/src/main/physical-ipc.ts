@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
-import { app, BrowserWindow, dialog, ipcMain } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, safeStorage } from "electron"
 import type { IpcMainInvokeEvent } from "electron"
 import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
 import { createLeLabCameraClient } from "../../../physicalsystems/src/lelab"
@@ -10,6 +10,8 @@ import type { LegacyImportPreview } from "../../../physicalsystems/src/migration
 import type { PhysicalCommand } from "@opencode/app/physicalsystems-types"
 import { createDesktopModelAccount } from "./model-account"
 import { createDesktopWorkcellAccount } from "./workcell-account"
+import { createCredentialVault } from "../../../physicalsystems/src/credentials"
+import { createProjectWorkcells } from "../../../physicalsystems/src/workcell-project"
 import { createDesktopConversationAccount } from "./conversation-account"
 import { conversationRequestFailure } from "../../../physicalsystems/src/conversation-account"
 import type { PhysicalHost } from "./physical"
@@ -24,6 +26,23 @@ export function registerPhysicalIpc(deps: { physical: PhysicalHost; updater: Upd
   }
   const models = createDesktopModelAccount()
   const rooms = createDesktopWorkcellAccount()
+  // Reuse the bounded, serialized encrypted vault's atomic replacement for this small
+  // metadata journal. No operator schema migration or additional SQLite runtime is needed.
+  const projectJournal = createCredentialVault(join(app.getPath("userData"), "workcell-projects.enc"), safeStorage)
+  const projectWorkcells = createProjectWorkcells({
+    account: rooms,
+    projectExists: async (id) => (await deps.physical.snapshot()).projects.some((project) => project.id === id),
+    store: {
+      read: async () => ((await projectJournal.request("all", {})) as Record<string, unknown>).journal ?? null,
+      write: async (journal) => {
+        await projectJournal.request("set", { key: "journal", info: journal })
+      },
+    },
+  })
+  ipcMain.handle("physicalsystems:project-workcell", (event, request: unknown) => {
+    assertPhysicalSender(event)
+    return projectWorkcells.dispatch(request)
+  })
   ipcMain.handle("physicalsystems:workcells-snapshot", (event) => { assertPhysicalSender(event); return rooms.snapshot() })
   ipcMain.handle("physicalsystems:workcells-refresh", (event) => { assertPhysicalSender(event); return rooms.refresh() })
   ipcMain.handle("physicalsystems:workcells-sign-in", (event) => { assertPhysicalSender(event); return rooms.signIn() })

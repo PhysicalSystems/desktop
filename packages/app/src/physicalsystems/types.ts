@@ -420,6 +420,7 @@ export type PhysicalCommand =
     } & PhysicalScope)
 
 export type PhysicalSystemsBridge = {
+  projectWorkcells?: import("../../../physicalsystems/src/workcell-project-types").ProjectWorkcellBridge
   conversations?: import("../../../physicalsystems/src/conversation-account-types").ConversationAccountBridge
   rooms?: import("../../../physicalsystems/src/workcell-account-types").WorkcellAccountBridge
   models?: import("../../../physicalsystems/src/model-account-types").ModelAccountBridge
