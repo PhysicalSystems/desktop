@@ -33,6 +33,7 @@ beforeAll(async () => {
     configFile: false,
     root: fixture,
     logLevel: "error",
+    worker: { format: "es" },
     plugins: [
       {
         name: "physicalsystems-project-fixture-contexts",
@@ -56,7 +57,7 @@ beforeAll(async () => {
   const output = (Array.isArray(result) ? result[0] : result).output.find((item) => item.type === "chunk")
   if (!output || output.type !== "chunk") throw new Error("Fixture compilation did not produce JavaScript")
   code = output.code
-})
+}, 30000)
 
 afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
@@ -89,6 +90,8 @@ async function mount(empty = false, failProjectCreate = false) {
     cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
     atob,
     btoa,
+    TextEncoder,
+    TextDecoder,
     queueMicrotask,
     structuredClone,
   })
