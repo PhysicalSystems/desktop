@@ -13,15 +13,25 @@ var __export = (target, all) => {
     });
 };
 
-// ../harness-gripper-check/packages/operator-service/src/service.js
+// ../physicalsystems/packages/desktop/src/connections.js
+var exports_connections = {};
+__export(exports_connections, {
+  attachLocal: () => attachLocal,
+  attachSSH: () => attachSSH,
+  buildSshArgs: () => buildSshArgs,
+  normalizeLocalEndpoint: () => normalizeLocalEndpoint,
+  sshFailure: () => sshFailure
+});
+
+// ../physicalsystems/packages/operator-service/src/service.js
 import { createHash as createHash8, randomBytes, randomUUID as randomUUID5 } from "node:crypto";
 import { mkdir as mkdir2, lstat } from "node:fs/promises";
 import path4 from "node:path";
 
-// ../harness-gripper-check/packages/cli/src/harness/experiments/controller.js
+// ../physicalsystems/packages/cli/src/harness/experiments/controller.js
 import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
-// ../harness-gripper-check/packages/cli/src/harness/experiments/fixture.js
+// ../physicalsystems/packages/cli/src/harness/experiments/fixture.js
 var experimentFixture = Object.freeze({
   id: "synthetic-alignment-v1",
   name: "Synthetic alignment",
@@ -56,7 +66,7 @@ function runSyntheticTrial({ offsetMm, signal, stepMs }) {
   });
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/experiments/storage.js
+// ../physicalsystems/packages/cli/src/harness/experiments/storage.js
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, parse, resolve } from "node:path";
@@ -180,7 +190,7 @@ function createExperimentStore({ storageDir, sessionId }) {
   return { read, write, release };
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/experiments/controller.js
+// ../physicalsystems/packages/cli/src/harness/experiments/controller.js
 var TERMINAL = new Set(["COMPLETED", "STOPPED", "INTERRUPTED", "FAILED"]);
 var PHASES = new Set(["PROPOSED", "READY", "RUNNING", "OUTCOME_UNKNOWN", ...TERMINAL]);
 var MAX_HISTORY = 8;
@@ -323,10 +333,10 @@ function createExperimentController({ sessionId, storageDir, now = Date.now, tri
       if (state.current) {
         state.current.phase = "OUTCOME_UNKNOWN";
         state.current.recoveryReason = "Experiment evidence could not be saved. Preserve local files, repair storage, then retry Stop after the synthetic runner has settled. No outcome is assumed.";
-        const trial2 = state.current.trials.find((item) => item.id === active?.trialId);
-        if (trial2) {
-          trial2.status = "OUTCOME_UNKNOWN";
-          trial2.result = null;
+        const trial = state.current.trials.find((item) => item.id === active?.trialId);
+        if (trial) {
+          trial.status = "OUTCOME_UNKNOWN";
+          trial.result = null;
         }
       }
       active?.controller.abort();
@@ -340,10 +350,10 @@ function createExperimentController({ sessionId, storageDir, now = Date.now, tri
       const unknown = state.current.phase === "OUTCOME_UNKNOWN";
       state.current.phase = unknown ? "OUTCOME_UNKNOWN" : "INTERRUPTED";
       state.current.recoveryReason = unknown ? "A previous simulated trial did not confirm cleanup. This experiment remains blocked; inspect its evidence. No trial was replayed." : "This conversation was reopened. The previous approval was not resumed and no trial was replayed. Propose a new experiment to continue.";
-      for (const trial2 of state.current.trials)
-        if (trial2.status === "RUNNING") {
-          trial2.status = unknown ? "OUTCOME_UNKNOWN" : "INTERRUPTED";
-          trial2.finishedAt = timestamp();
+      for (const trial of state.current.trials)
+        if (trial.status === "RUNNING") {
+          trial.status = unknown ? "OUTCOME_UNKNOWN" : "INTERRUPTED";
+          trial.finishedAt = timestamp();
         }
       for (const request of state.requests)
         if (request.status === "PENDING")
@@ -445,10 +455,10 @@ function createExperimentController({ sessionId, storageDir, now = Date.now, tri
     owner.interrupted ||= kind;
     kind = owner.interrupted;
     const experiment = state.current;
-    const trial2 = experiment.trials.find((item) => item.id === owner.trialId);
-    trial2.status = builtin ? kind === "stop" ? "STOPPED" : "FAILED" : "OUTCOME_UNKNOWN";
-    trial2.finishedAt = timestamp();
-    trial2.error = kind === "stop" ? "Stop requested. No successful measurement is assumed." : "The simulated trial exceeded its time limit. No successful measurement is assumed.";
+    const trial = experiment.trials.find((item) => item.id === owner.trialId);
+    trial.status = builtin ? kind === "stop" ? "STOPPED" : "FAILED" : "OUTCOME_UNKNOWN";
+    trial.finishedAt = timestamp();
+    trial.error = kind === "stop" ? "Stop requested. No successful measurement is assumed." : "The simulated trial exceeded its time limit. No successful measurement is assumed.";
     experiment.phase = builtin ? kind === "stop" ? "STOPPED" : "FAILED" : "OUTCOME_UNKNOWN";
     experiment.stopStatus = builtin ? "CONFIRMED" : "UNCONFIRMED";
     settleRequest(owner.requestId);
@@ -483,8 +493,8 @@ function createExperimentController({ sessionId, storageDir, now = Date.now, tri
     experiment.phase = "RUNNING";
     state.requests.push({ id: requestId, kind: "trial", fingerprint: digest({ kind: "trial", experimentId, offsetMm }), status: "PENDING", experimentId });
     const owner = { controller: new AbortController, trialId: record.id, requestId, interrupted: null, timer: null, resolve: null, promise: null };
-    owner.promise = new Promise((resolve2) => {
-      owner.resolve = resolve2;
+    owner.promise = new Promise((resolve) => {
+      owner.resolve = resolve;
     });
     active = owner;
     try {
@@ -614,7 +624,7 @@ function createExperimentController({ sessionId, storageDir, now = Date.now, tri
     }
   };
 }
-// ../harness-gripper-check/packages/cli/src/harness/experiments/tools.js
+// ../physicalsystems/packages/cli/src/harness/experiments/tools.js
 var EXPERIMENT_TOOL_ALLOWLIST = Object.freeze([
   "inspect_local_experiment",
   "propose_local_experiment",
@@ -699,10 +709,10 @@ function createExperimentTools({ getController, defineTool = (value) => value })
     }
   }));
 }
-// ../harness-gripper-check/packages/cli/src/harness/workcell-controller.js
+// ../physicalsystems/packages/cli/src/harness/workcell-controller.js
 import { createHash as createHash5, randomUUID as randomUUID4 } from "node:crypto";
 
-// ../harness-gripper-check/packages/cli/src/auth/redact.js
+// ../physicalsystems/packages/cli/src/auth/redact.js
 var SECRET_KEYS = new Set([
   "accesstoken",
   "refreshtoken",
@@ -734,10 +744,10 @@ function safeErrorMessage(error) {
   return redactText(error);
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/execution-controller.js
+// ../physicalsystems/packages/cli/src/harness/execution-controller.js
 import { randomUUID as randomUUID3 } from "node:crypto";
 
-// ../harness-gripper-check/packages/cli/src/physical/execution-contracts.js
+// ../physicalsystems/packages/cli/src/physical/execution-contracts.js
 import { createHash as createHash3 } from "node:crypto";
 var EXECUTION_STATUS_VERSION = "physicalsystems-execution-status-v1";
 var PHYSICAL_RUN_VERSION = "physicalsystems-run-v1";
@@ -992,7 +1002,7 @@ function normalizeExecutionSnapshot(value, expectedDigest) {
   return freeze(value);
 }
 
-// ../harness-gripper-check/packages/cli/src/physical/route-contracts.js
+// ../physicalsystems/packages/cli/src/physical/route-contracts.js
 import { createHash as createHash4 } from "node:crypto";
 var PHYSICAL_CAPABILITY_CATALOG_VERSION = "experimental-physical-capability-catalog-v1";
 var PHYSICAL_ROUTE_REQUEST_VERSION = "experimental-physical-route-preview-request-v1";
@@ -1327,11 +1337,11 @@ function normalizePhysicalRouteReceipt(value, expectedRequest = null) {
     physicalExecutionAuthorized: false
   });
 }
-function physicalRouteReceiptPath(digest2) {
-  return `/v2/physical/routes/${routeDigest(digest2).slice("sha256:".length)}`;
+function physicalRouteReceiptPath(digest) {
+  return `/v2/physical/routes/${routeDigest(digest).slice("sha256:".length)}`;
 }
 
-// ../harness-gripper-check/packages/cli/src/physical/node-client.js
+// ../physicalsystems/packages/cli/src/physical/node-client.js
 var DEFAULT_PHYSICAL_NODE_URL = "http://127.0.0.1:8876";
 var DEFAULT_TIMEOUT_MS = 5000;
 var MAX_RESPONSE_BYTES = 256 * 1024;
@@ -1433,15 +1443,15 @@ function normalizeDevice(value, index) {
   return result;
 }
 function normalizeSummary(value, devices) {
-  const summary2 = object3(value, "physical discovery summary");
+  const summary = object3(value, "physical discovery summary");
   const result = {};
   for (const name of ["configured", "detected", "driverReady", "calibrationReady", "ready"]) {
-    if (!Number.isInteger(summary2[name]) || summary2[name] < 0 || summary2[name] > devices.length) {
+    if (!Number.isInteger(summary[name]) || summary[name] < 0 || summary[name] > devices.length) {
       throw new Error(`physical discovery summary.${name} is invalid`);
     }
-    result[name] = summary2[name];
+    result[name] = summary[name];
   }
-  result.allReady = bool(summary2.allReady, "physical discovery summary.allReady");
+  result.allReady = bool(summary.allReady, "physical discovery summary.allReady");
   const expected = {
     configured: devices.length,
     detected: devices.filter((device) => device.detected).length,
@@ -1524,9 +1534,9 @@ function normalizeCandidate(value, index) {
   if (Object.keys(properties).length > 32) {
     throw new Error(`physical candidate ${index}.properties must be bounded`);
   }
-  for (const [key, value2] of Object.entries(properties)) {
+  for (const [key, value] of Object.entries(properties)) {
     identifier2(key, `physical candidate ${index}.properties key`);
-    text2(value2, `physical candidate ${index}.properties.${key}`, 1024);
+    text2(value, `physical candidate ${index}.properties.${key}`, 1024);
   }
   const providerId = identifier2(candidate.providerId, `physical candidate ${index}.providerId`);
   text2(candidate.observedIdentity, `physical candidate ${index}.observedIdentity`, 1024);
@@ -1553,7 +1563,7 @@ function normalizeCandidate(value, index) {
   };
 }
 function candidateSummary(devices) {
-  const summary2 = {
+  const summary = {
     configured: devices.filter((device) => device.configured).length,
     detected: devices.length,
     driverReady: devices.filter((device) => device.driverReady).length,
@@ -1561,8 +1571,8 @@ function candidateSummary(devices) {
     ready: devices.filter((device) => device.ready).length
   };
   return {
-    ...summary2,
-    allReady: devices.length > 0 && summary2.ready === devices.length
+    ...summary,
+    allReady: devices.length > 0 && summary.ready === devices.length
   };
 }
 function normalizePhysicalCandidateSnapshot(value) {
@@ -1575,8 +1585,8 @@ function normalizePhysicalCandidateSnapshot(value) {
   if (new Set(devices.map((device) => device.deviceId)).size !== devices.length) {
     throw new Error("physical candidate IDs must be distinct");
   }
-  const providers = array2(snapshot.providers, "physical candidate snapshot.providers", 64).map((value2, index) => {
-    const provider = object3(value2, `physical candidate provider ${index}`);
+  const providers = array2(snapshot.providers, "physical candidate snapshot.providers", 64).map((value, index) => {
+    const provider = object3(value, `physical candidate provider ${index}`);
     const providerId = identifier2(provider.providerId, `physical candidate provider ${index}.providerId`);
     const status = oneOf(provider.status, PROVIDER_STATUSES, `physical candidate provider ${index}.status`);
     if (!Number.isInteger(provider.candidateCount) || provider.candidateCount < 0 || provider.candidateCount > devices.length) {
@@ -1666,8 +1676,8 @@ function normalizeInterpretation(value) {
     }
     normalized.workflowIntent = clone2(workflowIntent);
   }
-  normalized.requiredOperations = array2(interpretation.requiredOperations, "physical intent requiredOperations", 8).map((value2, index) => {
-    const operation = object3(value2, `physical intent requiredOperations[${index}]`);
+  normalized.requiredOperations = array2(interpretation.requiredOperations, "physical intent requiredOperations", 8).map((value, index) => {
+    const operation = object3(value, `physical intent requiredOperations[${index}]`);
     return {
       ...clone2(operation),
       deviceRole: identifier2(operation.deviceRole, `physical intent requiredOperations[${index}].deviceRole`),
@@ -1904,7 +1914,7 @@ function createPhysicalNodeClient({
   });
 }
 
-// ../harness-gripper-check/packages/cli/src/physical/execution-client.js
+// ../physicalsystems/packages/cli/src/physical/execution-client.js
 var ROOT = "/v2/physical/execution";
 var MAX_BYTES2 = 2 * 1024 * 1024;
 
@@ -1990,9 +2000,9 @@ function createExecutionClient({ baseUrl, token, fetchImpl = globalThis.fetch } 
       executionRunId(runId);
       return request(`/runs/${runId}/receipt`, undefined, (value) => normalizePhysicalRunReceipt(value, { ...expected, runId }));
     },
-    snapshot(digest3) {
-      executionHash(digest3);
-      return request(`/snapshots/${digest3}`, undefined, (value) => normalizeExecutionSnapshot(value, digest3));
+    snapshot(digest) {
+      executionHash(digest);
+      return request(`/snapshots/${digest}`, undefined, (value) => normalizeExecutionSnapshot(value, digest));
     },
     prepare(body, expected = {}) {
       executionFields(body, ["contractVersion", "routeReceiptDigest", "configurationId", "expectedConfigurationDigest", "idempotencyKey"]);
@@ -2038,7 +2048,7 @@ function createExecutionClient({ baseUrl, token, fetchImpl = globalThis.fetch } 
   });
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/execution-evidence.js
+// ../physicalsystems/packages/cli/src/harness/execution-evidence.js
 var CHECKS = [
   "configuredThresholds",
   "producerContract",
@@ -2059,11 +2069,11 @@ var CHECKS = [
 var state = (value) => value === true ? "met" : value === false ? "violated" : "unknown";
 var scalar2 = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
 var array3 = (value) => Array.isArray(value) ? value.slice(0, 8) : [];
-function projectExecutionObservation(observation, { stage, at = null, mode: mode2 } = {}) {
+function projectExecutionObservation(observation, { stage, at = null, mode } = {}) {
   if (!observation || typeof observation !== "object" || Array.isArray(observation))
     return null;
   const evidence = observation.evidence;
-  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence) || evidence.mode !== mode2)
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence) || evidence.mode !== mode)
     return null;
   const checks = evidence.readinessChecks || {}, details = evidence.readinessCheckDetails || {};
   const projected = CHECKS.filter((name) => Object.hasOwn(checks, name)).map((name) => {
@@ -2106,7 +2116,7 @@ function projectExecutionObservation(observation, { stage, at = null, mode: mode
   return {
     stage,
     at,
-    mode: mode2,
+    mode,
     historical: true,
     preconditions: state(observation.preconditionsMet),
     verified: state(observation.verified),
@@ -2115,7 +2125,7 @@ function projectExecutionObservation(observation, { stage, at = null, mode: mode
   };
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/execution-controller.js
+// ../physicalsystems/packages/cli/src/harness/execution-controller.js
 var TERMINAL2 = new Set(["VERIFIED_SUCCESS", "FAILED", "CANCELLED", "BLOCKED"]);
 var MAX_READ_AGE = 5000;
 var needsResolution = (run) => !TERMINAL2.has(run.phase) || run.stopStatus === "STOP_UNCONFIRMED";
@@ -2281,10 +2291,10 @@ function createExecutionController({
         error = nextStatus.reason;
         observedAt = now();
         emit();
-      } catch (failure2) {
+      } catch (failure) {
         if (!disposed) {
           availability = "unavailable";
-          error = status?.availability === "unavailable" && status.reason ? status.reason : executionFailureMessage(failure2, "Execution status is unavailable. No outcome is assumed; Stop remains available for the known run.");
+          error = status?.availability === "unavailable" && status.reason ? status.reason : executionFailureMessage(failure, "Execution status is unavailable. No outcome is assumed; Stop remains available for the known run.");
           emit();
         }
       }
@@ -2304,21 +2314,21 @@ function createExecutionController({
     if (kind === "stop") {
       executionFields(body, ["runId", "reason"]);
       executionRunId(body.runId);
-      const expected2 = run?.runId === body.runId ? run : runs.find((item) => item.runId === body.runId);
-      if (!expected2 || !needsResolution(expected2) || stopPending)
+      const expected = run?.runId === body.runId ? run : runs.find((item) => item.runId === body.runId);
+      if (!expected || !needsResolution(expected) || stopPending)
         throw new Error("Request Stop for a known unresolved run");
       if (body.reason !== "operator-requested-stop")
         throw new TypeError("Unsupported stop reason");
       stopPending = true;
       emit();
       try {
-        const value = await client.stop(expected2.runId, { reason: body.reason }, expected2);
-        assertRunMatches(value, expected2);
+        const value = await client.stop(expected.runId, { reason: body.reason }, expected);
+        assertRunMatches(value, expected);
         if (!disposed) {
-          if (run?.runId === expected2.runId)
+          if (run?.runId === expected.runId)
             acceptRun(value);
           else {
-            const latest = runs.find((item) => item.runId === expected2.runId);
+            const latest = runs.find((item) => item.runId === expected.runId);
             if (!latest || value.revision >= latest.revision) {
               if (latest)
                 assertRunMatches(value, latest);
@@ -2417,12 +2427,12 @@ function createExecutionController({
           receipt = null;
           error = null;
         }
-      } catch (failure2) {
+      } catch (failure) {
         if (!disposed) {
           availability = "unavailable";
-          error = executionFailureMessage(failure2, "Preparation was not confirmed. Refresh run history before attempting another preparation.");
+          error = executionFailureMessage(failure, "Preparation was not confirmed. Refresh run history before attempting another preparation.");
         }
-        throw new Error(executionFailureMessage(failure2, "Preparation was not confirmed; inspect run history, do not blindly repeat"));
+        throw new Error(executionFailureMessage(failure, "Preparation was not confirmed; inspect run history, do not blindly repeat"));
       } finally {
         actionPending = null;
         emit();
@@ -2492,7 +2502,7 @@ function createExecutionController({
   };
 }
 
-// ../harness-gripper-check/packages/cli/src/physical/commissioning-client.js
+// ../physicalsystems/packages/cli/src/physical/commissioning-client.js
 var GRIPPER_CHECK_VERSION = "physicalsystems-gripper-check-v1";
 var GRIPPER_JOINTS = Object.freeze(["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]);
 var ROOT2 = "/v2/physical/commissioning/gripper";
@@ -2594,14 +2604,14 @@ function normalizeGripperCheck(value) {
     if (i.gripperPosition !== null)
       number(i.gripperPosition);
     assert(Array.isArray(i.checks) && i.checks.length <= 64);
-    i.checks.forEach((check2) => {
-      executionFields(check2, ["code", "state", "message"]);
-      executionText(check2.code, 128);
-      assert(["met", "violated", "unknown"].includes(check2.state));
-      executionText(check2.message, 512);
+    i.checks.forEach((check) => {
+      executionFields(check, ["code", "state", "message"]);
+      executionText(check.code, 128);
+      assert(["met", "violated", "unknown"].includes(check.state));
+      executionText(check.message, 512);
     });
     if (i.ready)
-      assert(i.gripperPosition !== null && GRIPPER_JOINTS.every((joint) => i.positions[joint] !== null && i.torqueEnabled[joint] === false) && i.checks.length > 0 && i.checks.every((check2) => check2.state === "met"));
+      assert(i.gripperPosition !== null && GRIPPER_JOINTS.every((joint) => i.positions[joint] !== null && i.torqueEnabled[joint] === false) && i.checks.length > 0 && i.checks.every((check) => check.state === "met"));
   }
   if (t !== null) {
     executionFields(t, ["trialId", "digest", "phase", "approvalExpiresAt", "startPosition", "targetPosition", "maximumDurationSeconds", "latestPosition", "stopStatus", "message"]);
@@ -2647,14 +2657,14 @@ function normalizeGripperCheck(value) {
         assert(typeof offer.torqueEnabled[joint] === "boolean");
       });
       assert(Array.isArray(offer.checks) && offer.checks.length > 0 && offer.checks.length <= 64);
-      offer.checks.forEach((check2) => {
-        executionFields(check2, ["code", "state", "message"]);
-        executionText(check2.code, 128);
-        assert(["met", "violated", "unknown"].includes(check2.state));
-        executionText(check2.message, 512);
+      offer.checks.forEach((check) => {
+        executionFields(check, ["code", "state", "message"]);
+        executionText(check.code, 128);
+        assert(["met", "violated", "unknown"].includes(check.state));
+        executionText(check.message, 512);
       });
       if (offer.ready)
-        assert(GRIPPER_JOINTS.every((joint) => offer.torqueEnabled[joint] === false) && offer.checks.every((check2) => check2.state === "met"));
+        assert(GRIPPER_JOINTS.every((joint) => offer.torqueEnabled[joint] === false) && offer.checks.every((check) => check.state === "met"));
       assert(offer.digest === executionDigest(offer, "digest") && recoveryMatches(offer, value) && offer.nodeSessionId === value.nodeSessionId && t.phase === "OUTCOME_UNKNOWN");
     }
     if (value.recoveryClearance !== null)
@@ -2800,7 +2810,7 @@ function createCommissioningClient({ baseUrl, token, fetchImpl = globalThis.fetc
   });
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/commissioning-controller.js
+// ../physicalsystems/packages/cli/src/harness/commissioning-controller.js
 var COMMISSIONING_MAXIMUM_AGE_MS = 5000;
 function createCommissioningController({ client, initialStatus = null, recoveryOnly = false, canAct = () => true, onChange = () => {}, now = Date.now, pollMs = 1000 } = {}) {
   let status = initialStatus, available = false, receivedAt = null, message = null, pending = null, stopPending = false;
@@ -2995,7 +3005,7 @@ function createCommissioningController({ client, initialStatus = null, recoveryO
           throw new Error("Explicitly confirm the exact fresh recovery inspection once");
         assertGripperRecoveryMatches(current, expected);
       }
-      const revision2 = ++epoch;
+      const revision = ++epoch;
       pending = kind;
       recoveryAvailable = false;
       recoveryReceivedAt = null;
@@ -3007,7 +3017,7 @@ function createCommissioningController({ client, initialStatus = null, recoveryO
         let next;
         if (kind === "recoveryInspect") {
           const observed = assertGripperRecoveryMatches(await client.status(), expected);
-          if (disposed || revision2 !== epoch || !canAct())
+          if (disposed || revision !== epoch || !canAct())
             return snapshot();
           recoveryRequestStatus = observed;
           if (gripperRecoveryCleared(observed, expected))
@@ -3021,10 +3031,10 @@ function createCommissioningController({ client, initialStatus = null, recoveryO
           recoveryRequestStatus = current;
           next = await client.recoveryConfirm({ expectedNodeSessionId: current.nodeSessionId, ...body });
         }
-        if (!disposed && revision2 === epoch)
+        if (!disposed && revision === epoch)
           acceptRecovery(next, expected);
       } catch (error) {
-        if (revision2 === epoch) {
+        if (revision === epoch) {
           recoveryAvailable = false;
           recoveryReceivedAt = null;
           recoveryMessage = commissioningFailureMessage(error, "Recovery was not confirmed. The original outcome and ownership remain retained; inspect recovery status before continuing.");
@@ -3049,8 +3059,8 @@ function createCommissioningController({ client, initialStatus = null, recoveryO
       executionFields(body, ["configurationDigest", "inspectionDigest", "targetPosition"]);
       executionHash(body.configurationDigest);
       executionHash(body.inspectionDigest);
-      const { configuration: c, inspection: i } = status, target2 = body.targetPosition;
-      if (!status.canPrepare || active() || uncertain || !c || !i?.ready || Date.parse(i.expiresAt) <= now() || body.configurationDigest !== c.digest || body.inspectionDigest !== i.digest || typeof target2 !== "number" || !Number.isFinite(target2) || target2 < c.minimum || target2 > c.maximum || Math.abs(target2 - i.gripperPosition) > c.maximumDelta || Math.abs(target2 - i.gripperPosition) <= c.tolerance)
+      const c = status.configuration, i = status.inspection, target = body.targetPosition;
+      if (!status.canPrepare || active() || uncertain || !c || !i?.ready || Date.parse(i.expiresAt) <= now() || body.configurationDigest !== c.digest || body.inspectionDigest !== i.digest || typeof target !== "number" || !Number.isFinite(target) || target < c.minimum || target > c.maximum || Math.abs(target - i.gripperPosition) > c.maximumDelta || Math.abs(target - i.gripperPosition) <= c.tolerance)
         throw new Error("Review a fresh inspection and an absolute target inside the configured gripper limits");
       payload = { expectedNodeSessionId: status.nodeSessionId, ...body };
     } else if (kind === "approve") {
@@ -3098,7 +3108,7 @@ function createCommissioningController({ client, initialStatus = null, recoveryO
   };
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/workcell-controller.js
+// ../physicalsystems/packages/cli/src/harness/workcell-controller.js
 var WORKCELL_VIEW_VERSION = "physicalsystems-workcell-view-v1";
 var WORKCELL_VIEW_MAX_BYTES = 256 * 1024;
 var REQUEST_ERRORS = Object.freeze({
@@ -3169,7 +3179,7 @@ function createWorkcellController({
   const unconfirmedStops = new Set;
   const pendingStops = new Map;
   let disposePromise = null;
-  let choice3 = null;
+  let choice = null;
   let browserTurn = false;
   let pendingPrompt = null;
   let agent = { status: "idle", intent: null, reply: "", error: null, tool: null };
@@ -3186,7 +3196,7 @@ function createWorkcellController({
         ...agent,
         model: displayText(modelLabel(), 160) || null,
         canPrompt: !disposed && agent.status !== "working" && canPrompt(),
-        pendingChoice: choice3 ? { choiceId: choice3.id, kind: choice3.kind, question: choice3.question, options: choice3.options } : null
+        pendingChoice: choice ? { choiceId: choice.id, kind: choice.kind, question: choice.question, options: choice.options } : null
       },
       camera: {
         ...camera,
@@ -3223,14 +3233,14 @@ function createWorkcellController({
   };
   const commissioning = createCommissioningController({
     client: commissioningClient,
-    canAct: () => !disposed && agent.status !== "working" && !choice3 && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size && !execution.snapshot().activeRuns.length && !execution.snapshot().pending,
+    canAct: () => !disposed && agent.status !== "working" && !choice && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size && !execution.snapshot().activeRuns.length && !execution.snapshot().pending,
     onChange: emit,
     now: () => Date.parse(now())
   });
   const execution = createExecutionController({
     client: executionClient,
     currentRoute: () => workflow?.routeReceipt,
-    canPrepare: () => !commissioning.snapshot().unresolved && !commissioning.snapshot().pending && !disposed && agent.status !== "working" && !choice3 && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size,
+    canPrepare: () => !commissioning.snapshot().unresolved && !commissioning.snapshot().pending && !disposed && agent.status !== "working" && !choice && !cameraActionPending && !pendingStops.size && !unconfirmedStops.size,
     onChange: emit,
     now: () => Date.parse(now())
   });
@@ -3239,10 +3249,10 @@ function createWorkcellController({
     execution.contextChanged();
   };
   const resolveChoice = (answer) => {
-    if (!choice3)
+    if (!choice)
       return;
-    const pending = choice3;
-    choice3 = null;
+    const pending = choice;
+    choice = null;
     clearTimeout(pending.timer);
     pending.signal?.removeEventListener("abort", pending.onAbort);
     pending.resolve(answer);
@@ -3260,20 +3270,20 @@ function createWorkcellController({
     if (stopCaptureSessionId === status.captureSessionId)
       stopCaptureSessionId = null;
   }
-  function stopCapture(sessionId2) {
-    if (pendingStops.has(sessionId2))
-      return pendingStops.get(sessionId2);
+  function stopCapture(sessionId) {
+    if (pendingStops.has(sessionId))
+      return pendingStops.get(sessionId);
     const epoch = ++cameraEpoch;
-    stopCaptureSessionId = sessionId2;
-    stopRequestedSessions.add(sessionId2);
+    stopCaptureSessionId = sessionId;
+    stopRequestedSessions.add(sessionId);
     clearCameraFrame();
-    const request = Promise.resolve().then(() => cameraClient.stop({ expectedCaptureSessionId: sessionId2 })).then((status) => {
-      if (status.captureSessionId !== sessionId2 || !["stopped", "stop-unconfirmed"].includes(status.phase))
+    const request = Promise.resolve().then(() => cameraClient.stop({ expectedCaptureSessionId: sessionId })).then((status) => {
+      if (status.captureSessionId !== sessionId || !["stopped", "stop-unconfirmed"].includes(status.phase))
         throw new Error("Invalid camera stop response");
       if (status.phase === "stopped")
         acceptStopped(status);
       else
-        unconfirmedStops.add(sessionId2);
+        unconfirmedStops.add(sessionId);
       if (cameraEpoch === epoch)
         camera = {
           ...camera,
@@ -3283,20 +3293,20 @@ function createWorkcellController({
         };
       return status;
     }).catch(() => {
-      unconfirmedStops.add(sessionId2);
+      unconfirmedStops.add(sessionId);
       if (cameraEpoch === epoch)
         camera = {
           ...camera,
           availability: "unavailable",
-          status: { ...camera.status, phase: "stop-unconfirmed", captureSessionId: sessionId2 },
+          status: { ...camera.status, phase: "stop-unconfirmed", captureSessionId: sessionId },
           error: REQUEST_ERRORS.camera_stop_unconfirmed[1]
         };
       throw new WorkcellRequestError("camera_stop_unconfirmed");
     }).finally(() => {
-      pendingStops.delete(sessionId2);
+      pendingStops.delete(sessionId);
       emit();
     });
-    pendingStops.set(sessionId2, request);
+    pendingStops.set(sessionId, request);
     emit();
     return request;
   }
@@ -3456,17 +3466,17 @@ function createWorkcellController({
       return snapshot();
     },
     async submitIntent(value) {
-      const text3 = inputText(value);
-      if (/^[!/]/.test(text3))
+      const text = inputText(value);
+      if (/^[!/]/.test(text))
         throw new TypeError("Enter a physical outcome, not a terminal command");
       if (disposed)
         throw new Error("Harness session ended");
-      if (agent.status === "working" || choice3)
+      if (agent.status === "working" || choice)
         throw new WorkcellRequestError("agent_busy");
       if (!canPrompt())
         throw new WorkcellRequestError(displayText(modelLabel(), 160) ? "agent_busy" : "model_unavailable");
       browserTurn = true;
-      agent = { status: "working", intent: text3, reply: "", error: null, tool: null };
+      agent = { status: "working", intent: text, reply: "", error: null, tool: null };
       invalidateWorkflow("conversation");
       emit();
       const request = {};
@@ -3474,7 +3484,7 @@ function createWorkcellController({
       Promise.resolve().then(() => {
         if (disposed || pendingPrompt !== request)
           return;
-        return sendIntent(text3);
+        return sendIntent(text);
       }).catch((error) => {
         if (disposed || pendingPrompt !== request)
           return;
@@ -3495,9 +3505,9 @@ function createWorkcellController({
     agentMessage(message) {
       if (message?.role !== "assistant")
         return;
-      const text3 = Array.isArray(message.content) ? message.content.filter((item) => item.type === "text").map((item) => item.text).join(`
+      const text = Array.isArray(message.content) ? message.content.filter((item) => item.type === "text").map((item) => item.text).join(`
 `) : "";
-      agent = { ...agent, reply: displayText(text3), error: message.stopReason === "error" ? "The agent request failed; check the terminal for provider diagnostics." : null };
+      agent = { ...agent, reply: displayText(text), error: message.stopReason === "error" ? "The agent request failed; check the terminal for provider diagnostics." : null };
       emit();
     },
     agentTool(name) {
@@ -3521,18 +3531,18 @@ function createWorkcellController({
         throw new TypeError("Unsupported operator question");
       if (disposed || !viewers || signal?.aborted)
         return Promise.resolve(null);
-      if (choice3)
+      if (choice)
         throw new Error("An operator question is already pending");
-      return new Promise((resolve2) => {
+      return new Promise((resolve) => {
         const onAbort = () => resolveChoice(null);
         const timer = setTimeout(onAbort, choiceTimeoutMs);
         timer.unref?.();
-        choice3 = {
+        choice = {
           id: randomUUID4(),
           kind,
           question: displayText(question, 240),
           options: options.map((option) => displayText(option, 80)).slice(0, 7),
-          resolve: resolve2,
+          resolve,
           timer,
           signal,
           onAbort
@@ -3542,11 +3552,11 @@ function createWorkcellController({
       });
     },
     async answerChoice({ choiceId, answer }) {
-      if (!choice3 || choice3.id !== choiceId)
+      if (!choice || choice.id !== choiceId)
         throw new WorkcellRequestError("question_expired");
       if (answer !== null) {
         answer = inputText(answer, 2000);
-        if (choice3.kind === "select" && !choice3.options.includes(answer))
+        if (choice.kind === "select" && !choice.options.includes(answer))
           throw new TypeError("Choose one of the displayed answers");
       }
       resolveChoice(answer);
@@ -3556,8 +3566,8 @@ function createWorkcellController({
       if (disposed || !cameraClient)
         throw new WorkcellRequestError("camera_unavailable");
       if (action === "stop") {
-        const id3 = body?.expectedCaptureSessionId;
-        if (id3 === null) {
+        const id = body?.expectedCaptureSessionId;
+        if (id === null) {
           if (!cameraStart)
             throw new WorkcellRequestError("camera_changed");
           cameraStart.cancelled = true;
@@ -3567,12 +3577,12 @@ function createWorkcellController({
           emit();
           return snapshot();
         }
-        if (typeof id3 !== "string" || !id3 || !ownedCaptureSessions.has(id3) && id3 !== camera.status?.captureSessionId && id3 !== stopCaptureSessionId)
+        if (typeof id !== "string" || !id || !ownedCaptureSessions.has(id) && id !== camera.status?.captureSessionId && id !== stopCaptureSessionId)
           throw new WorkcellRequestError("camera_changed");
         if (cameraStart)
           cameraStart.cancelled = true;
         invalidateWorkflow();
-        await stopCapture(id3);
+        await stopCapture(id);
         return snapshot();
       }
       if (action !== "start")
@@ -3589,8 +3599,8 @@ function createWorkcellController({
       cameraEpoch += 1;
       stopRequestedSessions.clear();
       let finishAction;
-      const actionDone = new Promise((resolve2) => {
-        finishAction = resolve2;
+      const actionDone = new Promise((resolve) => {
+        finishAction = resolve;
       });
       cameraActionDone = actionDone;
       emit();
@@ -3634,8 +3644,8 @@ function createWorkcellController({
         pollCamera();
       return snapshot();
     },
-    async cameraFrame(id3) {
-      if (!cachedFrame || id3 !== cachedFrame.id)
+    async cameraFrame(id) {
+      if (!cachedFrame || id !== cachedFrame.id)
         throw new Error("This exact preview frame is no longer retained; refresh the view");
       return { bytes: cachedFrame.bytes, contentType: cachedFrame.contentType };
     },
@@ -3661,9 +3671,9 @@ function createWorkcellController({
       disposePromise = (async () => {
         await cameraActionDone;
         await Promise.allSettled([...pendingStops.values()]);
-        for (const id3 of ownedCaptureSessions) {
+        for (const id of ownedCaptureSessions) {
           try {
-            await stopCapture(id3);
+            await stopCapture(id);
           } catch {}
         }
       })();
@@ -3671,7 +3681,7 @@ function createWorkcellController({
     }
   };
 }
-// ../harness-gripper-check/packages/cli/src/physical/setup-contracts.js
+// ../physicalsystems/packages/cli/src/physical/setup-contracts.js
 var SETUP_REQUIREMENTS_VERSION = "physicalsystems-setup-requirements-v1";
 var SETUP_REQUIREMENTS_MAX_BYTES = 64 * 1024;
 var SCOPES = [
@@ -3832,7 +3842,7 @@ function normalizeSetupRequirements(value) {
   return freeze3(value);
 }
 
-// ../harness-gripper-check/packages/cli/src/physical/setup-client.js
+// ../physicalsystems/packages/cli/src/physical/setup-client.js
 var PATH = "/v2/physical/setup/requirements";
 var MAX_BYTES3 = 256 * 1024;
 var MESSAGES = Object.freeze({
@@ -3925,7 +3935,7 @@ function createSetupRequirementsClient({ baseUrl, token, fetchImpl = globalThis.
   });
 }
 
-// ../harness-gripper-check/packages/cli/src/harness/setup-inspection.js
+// ../physicalsystems/packages/cli/src/harness/setup-inspection.js
 var MAX_AGE = 5000;
 var MAX_ROWS = 32;
 var MAX_IMPLEMENTATIONS = 16;
@@ -4030,7 +4040,7 @@ var timestamp4 = (value) => {
   return value;
 };
 var reasonCodes = (value) => array5(value, 64).map(executionId);
-var finding = (id4, status, message, action, codes = []) => ({ id: id4, status, reasonCodes: [...codes], message, action });
+var finding = (id, status, message, action, codes = []) => ({ id, status, reasonCodes: [...codes], message, action });
 var target2 = (value) => {
   executionFields(value, ["kind", "digest"]);
   executionId(value.kind);
@@ -4044,17 +4054,17 @@ function routeProjection(value) {
     executionHash(value[key]);
   timestamp4(value.observedAt);
   timestamp4(value.evaluatedAt);
-  const request = normalizePhysicalRouteRequest(value.request), decision2 = value.decision;
+  const request = normalizePhysicalRouteRequest(value.request), decision = value.decision;
   check3(value.capabilityId === request.capabilityId && value.workcellId === request.workcellId);
-  executionFields(decision2, DECISION_KEYS);
-  check3(decision2.contract_version === "tinyedge-runtime-physical-skill-route-decision-v1" && decision2.physical_execution_authorized === false);
-  executionId(decision2.request_id);
+  executionFields(decision, DECISION_KEYS);
+  check3(decision.contract_version === "tinyedge-runtime-physical-skill-route-decision-v1" && decision.physical_execution_authorized === false);
+  executionId(decision.request_id);
   for (const key of ["request_digest", "catalog_digest", "policy_digest", "state_digest", "invocation_digest", "decision_digest"])
-    executionHash(decision2[key]);
-  check3(executionDigest(decision2, "decision_digest") === decision2.decision_digest && decision2.catalog_digest === request.expectedCatalogDigest);
-  check3(["selected", "no_match"].includes(decision2.decision_status));
-  const codes = reasonCodes(decision2.request_rejection_codes);
-  const candidates = array5(decision2.candidates, 512).map((item) => {
+    executionHash(decision[key]);
+  check3(executionDigest(decision, "decision_digest") === decision.decision_digest && decision.catalog_digest === request.expectedCatalogDigest);
+  check3(["selected", "no_match"].includes(decision.decision_status));
+  const codes = reasonCodes(decision.request_rejection_codes);
+  const candidates = array5(decision.candidates, 512).map((item) => {
     executionFields(item, ["implementation_id", "implementation_digest", "mechanism", "provider", "execution_target", "status", "rejection_codes"]);
     executionId(item.implementation_id);
     executionHash(item.implementation_digest);
@@ -4068,10 +4078,10 @@ function routeProjection(value) {
   });
   unique3(candidates.map((item) => item.implementation_id));
   const selected = candidates.filter((item) => item.status === "selected");
-  if (decision2.decision_status === "selected") {
-    check3(selected.length === 1 && !codes.length && decision2.selected_implementation_id === selected[0].implementation_id && decision2.selected_implementation_digest === selected[0].implementation_digest && executionDigest(target2(decision2.selected_execution_target)) === executionDigest(selected[0].execution_target));
+  if (decision.decision_status === "selected") {
+    check3(selected.length === 1 && !codes.length && decision.selected_implementation_id === selected[0].implementation_id && decision.selected_implementation_digest === selected[0].implementation_digest && executionDigest(target2(decision.selected_execution_target)) === executionDigest(selected[0].execution_target));
   } else
-    check3(!selected.length && decision2.selected_implementation_id === null && decision2.selected_implementation_digest === null && decision2.selected_execution_target === null && (codes.length || candidates.every((item) => item.status === "rejected")));
+    check3(!selected.length && decision.selected_implementation_id === null && decision.selected_implementation_digest === null && decision.selected_execution_target === null && (codes.length || candidates.every((item) => item.status === "rejected")));
   const qualifications = array5(value.implementations, 512).map((item) => {
     executionFields(item, ["implementationId", "qualificationStatus"]);
     executionId(item.implementationId);
@@ -4082,7 +4092,7 @@ function routeProjection(value) {
   check3(qualifications.length === candidates.length && qualifications.every((item) => candidates.some((candidate) => candidate.implementation_id === item.implementationId)));
   return {
     request,
-    decision: decision2,
+    decision,
     candidates,
     qualifications,
     receiptDigest: value.receiptDigest,
@@ -4171,30 +4181,30 @@ function requestBlocker(code) {
 function implementationProjection(candidate, route, service) {
   const metadata = route.qualifications.find((item) => item.implementationId === candidate.implementation_id);
   const installed = service?.availability === "available" ? service.configurations.filter((item) => item.capabilityId === route.capabilityId && item.implementationId === candidate.implementation_id) : null;
-  const checks = Object.entries(GROUPS).map(([id4, codes]) => {
+  const checks = Object.entries(GROUPS).map(([id, codes]) => {
     const reported = candidate.rejection_codes.filter((code) => codes.includes(code));
     let status = "unverified", message = "Exact requirements and their validation evidence are not exposed by the public setup contracts. This does not mean they are absent or missing.";
-    if (id4 === "implementation") {
+    if (id === "implementation") {
       status = "present";
       message = "This implementation record is present in the cached route decision; current availability is not established.";
     }
-    if (id4 === "qualification") {
+    if (id === "qualification") {
       status = "present";
       message = "Qualification status metadata is present in the cached route record; underlying physical qualification evidence is not exposed. This does not mean it is absent or missing.";
     }
-    if (id4 === "configuration") {
+    if (id === "configuration") {
       status = installed === null ? "unverified" : installed.length ? "present" : "missing";
       message = installed === null ? "Configuration inventory is unavailable; no missing configuration is inferred." : installed.length ? "A configuration registration matches this capability and implementation ID. The implementation row's digest identifies a routing envelope; this configuration's implementation digest identifies an executable artifact. These digests need not match. Registration does not establish current readiness or verify calibration." : service.configurations.length ? "Installed configurations do not match this capability and implementation ID." : "No execution configurations were reported by the available status service.";
     }
-    if (id4 === "state")
+    if (id === "state")
       message = "Fresh state and readiness have not been inspected. Cached routing observations cannot establish the current state.";
-    if (id4 === "artifacts" && candidate.mechanism === "taught-waypoints")
+    if (id === "artifacts" && candidate.mechanism === "taught-waypoints")
       message = "The route names a taught-waypoints mechanism, but exact taught artifacts and their validation evidence are not exposed. This does not mean they are absent or missing.";
     if (reported.length) {
       status = reported.some((code) => code.endsWith("_missing") || code === "execution_target_unavailable") ? "missing" : "unverified";
       message = "The cached Node route reports the listed blockers for this implementation. Missing, mismatched, stale and policy-rejected evidence must be distinguished using those codes.";
     }
-    return finding(id4, status, message, ACTIONS[id4], reported);
+    return finding(id, status, message, ACTIONS[id], reported);
   });
   const unknown = candidate.rejection_codes.filter((code) => !Object.values(GROUPS).some((codes) => codes.includes(code)));
   if (unknown.length)
@@ -4307,7 +4317,7 @@ function project(current, service, startedAt) {
   if (service?.availability === "available") {
     const matchesSelected = (item) => route && item.capabilityId === route.capabilityId && item.implementationId === route.decision.selected_implementation_id;
     const configurations = [...service.configurations.filter(matchesSelected), ...service.configurations.filter((item) => !matchesSelected(item))];
-    result.configurations = configurations.slice(0, MAX_ROWS).map(({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode: mode2 }) => ({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode: mode2 }));
+    result.configurations = configurations.slice(0, MAX_ROWS).map(({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode }) => ({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode }));
   }
   result.checks = [
     finding("execution_service", service?.availability === "available" ? "present" : "unverified", "Execution status describes the reported service mode and configuration inventory, not physical readiness.", "Check the local Node connection and inspect the exact reported mode before reviewing a configuration."),
@@ -4425,7 +4435,7 @@ function createSetupInspector({ client, requirementsClient, getContext = () => (
     }
     const startedAt = now(), attempt = { active: true, cancel: null, code: null };
     let timer;
-    const fail2 = (code) => empty(code, code === "disposed" ? "disposed" : ["context_changed", "inspection_expired"].includes(code) ? "stale" : "unavailable");
+    const fail = (code) => empty(code, code === "disposed" ? "disposed" : ["context_changed", "inspection_expired"].includes(code) ? "stale" : "unavailable");
     const guard = () => {
       if (disposed)
         throw "disposed";
@@ -4437,13 +4447,13 @@ function createSetupInspector({ client, requirementsClient, getContext = () => (
       if (now() < startedAt || now() - startedAt >= MAX_AGE)
         throw "inspection_expired";
     };
-    const interrupted = new Promise((resolve2) => {
+    const interrupted = new Promise((resolve) => {
       attempt.cancel = (code) => {
         if (attempt.active) {
           attempt.active = false;
           attempt.code = code;
           clearTimeout(timer);
-          resolve2(fail2(code));
+          resolve(fail(code));
         }
       };
     });
@@ -4488,7 +4498,7 @@ function createSetupInspector({ client, requirementsClient, getContext = () => (
         guard();
         return boundedReport(result);
       } catch (code) {
-        return fail2(Object.hasOwn(MESSAGES2, code) ? code : "unavailable");
+        return fail(Object.hasOwn(MESSAGES2, code) ? code : "unavailable");
       } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
@@ -4503,7 +4513,7 @@ function createSetupInspector({ client, requirementsClient, getContext = () => (
     pending?.cancel("disposed");
   } });
 }
-// ../harness-gripper-check/packages/cli/src/harness/setup-view.js
+// ../physicalsystems/packages/cli/src/harness/setup-view.js
 function createSetupView({ inspector, getContext, onChange = () => {}, now = Date.now } = {}) {
   let disposed = false;
   let active = null;
@@ -4584,7 +4594,7 @@ function createSetupView({ inspector, getContext, onChange = () => {}, now = Dat
     }
   });
 }
-// ../harness-gripper-check/packages/cli/src/harness/execution-inspection.js
+// ../physicalsystems/packages/cli/src/harness/execution-inspection.js
 var MAX_READ_AGE2 = 5000;
 var MAX_KNOWN_RUNS = 128;
 var PIN_IDS = ["capabilityId", "implementationId", "configurationId"];
@@ -4621,9 +4631,9 @@ function check4(condition) {
 }
 async function joined(reads) {
   const results = await Promise.allSettled(reads);
-  const failure2 = results.find((result) => result.status === "rejected");
-  if (failure2)
-    throw failure2.reason;
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure)
+    throw failure.reason;
   return results.map((result) => result.value);
 }
 function pinRun(run) {
@@ -4645,7 +4655,7 @@ function matchPins(run, expected) {
   check4(run.revision >= revision && (run.revision !== revision || run.runDigest === runDigest));
   if (eventDigests) {
     check4(run.events.length >= eventDigests.length);
-    eventDigests.forEach((digest3, index) => check4(executionDigest(run.events[index]) === digest3));
+    eventDigests.forEach((digest, index) => check4(executionDigest(run.events[index]) === digest));
     check4(executionDigest(run.inputs) === inputsDigest && run.approval.digest === approvalDigest && run.approval.expiresAt === approvalExpiresAt);
   }
   return run;
@@ -4746,7 +4756,7 @@ function createExecutionInspector({ client, getContext = () => ({}), now = Date.
       return base("execution_unavailable");
     const startedAt = now(), attempt = { active: true, code: null, cancel: null };
     let timer, abort;
-    const failure2 = (code) => base(code, code === "disposed" ? "disposed" : ["context_changed", "inspection_expired"].includes(code) ? "stale" : "unavailable");
+    const failure = (code) => base(code, code === "disposed" ? "disposed" : ["context_changed", "inspection_expired"].includes(code) ? "stale" : "unavailable");
     const guard = (run = null) => {
       if (disposed)
         throw new InspectionFailure("disposed");
@@ -4760,14 +4770,14 @@ function createExecutionInspector({ client, getContext = () => ({}), now = Date.
       if (run && current.selectedRun?.runId === run.runId)
         matchPins(run, current.selectedRun);
     };
-    const interrupted = new Promise((resolve2) => {
+    const interrupted = new Promise((resolve) => {
       attempt.cancel = (code) => {
         if (!attempt.active)
           return;
         attempt.active = false;
         attempt.code = code;
         clearTimeout(timer);
-        resolve2(failure2(code));
+        resolve(failure(code));
       };
     });
     pending = attempt;
@@ -4799,7 +4809,7 @@ function createExecutionInspector({ client, getContext = () => ({}), now = Date.
         result.configurationAvailability = {
           status: configurationStatus,
           installedCount: status.configurations.length,
-          matchingConfigurations: matching.slice(0, 32).map(({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode: mode2 }) => ({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode: mode2 })),
+          matchingConfigurations: matching.slice(0, 32).map(({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode }) => ({ configurationId, capabilityId, implementationId, configurationDigest, implementationDigest, mode })),
           message: CONFIGURATION_MESSAGES[configurationStatus]
         };
         result.runs = listing.runs.map(summary3);
@@ -4882,7 +4892,7 @@ function createExecutionInspector({ client, getContext = () => ({}), now = Date.
           known.delete(known.keys().next().value);
         return result;
       } catch (error) {
-        return failure2(error instanceof InspectionFailure ? error.code : "execution_unavailable");
+        return failure(error instanceof InspectionFailure ? error.code : "execution_unavailable");
       } finally {
         clearTimeout(timer);
         signal?.removeEventListener("abort", abort);
@@ -4898,7 +4908,7 @@ function createExecutionInspector({ client, getContext = () => ({}), now = Date.
     pending?.cancel("disposed");
   } });
 }
-// ../harness-gripper-check/packages/cli/src/harness/agent-skills.js
+// ../physicalsystems/packages/cli/src/harness/agent-skills.js
 import { createHash as createHash6 } from "node:crypto";
 import {
   closeSync as closeSync2,
@@ -4932,7 +4942,7 @@ var PACKAGES = Object.freeze([
     bindingHash: "d800b6b2ad058a9c674cd33147f27ac91a3e77c22918389f6d50db604138f4c2"
   })
 ]);
-var CURATED_AGENT_SKILL_IDS = Object.freeze(PACKAGES.map(({ id: id4 }) => id4));
+var CURATED_AGENT_SKILL_IDS = Object.freeze(PACKAGES.map(({ id }) => id));
 function fail2(reason) {
   throw new Error(`Bundled Agent Skill rejected: ${reason}`);
 }
@@ -4998,7 +5008,7 @@ function loadVerifiedAgentSkills({ packageRoot = PACKAGE_ROOT } = {}) {
   const root = path.resolve(packageRoot);
   for (const entry of PACKAGES)
     readPackage(root, entry);
-  return verifiedRegistry(root, PACKAGES.map(({ id: id4, description }) => Object.freeze({ skillId: id4, description })));
+  return verifiedRegistry(root, PACKAGES.map(({ id, description }) => Object.freeze({ skillId: id, description })));
 }
 function verifiedRegistry(root, summaries) {
   return Object.freeze({
@@ -5016,7 +5026,7 @@ function verifiedRegistry(root, summaries) {
 `);
     },
     read(skillId) {
-      const entry = PACKAGES.find(({ id: id4 }) => id4 === skillId);
+      const entry = PACKAGES.find(({ id }) => id === skillId);
       if (!entry)
         fail2("unknown Agent Skill id");
       const { instructions, binding } = readPackage(root, entry);
@@ -5056,7 +5066,7 @@ function createReadAgentSkillTool({ registry, defineTool = (definition) => defin
   });
 }
 
-// ../harness-gripper-check/packages/cli/src/physical/workflow-core.js
+// ../physicalsystems/packages/cli/src/physical/workflow-core.js
 var PHYSICAL_DISCOVERY_TOOL = "inspect_physical_system";
 var PHYSICAL_INTENT_TOOL = "plan_physical_workflow";
 var PHYSICAL_CAPABILITIES_TOOL = "inspect_physical_capabilities";
@@ -5091,40 +5101,40 @@ function createPhysicalWorkflowState(nodeOrigin) {
     error: null
   });
 }
-function updatePhysicalWorkflow(state2, event) {
-  if (!state2 || typeof state2 !== "object")
+function updatePhysicalWorkflow(state, event) {
+  if (!state || typeof state !== "object")
     throw new TypeError("Physical workflow state is required");
   if (!event || typeof event !== "object")
     throw new TypeError("Physical workflow event is required");
-  if (event.generation !== undefined && event.generation !== state2.generation)
-    return state2;
+  if (event.generation !== undefined && event.generation !== state.generation)
+    return state;
   if (["checking", "catalog-checking", "route-checking", "snapshot", "intent", "error", "plan-error", "reset-intent"].includes(event.type)) {
-    state2 = { ...state2, generation: state2.generation + 1 };
+    state = { ...state, generation: state.generation + 1 };
   }
   if (event.type === "checking") {
-    return Object.freeze({ ...state2, status: "checking", error: null, routeReceipt: null, routeError: null, capabilityCatalog: null });
+    return Object.freeze({ ...state, status: "checking", error: null, routeReceipt: null, routeError: null, capabilityCatalog: null });
   }
   if (event.type === "agent-skill")
-    return Object.freeze({ ...state2, agentSkillId: cleanMessage(event.skillId) });
+    return Object.freeze({ ...state, agentSkillId: cleanMessage(event.skillId) });
   if (event.type === "catalog-checking")
-    return Object.freeze({ ...state2, capabilityCatalog: null, routeReceipt: null, routeError: null });
+    return Object.freeze({ ...state, capabilityCatalog: null, routeReceipt: null, routeError: null });
   if (event.type === "route-checking")
-    return Object.freeze({ ...state2, routeReceipt: null, routeError: null });
+    return Object.freeze({ ...state, routeReceipt: null, routeError: null });
   if (event.type === "capability-catalog") {
     if (event.catalog?.physicalExecutionAuthorized !== false)
       throw new TypeError("Physical capability catalog cannot authorize execution");
-    return Object.freeze({ ...state2, capabilityCatalog: event.catalog, routeReceipt: null, routeError: null });
+    return Object.freeze({ ...state, capabilityCatalog: event.catalog, routeReceipt: null, routeError: null });
   }
   if (event.type === "route") {
     if (event.receipt?.physicalExecutionAuthorized !== false || event.receipt?.decision?.physical_execution_authorized !== false)
       throw new TypeError("Physical route preview cannot authorize execution");
-    return Object.freeze({ ...state2, routeReceipt: event.receipt, routeError: null });
+    return Object.freeze({ ...state, routeReceipt: event.receipt, routeError: null });
   }
   if (event.type === "route-error")
-    return Object.freeze({ ...state2, capabilityCatalog: null, routeReceipt: null, routeError: cleanMessage(event.error?.message || event.error) });
+    return Object.freeze({ ...state, capabilityCatalog: null, routeReceipt: null, routeError: cleanMessage(event.error?.message || event.error) });
   if (event.type === "snapshot") {
     return Object.freeze({
-      ...state2,
+      ...state,
       status: "connected",
       snapshot: event.snapshot,
       response: null,
@@ -5138,7 +5148,7 @@ function updatePhysicalWorkflow(state2, event) {
   }
   if (event.type === "intent") {
     return Object.freeze({
-      ...state2,
+      ...state,
       status: "connected",
       response: event.response,
       requestedIntent: cleanMessage(event.requestedIntent),
@@ -5149,18 +5159,18 @@ function updatePhysicalWorkflow(state2, event) {
     });
   }
   if (event.type === "exploration") {
-    if (!state2.response)
+    if (!state.response)
       throw new TypeError("Physical commissioning requires a grounded intent");
-    if (!event.exploration || event.exploration.status !== "draft" || event.exploration.physicalExecutionAuthorized !== false || event.exploration.method !== null || event.exploration.durationMinutes !== null || event.exploration.maxTrials !== null || event.exploration.methodSelectionRequired !== true || event.exploration.boundsSelectionRequired !== true || event.exploration.requiresLocalApproval !== true || event.exploration.interpretationDigest !== state2.response.interpretation?.interpretationDigest) {
+    if (!event.exploration || event.exploration.status !== "draft" || event.exploration.physicalExecutionAuthorized !== false || event.exploration.method !== null || event.exploration.durationMinutes !== null || event.exploration.maxTrials !== null || event.exploration.methodSelectionRequired !== true || event.exploration.boundsSelectionRequired !== true || event.exploration.requiresLocalApproval !== true || event.exploration.interpretationDigest !== state.response.interpretation?.interpretationDigest) {
       throw new TypeError("A non-authorizing physical commissioning draft is required");
     }
-    return Object.freeze({ ...state2, exploration: event.exploration, error: null });
+    return Object.freeze({ ...state, exploration: event.exploration, error: null });
   }
   if (event.type === "exploration-declined") {
-    if (!state2.response)
+    if (!state.response)
       throw new TypeError("Physical commissioning requires a grounded intent");
     return Object.freeze({
-      ...state2,
+      ...state,
       exploration: Object.freeze({
         status: "declined",
         physicalExecutionAuthorized: false
@@ -5170,7 +5180,7 @@ function updatePhysicalWorkflow(state2, event) {
   }
   if (event.type === "error") {
     return Object.freeze({
-      ...state2,
+      ...state,
       status: "unavailable",
       snapshot: null,
       response: null,
@@ -5183,8 +5193,8 @@ function updatePhysicalWorkflow(state2, event) {
   }
   if (event.type === "plan-error") {
     return Object.freeze({
-      ...state2,
-      status: state2.snapshot ? "connected" : "unavailable",
+      ...state,
+      status: state.snapshot ? "connected" : "unavailable",
       response: null,
       requestedIntent: cleanMessage(event.requestedIntent),
       exploration: null,
@@ -5194,7 +5204,7 @@ function updatePhysicalWorkflow(state2, event) {
     });
   }
   if (event.type === "reset-intent") {
-    return Object.freeze({ ...state2, response: null, requestedIntent: null, exploration: null, capabilityCatalog: null, routeReceipt: null, routeError: null, error: null });
+    return Object.freeze({ ...state, response: null, requestedIntent: null, exploration: null, capabilityCatalog: null, routeReceipt: null, routeError: null, error: null });
   }
   throw new TypeError(`Unknown physical workflow event: ${event.type}`);
 }
@@ -5322,9 +5332,9 @@ function createPhysicalTools({
   onRouteError,
   onRouteChecking
 }) {
-  const result = (value, summary4) => ({
+  const result = (value, summary) => ({
     content: [{ type: "text", text: JSON.stringify(value) }],
-    details: { displaySummary: summary4 }
+    details: { displaySummary: summary }
   });
   const inspect = async () => {
     onRouteChecking?.("checking");
@@ -5444,7 +5454,7 @@ function createPhysicalTools({
     })
   ];
 }
-// ../harness-gripper-check/packages/cli/src/physical/camera-preview-client.js
+// ../physicalsystems/packages/cli/src/physical/camera-preview-client.js
 import { createHash as createHash7 } from "node:crypto";
 var ENDPOINT = "/v1/physical/camera-preview";
 var VERSION = "experimental-camera-preview-";
@@ -5524,9 +5534,9 @@ function normalizeCandidate2(value) {
 function normalizeStatus(value, { inventory = false } = {}) {
   fields2(value, ["contractVersion", "state", "captureSessionId", "selectedCandidateId", "latestFrameId", "frameFresh", "frameAgeMs", "staleAfterMs", "errorCode", "observationStatus", "physicalState", "physicalExecutionAuthorized", "rawFramePersisted"], ["availableCameras"]);
   assert2(value.contractVersion === `${VERSION}status-v1` && value.physicalState === "unknown" && value.physicalExecutionAuthorized === false && value.rawFramePersisted === false);
-  const state2 = oneOf2(value.state, ["idle", "starting", "streaming", "stale", "error", "stopped", "stop-unconfirmed"]);
+  const state = oneOf2(value.state, ["idle", "starting", "streaming", "stale", "error", "stopped", "stop-unconfirmed"]);
   const result = {
-    phase: state2 === "streaming" ? "live" : state2,
+    phase: state === "streaming" ? "live" : state,
     captureSessionId: nullable2(value.captureSessionId, (v) => id4(v, 64)),
     selectedCandidateId: nullable2(value.selectedCandidateId, id4),
     latestFrameId: nullable2(value.latestFrameId, id4),
@@ -5539,19 +5549,19 @@ function normalizeStatus(value, { inventory = false } = {}) {
     physicalExecutionAuthorized: false,
     rawFramePersisted: false
   };
-  assert2(result.frameFresh === (state2 === "streaming") && result.staleAfterMs === 2000);
+  assert2(result.frameFresh === (state === "streaming") && result.staleAfterMs === 2000);
   assert2(result.captureSessionId === null === (result.selectedCandidateId === null));
-  if (state2 === "idle")
+  if (state === "idle")
     assert2(result.captureSessionId === null && result.latestFrameId === null);
   else
     assert2(result.captureSessionId !== null);
-  if (state2 === "streaming")
+  if (state === "streaming")
     assert2(result.latestFrameId !== null && result.frameAgeMs !== null && result.frameAgeMs < result.staleAfterMs);
   if (result.latestFrameId !== null)
     assert2(result.latestFrameId.startsWith(`${result.captureSessionId}-`) && result.frameAgeMs !== null);
   else
     assert2(result.frameAgeMs === null);
-  if (state2 === "stopped")
+  if (state === "stopped")
     assert2(result.latestFrameId === null);
   if (inventory || Object.hasOwn(value, "availableCameras")) {
     assert2(Array.isArray(value.availableCameras) && value.availableCameras.length <= 128);
@@ -5708,11 +5718,11 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
   if (typeof fetchImpl !== "function")
     throw new TypeError("Camera preview requires HTTP transport");
   let previous = null;
-  async function request(path2, body) {
+  async function request(path, body) {
     if (typeof token !== "string" || !/^[A-Za-z0-9_-]{32,256}$/.test(token))
       throw new TypeError("Camera preview requires a configured server-side token");
     try {
-      const response = await fetchImpl(new URL(path2, origin), {
+      const response = await fetchImpl(new URL(path, origin), {
         method: body === undefined ? "GET" : "POST",
         redirect: "error",
         cache: "no-store",
@@ -5723,7 +5733,7 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
       if (response.redirected || response.type === "opaqueredirect")
         invalid();
       if (response.url)
-        assert2(new URL(response.url).href === new URL(path2, origin).href);
+        assert2(new URL(response.url).href === new URL(path, origin).href);
       if (!response.ok) {
         await response.body?.cancel?.().catch(() => {});
         const status = Number.isInteger(response.status) ? response.status : 503;
@@ -5733,7 +5743,7 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
         error.status = status;
         throw error;
       }
-      return await readBoundedJson(response, path2.endsWith("/frame") ? MAX_WIRE_BYTES : 256 * 1024);
+      return await readBoundedJson(response, path.endsWith("/frame") ? MAX_WIRE_BYTES : 256 * 1024);
     } catch (error) {
       if (error instanceof CameraHttpError)
         throw error;
@@ -5794,14 +5804,14 @@ function createCameraPreviewClient({ baseUrl, token, fetchImpl = globalThis.fetc
     }
   });
 }
-// ../harness-gripper-check/packages/cli/src/harness/workcell-view/view-state.js
+// ../physicalsystems/packages/cli/src/harness/workcell-view/view-state.js
 function cameraIsFresh(camera, now = Date.now()) {
   const status = camera?.status;
   const receivedAt = Date.parse(camera?.receivedAt || "");
   const elapsed = now - receivedAt;
   return Boolean(camera?.availability === "available" && camera.frame && camera.previewFrameId && status?.phase === "live" && status.frameFresh === true && Number.isFinite(elapsed) && elapsed >= 0 && Number.isFinite(status.frameAgeMs) && status.frameAgeMs >= 0 && Number.isFinite(status.staleAfterMs) && status.staleAfterMs > 0 && elapsed + status.frameAgeMs < status.staleAfterMs);
 }
-// ../harness-gripper-check/packages/cli/src/auth/secret-store.js
+// ../physicalsystems/packages/cli/src/auth/secret-store.js
 import { execFile } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path2 from "node:path";
@@ -5817,7 +5827,7 @@ var SECRET_TOOL_ATTRIBUTES = Object.freeze([
   "credential"
 ]);
 function execFileWithInput(executable, args, { input = "", ...options } = {}) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (callback, value) => {
       if (settled)
@@ -5834,7 +5844,7 @@ function execFileWithInput(executable, args, { input = "", ...options } = {}) {
         settle(reject, error);
         return;
       }
-      settle(resolve2, { stdout, stderr });
+      settle(resolve, { stdout, stderr });
     });
     child.stdin.once("error", (error) => {
       if (settled || error?.code === "EPIPE")
@@ -5969,15 +5979,7 @@ function createNativeSecretStore({ configDir, platform = process.platform, run }
   throw new Error(`Secure TinyEdge credential storage is not configured for ${platform}. ` + "Use Windows DPAPI, Linux Secret Service, or provide a native secret-store adapter.");
 }
 
-// ../harness-gripper-check/packages/desktop/src/connections.js
-var exports_connections = {};
-__export(exports_connections, {
-  sshFailure: () => sshFailure,
-  normalizeLocalEndpoint: () => normalizeLocalEndpoint,
-  buildSshArgs: () => buildSshArgs,
-  attachSSH: () => attachSSH,
-  attachLocal: () => attachLocal
-});
+// ../physicalsystems/packages/desktop/src/connections.js
 import { spawn } from "node:child_process";
 import net from "node:net";
 import path3 from "node:path";
@@ -6072,12 +6074,12 @@ function sshFailure(stderr = "") {
 }
 async function availablePort() {
   const server = net.createServer();
-  await new Promise((resolve2, reject) => {
+  await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve2);
+    server.listen(0, "127.0.0.1", resolve);
   });
   const selected = server.address().port;
-  await new Promise((resolve2, reject) => server.close((error) => error ? reject(error) : resolve2()));
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   return selected;
 }
 async function authorize(profile, { credentialResolver, probeNode }, endpoint, signal) {
@@ -6088,14 +6090,14 @@ async function authorize(profile, { credentialResolver, probeNode }, endpoint, s
     throw failure2("CONNECTION_CANCELLED", "The connection request was cancelled before Node verification.");
   if (!credential)
     throw failure2("NODE_AUTH_REQUIRED", "The referenced Node credential is unavailable. Unlock the credential store or configure the intended Node credential, then retry.");
-  const identity3 = await probeNode({ endpoint, credential, expectedNodeId: profile.expectedNodeId, signal });
+  const identity = await probeNode({ endpoint, credential, expectedNodeId: profile.expectedNodeId, signal });
   if (signal.aborted)
     throw failure2("CONNECTION_CANCELLED", "The connection request ended before Node verification completed.");
-  if (!identity3 || identity3.authenticated !== true || typeof identity3.nodeId !== "string" || !identity3.nodeId)
+  if (!identity || identity.authenticated !== true || typeof identity.nodeId !== "string" || !identity.nodeId)
     throw failure2("NODE_IDENTITY_UNVERIFIED", "The Node did not provide a supported authenticated identity. The connection remains unverified.");
-  if (profile.expectedNodeId && identity3.nodeId !== profile.expectedNodeId)
+  if (profile.expectedNodeId && identity.nodeId !== profile.expectedNodeId)
     throw failure2("NODE_IDENTITY_CHANGED", "The responding Node identity differs from this project. Recheck the selected host and Node configuration before reconnecting.");
-  return identity3;
+  return identity;
 }
 async function attachLocal(profile, options = {}) {
   if (options.signal?.aborted)
@@ -6103,8 +6105,8 @@ async function attachLocal(profile, options = {}) {
   const endpoint = normalizeLocalEndpoint(profile.nodeUrl);
   const deadline = connectionDeadline(options.timeoutMs ?? 1e4, options.signal);
   try {
-    const identity3 = await bounded(() => authorize(profile, options, endpoint, deadline.signal), deadline.signal);
-    return { endpoint, identity: identity3, close: async () => {}, onDisconnect: () => () => {} };
+    const identity = await bounded(() => authorize(profile, options, endpoint, deadline.signal), deadline.signal);
+    return { endpoint, identity, close: async () => {}, onDisconnect: () => () => {} };
   } finally {
     deadline.clear();
   }
@@ -6117,10 +6119,10 @@ function connectionDeadline(timeoutMs, parentSignal) {
 function bounded(operation, signal) {
   if (signal.aborted)
     return Promise.reject(failure2("CONNECTION_TIMEOUT", "The connection request ended before verification. Retry after checking the target."));
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve, reject) => {
     const aborted = () => reject(failure2("CONNECTION_TIMEOUT", "The connection request ended before verification. Retry after checking the target."));
     signal.addEventListener("abort", aborted, { once: true });
-    Promise.resolve().then(operation).then(resolve2, reject).finally(() => signal.removeEventListener("abort", aborted));
+    Promise.resolve().then(operation).then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
   });
 }
 async function attachSSH(profile, options = {}) {
@@ -6139,13 +6141,13 @@ async function attachSSH(profile, options = {}) {
   let processError;
   let closing = false;
   const listeners = new Set;
-  const exit = new Promise((resolve2) => {
+  const exit = new Promise((resolve) => {
     const finish = (error) => {
       if (ended)
         return;
       ended = true;
       processError = error ?? sshFailure(stderr);
-      resolve2();
+      resolve();
       if (!closing)
         for (const listener of listeners)
           listener(processError);
@@ -6212,7 +6214,7 @@ async function attachSSH(profile, options = {}) {
   }
 }
 
-// ../harness-gripper-check/packages/operator-service/src/tools.js
+// ../physicalsystems/packages/operator-service/src/tools.js
 var unavailable = () => {
   throw new Error("A bound service context is required");
 };
@@ -6229,18 +6231,119 @@ var agentToolDefinitions = Object.freeze([
   { name: "inspect_physical_setup", label: "Inspect physical setup", description: "Inspect cached setup evidence and read-only requirements. No discovery, configuration, approval or hardware execution.", parameters: { type: "object", additionalProperties: false, properties: {} } },
   { name: "inspect_physical_execution", label: "Inspect physical execution", description: "Inspect recorded execution evidence for an exact known run. This does not prepare, approve, stop or execute equipment.", parameters: { type: "object", additionalProperties: false, properties: { runId: { type: "string", minLength: 1, maxLength: 128 } } } }
 ].map(({ name, label, description, parameters }) => {
-  const schema2 = structuredClone(parameters);
-  if (schema2.properties?.requestId)
-    delete schema2.properties.requestId;
-  if (schema2.required)
-    schema2.required = schema2.required.filter((key) => key !== "requestId");
-  return Object.freeze({ name, label, description: descriptions[name] || description, parameters: schema2 });
+  const schema = structuredClone(parameters);
+  if (schema.properties?.requestId)
+    delete schema.properties.requestId;
+  if (schema.required)
+    schema.required = schema.required.filter((key) => key !== "requestId");
+  return Object.freeze({ name, label, description: descriptions[name] || description, parameters: schema });
 }));
 var agentToolNames = Object.freeze(agentToolDefinitions.map((tool) => tool.name));
 
-// ../harness-gripper-check/packages/operator-service/src/physical.js
-function createPublicClients({ endpoint, credential = {}, fetchImpl = globalThis.fetch }) {
+// ../physicalsystems/packages/cli/src/physical/inference-client.js
+function normalizeInference(value) {
+  const hex = (text, size) => typeof text === "string" && new RegExp(`^[a-f0-9]{${size}}$`).test(text);
+  if (!value || value.contractVersion !== "physicalsystems-inference-v1" || !["STOPPED", "STARTING", "READY", "STOPPING", "FAILED", "UNKNOWN"].includes(value.phase) || value.runtimeId !== null && !hex(value.runtimeId, 32) || value.manifestSha256 !== null && !hex(value.manifestSha256, 64) || value.generation !== null && (!Number.isSafeInteger(value.generation) || value.generation < 0) || typeof value.image !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.image) || value.releaseId !== null && (typeof value.releaseId !== "string" || value.releaseId.length > 128) || value.error !== null && (typeof value.error !== "string" || value.error.length > 256) || value.motorCommandsSent !== 0 || ["STARTING", "READY", "STOPPING", "UNKNOWN"].includes(value.phase) && !value.runtimeId) {
+    throw new Error("Invalid inference status");
+  }
+  if (value.details !== null && (!value.details || value.details.ready !== true || typeof value.details.gpu !== "string" || value.details.gpu.length > 256 || !Number.isFinite(value.details.warmupMs) || value.details.warmupMs < 0 || !Number.isInteger(value.details.chunkSize) || value.details.chunkSize < 1 || value.details.chunkSize > 100)) {
+    throw new Error("Invalid inference readiness");
+  }
+  if (value.phase === "READY" && !value.details)
+    throw new Error("Missing inference readiness");
+  return value;
+}
+function createInferenceClient({ baseUrl, token, fetchImpl = globalThis.fetch }) {
+  const origin = normalizePhysicalNodeUrl(baseUrl);
+  async function request(operation, body) {
+    if (!token)
+      throw new Error("Configure the Node operator credential before loading a model.");
+    const response = await fetchImpl(`${origin}/v2/physical/inference${operation ? "/" + operation : ""}`, {
+      method: body ? "POST" : "GET",
+      redirect: "error",
+      signal: AbortSignal.timeout(5000),
+      headers: { Authorization: `Bearer ${token}`, ...body ? { "Content-Type": "application/json" } : {} },
+      ...body ? { body: JSON.stringify(body) } : {}
+    });
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done)
+          break;
+        size += result.value.byteLength;
+        if (size > 16384)
+          throw new Error("Inference response is too large");
+        chunks.push(result.value);
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+    if (!response.ok)
+      throw new Error(response.status === 503 ? "Model inference is not configured on this Node." : "The model runtime request was rejected. Refresh its status before retrying.");
+    return normalizeInference(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+  }
+  return Object.freeze({ status: () => request(""), start: (body) => request("start", body), stop: (body) => request("stop", body) });
+}
+
+// ../physicalsystems/packages/operator-service/src/ssh-node-fetch.js
+import http from "node:http";
+import { Readable } from "node:stream";
+function createSshNodeFetch(endpoint, remotePort) {
+  const origin = new URL(endpoint).origin;
+  return (input, init = {}) => new Promise((resolve, reject) => {
+    const url = new URL(input);
+    if (url.origin !== origin || url.username || url.password || url.hash || url.protocol !== "http:") {
+      reject(new TypeError("Invalid SSH Node endpoint"));
+      return;
+    }
+    const headers = new Headers(init.headers);
+    headers.set("Host", `127.0.0.1:${remotePort}`);
+    const body = init.body;
+    if (body !== undefined && typeof body !== "string" && !(body instanceof Uint8Array)) {
+      reject(new TypeError("Unsupported SSH request body"));
+      return;
+    }
+    if (body !== undefined)
+      headers.set("Content-Length", String(Buffer.byteLength(body)));
+    const request = http.request(url, { method: init.method || "GET", headers: Object.fromEntries(headers), signal: init.signal, agent: false }, (response) => {
+      const responseHeaders = new Headers;
+      for (let i = 0;i < response.rawHeaders.length; i += 2)
+        responseHeaders.append(response.rawHeaders[i], response.rawHeaders[i + 1]);
+      const status = response.statusCode;
+      if (status >= 300 && status < 400 && init.redirect === "error") {
+        response.destroy();
+        reject(new TypeError("SSH Node redirects are not allowed"));
+        return;
+      }
+      const empty = init.method === "HEAD" || [204, 205, 304].includes(status);
+      if (empty)
+        response.resume();
+      resolve(new Response(empty ? null : Readable.toWeb(response), { status, headers: responseHeaders }));
+    });
+    request.once("error", reject);
+    request.end(body);
+  });
+}
+
+// ../physicalsystems/packages/operator-service/src/physical.js
+function createPublicClients({ endpoint, credential = {}, fetchImpl, remotePort }) {
+  if (remotePort !== undefined) {
+    if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535)
+      throw new TypeError("Invalid remote Node port");
+    const transport = fetchImpl || createSshNodeFetch(endpoint, remotePort);
+    fetchImpl = (url, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Host", `127.0.0.1:${remotePort}`);
+      return transport(url, { ...init, headers });
+    };
+  }
+  fetchImpl ||= globalThis.fetch;
   return Object.freeze({
+    inference: createInferenceClient({ baseUrl: endpoint, token: credential.executionToken, fetchImpl }),
     node: createPhysicalNodeClient({ baseUrl: endpoint, fetchImpl }),
     camera: createCameraPreviewClient({ baseUrl: endpoint, token: credential.cameraToken, fetchImpl }),
     execution: createExecutionClient({ baseUrl: endpoint, token: credential.executionToken, fetchImpl }),
@@ -6328,13 +6431,13 @@ function createPhysicalContext({ clients, experiments, now, onChange, canPrompt,
   });
 }
 
-// ../harness-gripper-check/packages/operator-service/src/service.js
+// ../physicalsystems/packages/operator-service/src/service.js
 var ACTIVE = new Set(["READY", "RUNNING", "OUTCOME_UNKNOWN"]);
 var TERMINAL_RUN = new Set(["VERIFIED_SUCCESS", "FAILED", "CANCELLED", "BLOCKED"]);
 var CONTINUATION_TEXT = "Continue the approved synthetic simulation experiment. Run the remaining trials, compare the measurements, and summarize the result.";
 var clone3 = (value) => structuredClone(value);
 var hash = (value) => createHash8("sha256").update(JSON.stringify(value)).digest("hex");
-var checkpoint = (experiment2) => hash(experiment2.trials.map((trial) => [trial.id, trial.status]));
+var checkpoint = (experiment) => hash(experiment.trials.map((trial) => [trial.id, trial.status]));
 var fail3 = (code, message) => Object.assign(new Error(message), { code, operatorServiceError: true });
 function text4(value, name, maximum = 160) {
   if (typeof value !== "string" || !value.trim() || value.length > maximum || /[\u0000-\u001f\u007f]/u.test(value))
@@ -6355,10 +6458,10 @@ function clean(value) {
       throw fail3("INVALID_REQUEST", "The request is too deeply nested");
     if (!item || typeof item !== "object")
       return;
-    for (const [key, value2] of Object.entries(item)) {
+    for (const [key, value] of Object.entries(item)) {
       if (["__proto__", "prototype", "constructor"].includes(key))
         throw fail3("INVALID_REQUEST", "Unsupported request field");
-      visit(value2, depth + 1);
+      visit(value, depth + 1);
     }
   };
   visit(result);
@@ -6372,12 +6475,12 @@ function requestId(value) {
 function publicError(error) {
   return error?.operatorServiceError ? error : fail3("REQUEST_FAILED", experimentRequestFailure(error)?.message || workcellRequestFailure(error)?.message || "The request could not be confirmed. Inspect its current state before retrying.");
 }
-async function createManagedWorkspace(dataDir, id5) {
+async function createManagedWorkspace(dataDir, id) {
   let current = path4.parse(dataDir).root;
   for (const component of dataDir.slice(current.length).split(path4.sep).filter(Boolean)) {
     current = path4.join(current, component);
-    const stat2 = await lstat(current);
-    if (!stat2.isDirectory() || stat2.isSymbolicLink())
+    const stat = await lstat(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
       throw fail3("WORKSPACE_UNAVAILABLE", "The managed workspace requires real directories without symbolic links. Preserve the existing folders and inspect the storage path.");
   }
   const root = path4.join(dataDir, "projects");
@@ -6390,7 +6493,7 @@ async function createManagedWorkspace(dataDir, id5) {
   const stat = await lstat(root);
   if (!stat.isDirectory() || stat.isSymbolicLink())
     throw fail3("WORKSPACE_UNAVAILABLE", "The managed workspace requires a real directory without symbolic links. Preserve the existing folder and inspect its storage path.");
-  const cwd = path4.join(root, id5);
+  const cwd = path4.join(root, id);
   await mkdir2(cwd, { mode: 448 });
   return cwd;
 }
@@ -6416,26 +6519,26 @@ async function createOperatorService({
     if (saved.schemaVersion !== 1 || !Number.isSafeInteger(saved.revision) || saved.revision < 0 || !Array.isArray(saved.projects) || saved.projects.length > 256 || !Array.isArray(saved.bindings) || saved.bindings.length > 1024 || !Array.isArray(saved.continuations) || saved.continuations.length > 4096 || !Array.isArray(saved.ownership) || saved.ownership.length > 2048)
       throw new Error("Invalid operator storage");
     const ids = new Set;
-    for (const project3 of saved.projects) {
-      fields3(project3, ["id", "name", "cwd", "generation", "connection"], ["id", "name", "cwd", "generation", "connection"]);
-      fields3(project3.connection, ["type", "label", "nodeUrl", "host", "username", "port", "remotePort", "keyPath", "knownHostsPath", "credentialRef", "expectedNodeId"]);
-      text4(project3.id, "Project ID");
-      text4(project3.name, "Project name");
-      if (ids.has(project3.id) || !path4.isAbsolute(project3.cwd))
+    for (const project of saved.projects) {
+      fields3(project, ["id", "name", "cwd", "generation", "connection"], ["id", "name", "cwd", "generation", "connection"]);
+      fields3(project.connection, ["type", "label", "nodeUrl", "host", "username", "port", "remotePort", "keyPath", "knownHostsPath", "credentialRef", "expectedNodeId"]);
+      text4(project.id, "Project ID");
+      text4(project.name, "Project name");
+      if (ids.has(project.id) || !path4.isAbsolute(project.cwd))
         throw new Error("Invalid saved project");
-      ids.add(project3.id);
-      if (!["local", "ssh", "simulation"].includes(project3.connection?.type) || !Number.isSafeInteger(project3.generation) || project3.generation < 0)
+      ids.add(project.id);
+      if (!["local", "ssh", "simulation"].includes(project.connection?.type) || !Number.isSafeInteger(project.generation) || project.generation < 0)
         throw new Error("Invalid saved connection");
     }
     ids.clear();
-    for (const binding2 of saved.bindings) {
-      fields3(binding2, ["id", "projectId", "serverId", "sessionId", "title"], ["id", "projectId", "serverId", "sessionId", "title"]);
-      text4(binding2.id, "Conversation ID");
-      text4(binding2.serverId, "Server ID", 512);
-      text4(binding2.sessionId, "Session ID", 256);
-      if (ids.has(binding2.id) || !saved.projects.some((project3) => project3.id === binding2.projectId))
+    for (const binding of saved.bindings) {
+      fields3(binding, ["id", "projectId", "serverId", "sessionId", "title"], ["id", "projectId", "serverId", "sessionId", "title"]);
+      text4(binding.id, "Conversation ID");
+      text4(binding.serverId, "Server ID", 512);
+      text4(binding.sessionId, "Session ID", 256);
+      if (ids.has(binding.id) || !saved.projects.some((project) => project.id === binding.projectId))
         throw new Error("Invalid saved binding");
-      ids.add(binding2.id);
+      ids.add(binding.id);
     }
     for (const record of saved.continuations) {
       fields3(record, ["conversationId", "requestId", "fingerprint", "status", "experimentId", "planDigest", "checkpoint"], ["conversationId", "requestId", "fingerprint", "status"]);
@@ -6449,7 +6552,7 @@ async function createOperatorService({
           throw new Error("Invalid continuation binding");
     }
     for (const record of saved.ownership) {
-      if (!ids.has(record.conversationId) || !saved.projects.some((project3) => project3.id === record.projectId) || !["camera", "execution", "commissioning"].includes(record.kind))
+      if (!ids.has(record.conversationId) || !saved.projects.some((project) => project.id === record.projectId) || !["camera", "execution", "commissioning"].includes(record.kind))
         throw new Error("Invalid ownership evidence");
       text4(record.nodeId, "Saved Node identity", 512);
       if (record.kind === "commissioning") {
@@ -6459,7 +6562,7 @@ async function createOperatorService({
       }
     }
     fields3(saved.selection, ["projectId", "conversationId"]);
-    if (saved.selection.projectId && !saved.projects.some((project3) => project3.id === saved.selection.projectId))
+    if (saved.selection.projectId && !saved.projects.some((project) => project.id === saved.selection.projectId))
       throw new Error("Invalid selection");
     if (saved.selection.conversationId && !saved.bindings.some((entry) => entry.id === saved.selection.conversationId && entry.projectId === saved.selection.projectId))
       throw new Error("Invalid selection");
@@ -6488,14 +6591,14 @@ async function createOperatorService({
       unresolved: true
     };
     const link = links.get(record.projectId);
-    return link?.status === "connected" && fresh(link.observedAt) && (!controller || controller.generation === project2(record.projectId).generation) ? view : { ...view, recoveryAvailable: false, recoveryFresh: false, recoveryReceivedAt: null };
+    return link?.status === "connected" && fresh(link.observedAt) && (!controller || controller.generation === project(record.projectId).generation) ? view : { ...view, recoveryAvailable: false, recoveryFresh: false, recoveryReceivedAt: null };
   };
   const secrets = secretStore || createNativeSecretStore({ configDir: path4.join(dataDir, "credentials") });
   let closed = false, closing = false, closePromise, storageFailed = false, revision = 0, catalogPending = false, skillTool;
-  const project2 = (id5) => saved.projects.find((item) => item.id === id5);
-  const binding = (id5) => saved.bindings.find((item) => item.id === id5);
+  const project = (id) => saved.projects.find((item) => item.id === id);
+  const binding = (id) => saved.bindings.find((item) => item.id === id);
   const fresh = (at) => Number.isFinite(at) && now() >= at && now() - at < 1e4;
-  const bindingScope = (entry) => ({ projectId: entry.projectId, conversationId: entry.id, serverId: entry.serverId, sessionId: entry.sessionId, connectionGeneration: project2(entry.projectId).generation });
+  const bindingScope = (entry) => ({ projectId: entry.projectId, conversationId: entry.id, serverId: entry.serverId, sessionId: entry.sessionId, connectionGeneration: project(entry.projectId).generation });
   const save = () => {
     if (storageFailed)
       throw fail3("STORAGE_UNAVAILABLE", "Operator evidence could not be saved. Work is blocked; retain the files and resolve owned operations.");
@@ -6512,7 +6615,7 @@ async function createOperatorService({
   const recoveryOwner = (record) => ({
     ...record,
     ...bindingScope(binding(record.conversationId)),
-    projectName: project2(record.projectId).name,
+    projectName: project(record.projectId).name,
     statusUnavailable: true,
     ...!(record.kind === "camera" ? record.captureSessionId : record.kind === "commissioning" ? record.trialId : record.runId) ? {
       error: "The operation acknowledgement did not include an identity. Its outcome is unknown. Inspect the original Node and retain its evidence; another camera or run cannot safely be guessed."
@@ -6532,7 +6635,7 @@ async function createOperatorService({
     } : null };
   };
   function snapshot() {
-    const selected = binding(saved.selection.conversationId), context = contexts.get(selected?.id), selectedProject = project2(saved.selection.projectId);
+    const selected = binding(saved.selection.conversationId), context = contexts.get(selected?.id), selectedProject = project(saved.selection.projectId);
     const selectedLink = links.get(selectedProject?.id), ownsView = Boolean(selected && selectedLink?.physicalOwner === selected.id);
     const view = ownsView ? selectedLink.physical?.workcell.snapshot() : null;
     const connected = selectedLink?.status === "connected" && fresh(selectedLink.observedAt);
@@ -6542,19 +6645,19 @@ async function createOperatorService({
       execution: { ...view.execution, availability: "unavailable", canPrepare: false, canApprove: false },
       commissioning: view.commissioning ? { ...view.commissioning, available: false, fresh: false, receivedAt: null } : null
     } : view;
-    const owners = [...links].flatMap(([id5, link]) => {
-      const owner = binding(link.physicalOwner), view2 = link.physical?.workcell.snapshot();
-      if (!owner || !view2)
+    const owners = [...links].flatMap(([id, link]) => {
+      const owner = binding(link.physicalOwner), view = link.physical?.workcell.snapshot();
+      if (!owner || !view)
         return [];
       return [{
-        projectId: id5,
-        projectName: project2(id5).name,
+        projectId: id,
+        projectName: project(id).name,
         conversationId: owner.id,
         serverId: owner.serverId,
         sessionId: owner.sessionId,
-        connectionGeneration: project2(id5).generation,
+        connectionGeneration: project(id).generation,
         statusUnavailable: link.status !== "connected" || !fresh(link.observedAt),
-        view: view2
+        view
       }];
     });
     return clone3({
@@ -6582,7 +6685,7 @@ async function createOperatorService({
             inUseCount: status === "connected" && cameraIsFresh(camera, now()) ? 1 : null,
             error: link?.error || null
           },
-          conversations: saved.bindings.filter((entry) => entry.projectId === item.id).map(({ id: id5, title, serverId, sessionId }) => ({ id: id5, title, serverId, sessionId }))
+          conversations: saved.bindings.filter((entry) => entry.projectId === item.id).map(({ id, title, serverId, sessionId }) => ({ id, title, serverId, sessionId }))
         };
       }),
       conversation: selected ? {
@@ -6593,21 +6696,22 @@ async function createOperatorService({
         busy: Boolean(context?.busy),
         error: context?.error || null
       } : null,
+      modelRuntime: connected ? selectedLink?.inference || null : null,
       experiments: experimentView(context, selected),
       workcell,
       setupReport: workcell?.setup?.report || null,
-      activeExperiments: [...contexts].flatMap(([id5, entry]) => {
-        const current = entry.experiments.snapshot().current, owner = binding(id5);
-        return ACTIVE.has(current?.phase) ? [{ ...bindingScope(owner), projectName: project2(owner.projectId).name, experiment: current, canStop: true }] : [];
+      activeExperiments: [...contexts].flatMap(([id, entry]) => {
+        const current = entry.experiments.snapshot().current, owner = binding(id);
+        return ACTIVE.has(current?.phase) ? [{ ...bindingScope(owner), projectName: project(owner.projectId).name, experiment: current, canStop: true }] : [];
       }),
       activeCaptures: [
-        ...owners.filter(({ view: view2 }) => view2.camera.stopCaptureSessionId || view2.camera.pending).map(({ view: view2, ...owner }) => ({
+        ...owners.filter(({ view }) => view.camera.stopCaptureSessionId || view.camera.pending).map(({ view, ...owner }) => ({
           ...owner,
-          captureSessionId: view2.camera.stopCaptureSessionId,
-          pending: view2.camera.pending,
-          stopPending: view2.camera.stopPending,
-          stopUnconfirmed: view2.camera.stopUnconfirmed,
-          canStop: !view2.camera.stopPending
+          captureSessionId: view.camera.stopCaptureSessionId,
+          pending: view.camera.pending,
+          stopPending: view.camera.stopPending,
+          stopUnconfirmed: view.camera.stopUnconfirmed,
+          canStop: !view.camera.stopPending
         })),
         ...saved.ownership.filter((record) => requiresRecovery(record) && record.kind === "camera").map((record) => ({
           ...recoveryOwner(record),
@@ -6616,7 +6720,7 @@ async function createOperatorService({
         }))
       ],
       activeRuns: [
-        ...owners.flatMap(({ view: view2, ...owner }) => (view2.execution.activeRuns || []).map((run) => ({ ...owner, run, canStop: !view2.execution.stopPending }))),
+        ...owners.flatMap(({ view, ...owner }) => (view.execution.activeRuns || []).map((run) => ({ ...owner, run, canStop: !view.execution.stopPending }))),
         ...saved.ownership.filter((record) => requiresRecovery(record) && record.kind === "execution").map((record) => ({
           ...recoveryOwner(record),
           run: { runId: record.runId, runDigest: record.runDigest, phase: "OUTCOME_UNKNOWN" },
@@ -6624,16 +6728,16 @@ async function createOperatorService({
         }))
       ],
       activeCommissioning: [
-        ...owners.filter(({ view: view2 }) => view2.commissioning?.unresolved).map(({ view: view2, ...owner }) => ({
+        ...owners.filter(({ view }) => view.commissioning?.unresolved).map(({ view, ...owner }) => ({
           ...owner,
-          statusUnavailable: owner.statusUnavailable || !view2.commissioning.fresh,
-          status: view2.commissioning.status,
-          trialId: view2.commissioning.status?.trial?.trialId || null,
-          nodeSessionId: view2.commissioning.status?.nodeSessionId || null,
-          recoveryStatus: view2.commissioning.recoveryStatus,
-          recoveryView: view2.commissioning,
-          canStop: Boolean(view2.commissioning.status?.trial && !view2.commissioning.stopPending),
-          stopPending: view2.commissioning.stopPending
+          statusUnavailable: owner.statusUnavailable || !view.commissioning.fresh,
+          status: view.commissioning.status,
+          trialId: view.commissioning.status?.trial?.trialId || null,
+          nodeSessionId: view.commissioning.status?.nodeSessionId || null,
+          recoveryStatus: view.commissioning.recoveryStatus,
+          recoveryView: view.commissioning,
+          canStop: Boolean(view.commissioning.status?.trial && !view.commissioning.stopPending),
+          stopPending: view.commissioning.stopPending
         })),
         ...saved.ownership.filter((record) => requiresRecovery(record) && record.kind === "commissioning").map((record) => ({
           ...recoveryOwner(record),
@@ -6653,10 +6757,10 @@ async function createOperatorService({
     if (closed)
       return;
     revision += 1;
-    const state2 = snapshot();
+    const state = snapshot();
     for (const listener of listeners) {
       try {
-        listener(state2);
+        listener(state);
       } catch {}
     }
   };
@@ -6689,15 +6793,15 @@ async function createOperatorService({
     store.release();
     throw publicError(error);
   }
-  function scope(body, { physical: physical2 = false, selected = false, generation = true } = {}) {
-    const entry = binding(body.conversationId), p = project2(body.projectId);
+  function scope(body, { physical = false, selected = false, generation = true } = {}) {
+    const entry = binding(body.conversationId), p = project(body.projectId);
     if (!p || !entry || entry.projectId !== p.id || body.serverId !== undefined && entry.serverId !== body.serverId || body.sessionId !== undefined && entry.sessionId !== body.sessionId)
       throw fail3("SCOPE_CHANGED", "The conversation binding changed. Open the exact project and conversation before acting.");
     if (generation && (!Number.isSafeInteger(body.connectionGeneration) || body.connectionGeneration !== p.generation))
       throw fail3("CONNECTION_CHANGED", "The connection changed. Refresh and review the current project state.");
     if (selected && (saved.selection.projectId !== p.id || saved.selection.conversationId !== entry.id))
       throw fail3("SCOPE_CHANGED", "The selected conversation changed. Review its current proposal before acting.");
-    if (physical2 && (links.get(p.id)?.status !== "connected" || !fresh(links.get(p.id)?.observedAt)))
+    if (physical && (links.get(p.id)?.status !== "connected" || !fresh(links.get(p.id)?.observedAt)))
       throw fail3("CONNECTION_UNAVAILABLE", "Explicitly connect this project and refresh its status before using devices.");
     return { entry, p, context: contexts.get(entry.id) };
   }
@@ -6727,20 +6831,20 @@ async function createOperatorService({
     const reviewed = (ready = true) => {
       ensureOpen();
       scope(body, { selected: true });
-      const state2 = context.experiments.snapshot(), current2 = state2.current;
+      const state = context.experiments.snapshot(), current = state.current;
       if (context.stopEpoch !== epoch)
         throw fail3("STOP_REQUESTED", "Stop was requested. No continuation will resume this experiment.");
-      if (state2.error)
-        throw fail3("STORAGE_UNAVAILABLE", state2.error);
-      if (!current2 || current2.id !== body.experimentId || current2.planDigest !== body.expectedDigest)
+      if (state.error)
+        throw fail3("STORAGE_UNAVAILABLE", state.error);
+      if (!current || current.id !== body.experimentId || current.planDigest !== body.expectedDigest)
         throw fail3("PLAN_CHANGED", "The experiment does not match the reviewed plan. Refresh its exact goal and trial budget.");
-      if (current2.mode !== "simulation" || current2.phase === "OUTCOME_UNKNOWN" || current2.stopStatus === "UNCONFIRMED")
+      if (current.mode !== "simulation" || current.phase === "OUTCOME_UNKNOWN" || current.stopStatus === "UNCONFIRMED")
         throw fail3("OUTCOME_UNKNOWN", "This experiment is unavailable or its outcome is unconfirmed. Use Stop and retain its evidence.");
-      if (now() >= current2.expiresAt)
+      if (now() >= current.expiresAt)
         throw fail3("APPROVAL_EXPIRED", "This experiment approval has expired. Stop it and propose a new bounded experiment.");
-      if (ready && (current2.phase !== "READY" || !Number.isFinite(current2.approvedAt)))
+      if (ready && (current.phase !== "READY" || !Number.isFinite(current.approvedAt)))
         throw fail3("APPROVAL_REQUIRED", "Review and approve this exact simulation proposal before continuing.");
-      return current2;
+      return current;
     };
     requestId(body.requestId);
     if (approve && body.approved !== true)
@@ -6840,7 +6944,7 @@ async function createOperatorService({
         throw fail3("NODE_OWNED", "This Node endpoint already belongs to another project.");
       const credential = p.connection.credentialRef ? JSON.parse(await secrets.read(p.connection.credentialRef) || "null") : null;
       const probeNode = async ({ endpoint, expectedNodeId }) => {
-        const clients = clientFactory({ endpoint, credential: credential || {} });
+        const clients = clientFactory({ endpoint, credential: credential || {}, ...p.connection.type === "ssh" ? { remotePort: p.connection.remotePort || 8876 } : {} });
         const [observation] = await Promise.all([clients.node.inspect(), clients.camera.status()]);
         if (expectedNodeId && observation.nodeName !== expectedNodeId)
           throw fail3("NODE_CHANGED", "The responding Node identity changed. Retain the original project owner.");
@@ -6874,7 +6978,7 @@ async function createOperatorService({
         ...prior,
         ...attached,
         credential,
-        clients: clientFactory({ endpoint: attached.endpoint, credential: credential || {} }),
+        clients: clientFactory({ endpoint: attached.endpoint, credential: credential || {}, ...p.connection.type === "ssh" ? { remotePort: p.connection.remotePort || 8876 } : {} }),
         key,
         status: "connected",
         observedAt: now(),
@@ -6898,12 +7002,12 @@ async function createOperatorService({
         if (closed || links.get(p.id) !== link || link.transportLost)
           return;
         try {
-          const identity3 = await probeNode({ endpoint: link.endpoint, expectedNodeId: p.connection.expectedNodeId });
+          const identity = await probeNode({ endpoint: link.endpoint, expectedNodeId: p.connection.expectedNodeId });
           if (closed || links.get(p.id) !== link || link.transportLost)
             return;
           link.status = "connected";
           link.observedAt = now();
-          link.observation = identity3.observation;
+          link.observation = identity.observation;
           link.error = null;
           failures = 0;
         } catch (error) {
@@ -6949,17 +7053,17 @@ async function createOperatorService({
     if (!view)
       return;
     const retained = saved.ownership.filter((record) => record.projectId !== p.id || requiresRecovery(record) || record.kind === "camera" && !record.captureSessionId && view.camera.error || record.kind === "execution" && !record.runId && view.execution.error).map((record) => record.projectId === p.id && !record.recovered && (record.kind === "camera" && !record.captureSessionId && view.camera.error && !view.camera.pending || record.kind === "execution" && !record.runId && view.execution.error && !view.execution.pending) ? { ...record, status: "OUTCOME_UNKNOWN" } : record);
-    const base2 = { projectId: p.id, conversationId: entry.id, nodeId: p.connection.expectedNodeId, connectionGeneration: p.generation, recovered: false };
+    const base = { projectId: p.id, conversationId: entry.id, nodeId: p.connection.expectedNodeId, connectionGeneration: p.generation, recovered: false };
     if (view.camera.stopCaptureSessionId || view.camera.pending || view.camera.stopUnconfirmed)
-      retained.push({ ...base2, kind: "camera", captureSessionId: view.camera.stopCaptureSessionId || null, status: view.camera.status?.phase || "OUTCOME_UNKNOWN" });
+      retained.push({ ...base, kind: "camera", captureSessionId: view.camera.stopCaptureSessionId || null, status: view.camera.status?.phase || "OUTCOME_UNKNOWN" });
     for (const run of view.execution.activeRuns || []) {
-      const exact2 = view.execution.run?.runId === run.runId ? view.execution.run : run;
-      const pins = Object.fromEntries(["runId", "mode", "capabilityId", "implementationId", "implementationDigest", "configurationId", "configurationDigest", "routeReceiptDigest", "snapshotDigest", "inputs", "approval"].filter((key) => Object.hasOwn(exact2, key)).map((key) => [key, exact2[key]]));
-      retained.push({ ...base2, kind: "execution", runId: run.runId, runDigest: run.runDigest, pins, status: run.phase });
+      const exact = view.execution.run?.runId === run.runId ? view.execution.run : run;
+      const pins = Object.fromEntries(["runId", "mode", "capabilityId", "implementationId", "implementationDigest", "configurationId", "configurationDigest", "routeReceiptDigest", "snapshotDigest", "inputs", "approval"].filter((key) => Object.hasOwn(exact, key)).map((key) => [key, exact[key]]));
+      retained.push({ ...base, kind: "execution", runId: run.runId, runDigest: run.runDigest, pins, status: run.phase });
     }
     if (view.commissioning?.status?.trial && view.commissioning.unresolved)
       retained.push({
-        ...base2,
+        ...base,
         kind: "commissioning",
         trialId: view.commissioning.status.trial.trialId,
         nodeSessionId: view.commissioning.status.nodeSessionId,
@@ -6967,7 +7071,7 @@ async function createOperatorService({
         status: view.commissioning.status.trial.phase
       });
     if (view.execution.pending && !retained.some((record) => record.projectId === p.id && record.kind === "execution"))
-      retained.push({ ...base2, kind: "execution", runId: null, status: "REQUEST_PENDING" });
+      retained.push({ ...base, kind: "execution", runId: null, status: "REQUEST_PENDING" });
     if (JSON.stringify(retained) !== JSON.stringify(saved.ownership)) {
       saved.ownership = retained;
       try {
@@ -6993,7 +7097,7 @@ async function createOperatorService({
         experiments: context.experiments,
         now,
         canPrompt: () => !context.busy,
-        sendIntent: (text5) => submitContinuation?.({ binding: bindingScope(entry), text: text5, requestId: `intent-${randomUUID5()}` }),
+        sendIntent: (text) => submitContinuation?.({ binding: bindingScope(entry), text, requestId: `intent-${randomUUID5()}` }),
         onChange: () => journalPhysical(p, entry, link)
       });
       link.leave = link.physical.workcell.onViewerConnect();
@@ -7014,11 +7118,11 @@ async function createOperatorService({
       link.pendingOwner = entry.id;
     }
     try {
-      const physical2 = await physicalContext(owner);
+      const physical = await physicalContext(owner);
       if (!independent && context.physicalStopEpoch !== epoch)
         throw fail3("STOP_REQUESTED", "Stop was requested before the device action started");
       ensureOpen(independent);
-      return await action(physical2);
+      return await action(physical);
     } finally {
       if (link.mutation === token) {
         link.mutation = null;
@@ -7126,8 +7230,8 @@ async function createOperatorService({
           }
           retained.controller.dispose();
           recoveryControllers.delete(key);
-          const physical2 = await physicalContext(owner);
-          await physical2.workcell.commissioningAction("refresh", {});
+          const physical = await physicalContext(owner);
+          await physical.workcell.commissioningAction("refresh", {});
         }
         emit();
         return snapshot();
@@ -7160,21 +7264,21 @@ async function createOperatorService({
             connection.nodeUrl = connections.normalizeLocalEndpoint(connection.nodeUrl);
           if (connection.type === "ssh")
             buildSshArgs({ ...connection, remotePort: connection.remotePort || 8876 }, 1);
-          const id5 = `project-${randomUUID5()}`, name2 = text4(body.name, "Project name");
-          const cwd = body.cwd ? path4.resolve(text4(body.cwd, "Project folder", 2000)) : await createManagedWorkspace(dataDir, id5);
+          const id = `project-${randomUUID5()}`, name = text4(body.name, "Project name");
+          const cwd = body.cwd ? path4.resolve(text4(body.cwd, "Project folder", 2000)) : await createManagedWorkspace(dataDir, id);
           if (body.cwd)
             await mkdir2(cwd, { recursive: true, mode: 448 });
           saved.projects.push({
-            id: id5,
-            name: name2,
+            id,
+            name,
             cwd,
             generation: 0,
             connection: { ...connection, label: text4(connection.label || (connection.type === "simulation" ? "Synthetic simulation" : connection.type === "ssh" ? connection.host : "This computer"), "Connection label") }
           });
-          saved.selection = { projectId: id5, conversationId: null };
+          saved.selection = { projectId: id, conversationId: null };
           save();
           if (connection.type === "simulation")
-            links.set(id5, { status: "connected", observedAt: now(), error: null });
+            links.set(id, { status: "connected", observedAt: now(), error: null });
           emit();
           return snapshot();
         } finally {
@@ -7185,7 +7289,7 @@ async function createOperatorService({
         fields3(body, ["projectId", "serverId", "sessionId", "title", "activate"], ["projectId", "serverId", "sessionId"]);
         if (body.activate !== undefined && typeof body.activate !== "boolean")
           throw fail3("INVALID_REQUEST", "Session activation must be an explicit boolean");
-        const p = project2(body.projectId);
+        const p = project(body.projectId);
         if (!p)
           throw fail3("PROJECT_CHANGED", "Select an existing project");
         const serverId = text4(body.serverId, "OpenCode server identity", 512), sessionId = text4(body.sessionId, "OpenCode session identity", 256);
@@ -7211,7 +7315,7 @@ async function createOperatorService({
       }
       if (name === "project.select" || name === "session.select") {
         fields3(body, ["projectId", "conversationId"], ["projectId"]);
-        const p = project2(body.projectId), entry = body.conversationId ? binding(body.conversationId) : saved.bindings.find((item) => item.projectId === p?.id);
+        const p = project(body.projectId), entry = body.conversationId ? binding(body.conversationId) : saved.bindings.find((item) => item.projectId === p?.id);
         if (!p || body.conversationId && entry?.projectId !== p.id)
           throw fail3("SCOPE_CHANGED", "The project or conversation changed");
         saved.selection = { projectId: p.id, conversationId: entry?.id || null };
@@ -7221,7 +7325,7 @@ async function createOperatorService({
       }
       if (name === "connection.connect" || name === "connection.disconnect" || name === "connection.saveCredential") {
         fields3(body, ["projectId", "cameraToken", "executionToken"], ["projectId"]);
-        const p = project2(body.projectId);
+        const p = project(body.projectId);
         if (!p)
           throw fail3("PROJECT_CHANGED", "Select an existing project");
         if (name === "connection.connect")
@@ -7303,6 +7407,35 @@ async function createOperatorService({
           return result;
         });
       }
+      if (["inference.refresh", "inference.start", "inference.stop"].includes(name)) {
+        scope(body, { physical: true, selected: true });
+        const link = links.get(owner.p.id);
+        if (!link?.clients?.inference)
+          throw fail3("INFERENCE_UNAVAILABLE", "Model inference is not available on this connection.");
+        const { projectId, conversationId, serverId, sessionId, connectionGeneration, ...payload } = body;
+        const operation = name.slice(10);
+        fields3(payload, operation === "start" ? ["manifestSha256", "generation"] : operation === "stop" ? ["runtimeId"] : []);
+        if (operation === "start" && (typeof payload.manifestSha256 !== "string" || !/^[a-f0-9]{64}$/.test(payload.manifestSha256) || !Number.isSafeInteger(payload.generation) || payload.generation < 1))
+          throw fail3("INVALID_SELECTION", "Refresh the exact selected model before loading.");
+        if (operation === "stop" && (typeof payload.runtimeId !== "string" || !/^[a-f0-9]{32}$/.test(payload.runtimeId)))
+          throw fail3("INVALID_RUNTIME", "Refresh the running model before stopping.");
+        const request = {};
+        link.inferenceRequest = request;
+        try {
+          const result = await link.clients.inference[operation === "refresh" ? "status" : operation](payload);
+          if (links.get(owner.p.id) !== link)
+            throw fail3("CONNECTION_CHANGED", "Reconnect the original Node to inspect its model.");
+          if (link.inferenceRequest === request)
+            link.inference = result;
+        } catch (error) {
+          if (link.inferenceRequest === request)
+            link.inference = null;
+          emit();
+          throw error;
+        }
+        emit();
+        return snapshot();
+      }
       if (name.startsWith("workcell.")) {
         const operation = name.slice(9), stop = operation.endsWith(".stop"), frame = operation === "camera.frame";
         if (!["refresh", "setup.inspect", "camera.start", "camera.stop", "camera.frame", "execution.refresh", "execution.prepare", "execution.approve", "execution.stop", "execution.select", "execution.receipt", "execution.reconcile", "commissioning.refresh", "commissioning.inspect", "commissioning.prepare", "commissioning.approve", "commissioning.stop", "commissioning.recoveryInspect", "commissioning.recoveryConfirm"].includes(operation))
@@ -7323,19 +7456,19 @@ async function createOperatorService({
           if (recovered)
             return recovered;
         }
-        return await withContext(owner.context, stop || frame, () => withPhysical(owner, stop || frame, async (physical2) => {
+        return await withContext(owner.context, stop || frame, () => withPhysical(owner, stop || frame, async (physical) => {
           if (review)
             scope(body, { selected: true });
           const { projectId, conversationId, serverId, sessionId, connectionGeneration, ...payload } = body;
           if (operation === "refresh") {
             fields3(payload, []);
-            return physical2.workcell.refresh();
+            return physical.workcell.refresh();
           }
           if (operation === "setup.inspect")
-            return physical2.inspectSetup(payload);
+            return physical.inspectSetup(payload);
           if (operation === "camera.frame") {
             fields3(payload, ["frameId"], ["frameId"]);
-            return { ...await physical2.workcell.cameraFrame(text4(payload.frameId, "Frame ID", 128)), id: payload.frameId, ...bindingScope(owner.entry), captureSessionId: physical2.workcell.snapshot().camera.stopCaptureSessionId };
+            return { ...await physical.workcell.cameraFrame(text4(payload.frameId, "Frame ID", 128)), id: payload.frameId, ...bindingScope(owner.entry), captureSessionId: physical.workcell.snapshot().camera.stopCaptureSessionId };
           }
           if (["camera.start", "execution.prepare"].includes(operation)) {
             saved.ownership.push({
@@ -7352,7 +7485,7 @@ async function createOperatorService({
             save();
           }
           if (operation.startsWith("camera."))
-            return physical2.workcell.cameraAction(operation.slice(7), payload);
+            return physical.workcell.cameraAction(operation.slice(7), payload);
           if (operation.startsWith("commissioning.") && !stop)
             scope(body, { physical: true, selected: review });
           if (operation === "commissioning.approve") {
@@ -7360,9 +7493,9 @@ async function createOperatorService({
             save();
           }
           if (operation.startsWith("commissioning."))
-            return physical2.workcell.commissioningAction(operation.slice(14), payload);
+            return physical.workcell.commissioningAction(operation.slice(14), payload);
           if (operation.startsWith("execution."))
-            return physical2.workcell.executionAction(operation.slice(10), payload);
+            return physical.workcell.executionAction(operation.slice(10), payload);
           throw fail3("UNSUPPORTED_COMMAND", "This workcell action is unsupported");
         }));
       }
@@ -7385,7 +7518,7 @@ async function createOperatorService({
       checkCancelled();
       const body = clean(payload);
       fields3(body, ["agentToken", "name", "arguments", "callId"], ["agentToken", "name", "arguments", "callId"]);
-      const id5 = tokens.get(body.agentToken), entry = binding(id5);
+      const id = tokens.get(body.agentToken), entry = binding(id);
       if (!entry || !agentToolNames.includes(body.name))
         throw fail3("AGENT_FORBIDDEN", "This agent capability or tool is not available");
       const definition = agentToolDefinitions.find((tool) => tool.name === body.name), args = body.arguments;
@@ -7395,7 +7528,7 @@ async function createOperatorService({
       return await withContext(context, false, async () => {
         checkCancelled();
         let result;
-        const tool = context.tools.find((tool2) => tool2.name === body.name);
+        const tool = context.tools.find((tool) => tool.name === body.name);
         if (tool) {
           try {
             result = await tool.execute(callId, { ...args, ...["propose_local_experiment", "run_simulated_trial"].includes(body.name) ? { requestId: stableId } : {} }, signal);
@@ -7407,11 +7540,11 @@ async function createOperatorService({
           result = await skillTool.execute(callId, args);
         } else {
           scope(bindingScope(entry), { physical: true });
-          result = await withPhysical(owner, false, async (physical2) => {
-            const physicalTool = physical2.tools.find((tool2) => tool2.name === body.name);
+          result = await withPhysical(owner, false, async (physical) => {
+            const physicalTool = physical.tools.find((tool) => tool.name === body.name);
             if (physicalTool)
               return physicalTool.execute(callId, args);
-            const value = body.name === "inspect_physical_setup" ? await physical2.inspectSetup(args) : await physical2.inspectExecution(args);
+            const value = body.name === "inspect_physical_setup" ? await physical.inspectSetup(args) : await physical.inspectExecution(args);
             return { content: [{ type: "text", text: JSON.stringify(value) }] };
           });
         }
@@ -7489,8 +7622,8 @@ async function createOperatorService({
   });
 }
 export {
-  createPublicClients,
-  createOperatorService,
+  agentToolDefinitions,
   agentToolNames,
-  agentToolDefinitions
+  createOperatorService,
+  createPublicClients
 };

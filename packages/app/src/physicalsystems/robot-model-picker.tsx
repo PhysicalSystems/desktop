@@ -7,6 +7,7 @@ import { useLanguage } from "../runtime/i18n/language"
 import { usePlatform } from "../runtime/platform/platform"
 import { showToast } from "../shell/notifications/toast"
 import { useModelAccount } from "./model-account"
+import { ModelRuntime } from "./model-runtime"
 import type { CompanyModelRelease, ModelDevice } from "../../../physicalsystems/src/model-account-types"
 
 function ModelMenu(props: ParentProps<{ label: string; trigger: JSX.Element; action: string; compact?: boolean }>) {
@@ -278,6 +279,7 @@ export function RobotModelPicker() {
             </For>
           </Show>
         </Show>
+        <ModelRuntime />
         <h3>{language.t("physicalsystems.models.generic")}</h3>
         <Show
           when={account!.state.snapshot?.generic.length}

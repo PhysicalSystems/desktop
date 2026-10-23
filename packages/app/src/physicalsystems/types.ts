@@ -282,7 +282,21 @@ export type PhysicalFrame = PhysicalScope & {
   captureSessionId: string
 }
 
+export type ModelRuntimeStatus = {
+  contractVersion: "physicalsystems-inference-v1"
+  phase: "STOPPED" | "STARTING" | "READY" | "STOPPING" | "FAILED" | "UNKNOWN"
+  runtimeId: string | null
+  manifestSha256: string | null
+  generation: number | null
+  releaseId: string | null
+  image: string
+  details: { ready: true; gpu: string; warmupMs: number; chunkSize: number } | null
+  error: string | null
+  motorCommandsSent: 0
+}
+
 export type PhysicalSnapshot = {
+  modelRuntime?: ModelRuntimeStatus | null
   revision: number
   serviceId: string
   activeProjectId: string | null
@@ -332,6 +346,9 @@ export type PhysicalSnapshot = {
 }
 
 export type PhysicalCommand =
+  | ({ type: "inference.refresh" } & PhysicalScope)
+  | ({ type: "inference.start"; manifestSha256: string; generation: number } & PhysicalScope)
+  | ({ type: "inference.stop"; runtimeId: string } & PhysicalScope)
   | { type: "connection.saveCredential"; projectId: string; cameraToken: string; executionToken?: string }
   | {
       type: "project.create"

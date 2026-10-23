@@ -1,6 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.inference.title": "Model on device",
+  "physicalsystems.inference.description": "Load the selected ACT release and check GPU predictions. Robot movement is started separately.",
+  "physicalsystems.inference.connect": "Connect the project's Node to manage its model.",
+  "physicalsystems.inference.unavailable": "Model runtime status is unavailable. This Node needs inference configured.",
+  "physicalsystems.inference.selection": "Select the company release staged and selected on this device. Other models need a compatible runtime and package first.",
+  "physicalsystems.inference.load": "Load model on device",
+  "physicalsystems.inference.stop": "Stop model",
+  "physicalsystems.inference.STOPPED": "Model stopped",
+  "physicalsystems.inference.STARTING": "Loading model and checking predictions…",
+  "physicalsystems.inference.READY": "Ready for predictions",
+  "physicalsystems.inference.STOPPING": "Stopping model…",
+  "physicalsystems.inference.FAILED": "Model failed to start or stopped unexpectedly",
+  "physicalsystems.inference.UNKNOWN": "Previous model process needs to be stopped before loading again",
+  "physicalsystems.inference.failed": "Runtime reported:",
+  "physicalsystems.inference.readyDetail": "{{gpu}} · warm-up prediction {{ms}} ms",
+
   "physicalsystems.projectWebsite.button": "Website workcell",
   "physicalsystems.projectWebsite.title": "Connect {{name}} to the website",
   "physicalsystems.projectWebsite.close": "Close",

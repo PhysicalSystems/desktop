@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "repository": "https://github.com/PhysicalSystems/physicalsystems",
-  "revision": "2d2686bd7344573ee9d53d3895d203e65a5f98de",
+  "revision": "7e2a5d40ff7dd76e5b7ccd1e6fb1844bbe14ab52",
   "dirty": false,
   "sourceFiles": {
     "packages/cli/src/auth/redact.js": "0d5711bd0c49dc4ee084218222869857041ed88f0c27d9b3d9789d049fe6d408",
@@ -23,6 +23,7 @@
     "packages/cli/src/physical/commissioning-client.js": "d8a5d04c1ee7825c6b674efaa9b0024cdcacff2cd3c5d3ce576bd4bf95606d96",
     "packages/cli/src/physical/execution-client.js": "41c76fc65bd9c03794c07019ebbdd9aee16900353611d4157c218653eed96fad",
     "packages/cli/src/physical/execution-contracts.js": "bea47b4e005893801254684b2d3406c6161198d544496ce6176e856b9d2e06ba",
+    "packages/cli/src/physical/inference-client.js": "3d92327428b4f8dcd6f84435addcc61e10a91c0163f6de42514c2298630b3631",
     "packages/cli/src/physical/node-client.js": "fe2dd53ad9116b51ca174243cbaa207d387b34f7418b6d271c43cf64550a9303",
     "packages/cli/src/physical/route-contracts.js": "f46153ce57974b73f3a0082763b3390a3969bd75947f7977347e6c4753b09424",
     "packages/cli/src/physical/setup-client.js": "6697ee1bce7379b74592184e1d9bf58dcf4166882115626298a716a369879da0",
@@ -31,8 +32,9 @@
     "packages/desktop/src/connections.js": "d2e745ace8adf751d3108645b4f9485c931d92b9aaa807ea1d2bb6705c36f66f",
     "packages/operator-core/src/index.js": "61ea131dd93fbb0239f881832962214da4580385cdf49b8945e30ad860c02ea6",
     "packages/operator-service/src/index.js": "ca0b1ae3765bbd079b538766dcf4bc0642a8a5e65988f37210c47a5959242664",
-    "packages/operator-service/src/physical.js": "08358c6128beec5112788958a94a0305b6e6759a82f073bf17200e20ab191fa8",
-    "packages/operator-service/src/service.js": "1c8d70f75cb14e5fcf0d8b3e1dde9bcb2028d8809d6e77e6e0ea1e581700bef9",
+    "packages/operator-service/src/physical.js": "34c453d8458a70f21aa2ae59591f32b8ed9c790eec194b38de5cf777bfd46478",
+    "packages/operator-service/src/service.js": "bb34f43e290bc9e3ac4a987a0792b83f3a005fad698fb5116687658141d44a1b",
+    "packages/operator-service/src/ssh-node-fetch.js": "009bcf3481b5f1398b0351f9c3217a84c56b3d2f86514b1cab718e95e5151653",
     "packages/operator-service/src/tools.js": "8e26e1790c8d65133483bb06ac0e9101cb10686750ffb196bb1562d3d5f0bdd2"
   },
   "artifacts": {
@@ -42,6 +44,6 @@
     "skills/transfer-container/SKILL.md": "aba324cf88db6c1ceb47fe162cd71039f164a511aec4fe12703479f996b609c2",
     "NOTICE": "1694460fc26d199688f6e76a181c69cfd1246697b3c7690aeebdb318793fdbe9",
     "LICENSE": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "operator-service.mjs": "f9f6c5a8e831b2c73f3ae1a03892c51036c84ad3dcd7d7c8ab51be21670ed3e0"
+    "operator-service.mjs": "8b9dfe7da53aa0297424a5b16a5ff07ad354c0f03c43c50db71df3af10fae522"
   }
 }

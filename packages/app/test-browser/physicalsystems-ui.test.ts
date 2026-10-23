@@ -15,7 +15,7 @@ import type { DesktopTheme } from "../../ui/src/theme/types"
 // contexts. No model, provider, Node connection, camera, or hardware is opened.
 const enabled = process.env.PHYSICALSYSTEMS_UI_BROWSER_TESTS === "1"
 test.skipIf(!enabled)(
-  "Physical Systems sidebar, exact approval, and independent Stop",
+  process.env.PHYSICALSYSTEMS_INFERENCE_ONLY === "1" ? "Physical Systems model loading and independent Stop" : "Physical Systems sidebar, exact approval, and independent Stop",
   async () => {
     const temporary = await mkdtemp(join(tmpdir(), "ps-solid-ui-"))
     const fixture = resolve(import.meta.dir, "fixtures/physicalsystems")
@@ -227,6 +227,20 @@ test.skipIf(!enabled)(
       ).toBe("none")
       await js("document.activeElement.blur()")
       expect(await js("return window.__fixture.calls.length")).toBe(0)
+      await js(`window.__fixture.state.projects[0].connection.status='connected'; window.__fixture.emit();
+        window.__fixture.models.state.selection={kind:'company',companyId:'company-a',releaseId:'release-a',manifestSha256:'b'.repeat(64)}; window.__fixture.models.emit();
+        document.querySelector('[data-action=prompt-robot-model]').click()`)
+      const loadModel = "Array.from(document.querySelectorAll('.ps-model-menu button')).find(x=>x.textContent==='Load model on device')"
+      const stopModel = "Array.from(document.querySelectorAll('.ps-model-menu button')).find(x=>x.textContent==='Stop model')"
+      await until(() => js(`return !!(${loadModel}) && !(${loadModel}).disabled`))
+      await js(`(${loadModel}).click()`)
+      await until(() => js("return document.querySelector('.ps-model-menu').textContent.includes('Ready for predictions')"))
+      expect(await js("return window.__fixture.calls.filter(x=>x.type==='inference.start').map(x=>[x.manifestSha256,x.generation])")).toEqual([["b".repeat(64),1]])
+      await js(`(${stopModel}).click()`)
+      await until(() => js(`return !!(${stopModel}) && (${stopModel}).disabled`))
+      await js("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'})); window.__fixture.calls=[]; window.__fixture.state.projects[0].connection.status='offline'; window.__fixture.emit()")
+
+      if (process.env.PHYSICALSYSTEMS_INFERENCE_ONLY === "1") return
       expect(await js("return document.querySelector('.ps-context-connection-label').textContent")).toBe(
         "Synthetic fixture",
       )
