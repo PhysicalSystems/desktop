@@ -9,8 +9,9 @@ import { startDesktopMenu } from "./platform/menu"
 import { startDeepLinks } from "./startup/deep-links"
 import { requireRendererRoot } from "./startup/root"
 import { desktopVersion } from "./startup/sentry"
+import { conversationAccountBridge } from "../shared/conversation-account"
 
-window.api = { ...api, physicalSystems: window.electron.physicalSystems }
+window.api = { ...api, physicalSystems: { ...window.electron.physicalSystems, conversations: conversationAccountBridge(window.electron.physicalSystems.conversations) } }
 
 const root = requireRendererRoot()
 

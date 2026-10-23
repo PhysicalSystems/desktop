@@ -27,12 +27,14 @@ beforeAll(async () => {
     "../shell/notifications/toast",
     "../shell/routes/session",
     "@solidjs/router",
+    "@opencode/ui/theme/context",
   ]
   const result = await build({
     configFile: false,
     root: fixture,
     logLevel: "error",
     define: { "import.meta.url": JSON.stringify("http://fixture.invalid/fixture.js") },
+    worker: { format: "es" },
     plugins: [
       {
         name: "physicalsystems-project-fixture-contexts",
@@ -64,12 +66,13 @@ afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
 })
 
-async function mount(empty = false, failProjectCreate = false, withoutBridge = false) {
+async function mount(empty = false, failProjectCreate = false, withoutBridge = false, cloud = false) {
   const window = new Window({ url: "http://fixture.invalid" })
   windows.push(window)
   window.__fixtureEmpty = empty
   window.__fixtureFailProjectCreate = failProjectCreate
   window.__fixtureWithoutBridge = withoutBridge
+  window.__fixtureCloud = cloud
   window.document.body.innerHTML = '<div id="root"></div>'
   const context = createContext({
     ...Object.fromEntries(
@@ -97,6 +100,8 @@ async function mount(empty = false, failProjectCreate = false, withoutBridge = f
     cancelAnimationFrame: window.cancelAnimationFrame.bind(window),
     atob,
     btoa,
+    TextEncoder,
+    TextDecoder,
     queueMicrotask,
     structuredClone,
   })
@@ -176,6 +181,39 @@ test("sidebar Settings invokes its app command without changing the managed proj
   expect(opened).toBe(1)
   expect(fixture.js("window.__fixture.calls")).toEqual([])
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+})
+
+test("optional native cloud conversations and saved updates preserve the local session and approval", async () => {
+  const fixture = await mount(false, false, false, true)
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([])
+  fixture.js(`document.querySelector('button[aria-label="Workcell rooms"]').click()`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("Connect cloud conversations")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["conversations:refresh"])
+  fixture.js(
+    `Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Connect cloud conversations').click()`,
+  )
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("INERT-CLOUD-CODE")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["conversations:refresh", "conversations:signIn"])
+  expect(fixture.js("window.__fixture.portal.urls")).toEqual([])
+  fixture.js(`Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Workcell updates').click()`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("Connect workcell account")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([
+    "conversations:refresh",
+    "conversations:signIn",
+    "rooms:refresh",
+  ])
+  fixture.js(
+    `Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Back to local conversation').click()`,
+  )
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-approve]")).not.toBeNull()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.models.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+  expect(fixture.js("window.__fixture.state.conversation.sessionId")).toBe("session-a")
 })
 
 test("company portal opens only on click and reports failed browser handoffs without changing the project", async () => {

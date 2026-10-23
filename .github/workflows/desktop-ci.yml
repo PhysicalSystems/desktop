@@ -146,7 +146,7 @@ jobs:
 
       - name: Rendered composer and provider sign-in regressions
         working-directory: packages/app
-        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts ./test-browser/preview-update-button.test.ts ./test-browser/workcell-room.test.ts
+        run: bun test --conditions=browser --preload ./happydom.ts ./test-browser/composer-readiness.test.ts ./test-browser/oauth-browser.test.ts ./test-browser/provider-connection.test.ts ./test-browser/preview-update-button.test.ts ./test-browser/workcell-room.test.ts ./test-browser/cloud-conversation.test.ts
 
       - name: Provider attempt lifecycle regression
         working-directory: packages/app
@@ -182,6 +182,10 @@ jobs:
       - name: Desktop startup diagnostic regression tests
         working-directory: packages/desktop
         run: bun test --timeout 30000 ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/files/external-url.test.ts ./src/main/provider-account-trace.test.ts ./src/main/storage/legacy.test.ts ./src/main/desktop-launch.test.ts ./physical-launch.config.test.ts
+
+      - name: Native cloud conversation bridge regression
+        working-directory: packages/desktop
+        run: bun test ./src/shared/conversation-account.test.ts
 
       - name: Shared updater controller and install handoff regressions
         working-directory: packages/desktop

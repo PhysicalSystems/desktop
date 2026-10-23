@@ -13,6 +13,7 @@ import { createStore } from "solid-js/store"
 import { For, Show } from "solid-js"
 import { modelBridge, models } from "./models"
 import { RobotModelPicker } from "../../../src/physicalsystems/robot-model-picker"
+import { cloudAccounts, conversationBridge, roomsBridge } from "./cloud-accounts"
 
 const [fixture, setFixture] = createStore({
   gate: true,
@@ -109,6 +110,7 @@ if ((window as typeof window & { __fixtureEmpty?: boolean }).__fixtureEmpty) {
 }
 const fixtureWindow = window as typeof window & {
   __fixture: {
+    cloudAccounts: typeof cloudAccounts
     models: typeof models
     portal: typeof portal
     state: PhysicalSnapshot
@@ -139,6 +141,7 @@ const fixtureWindow = window as typeof window & {
 }
 const listeners = new Set<(value: PhysicalSnapshot) => void>()
 fixtureWindow.__fixture = {
+  cloudAccounts,
   models,
   portal,
   state,
@@ -225,6 +228,9 @@ window.addEventListener("error", (event) => fixtureWindow.__fixture.errors.push(
 window.addEventListener("unhandledrejection", (event) => fixtureWindow.__fixture.errors.push(String(event.reason)))
 window.api = {
   physicalSystems: {
+    ...((window as typeof window & { __fixtureCloud?: boolean }).__fixtureCloud
+      ? { conversations: conversationBridge, rooms: roomsBridge }
+      : {}),
     models: modelBridge,
     snapshot: async () => structuredClone(state),
     async recover() {

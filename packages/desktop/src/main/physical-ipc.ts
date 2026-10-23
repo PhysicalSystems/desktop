@@ -10,6 +10,8 @@ import type { LegacyImportPreview } from "../../../physicalsystems/src/migration
 import type { PhysicalCommand } from "@opencode/app/physicalsystems-types"
 import { createDesktopModelAccount } from "./model-account"
 import { createDesktopWorkcellAccount } from "./workcell-account"
+import { createDesktopConversationAccount } from "./conversation-account"
+import { conversationRequestFailure } from "../../../physicalsystems/src/conversation-account"
 import type { PhysicalHost } from "./physical"
 import type { UpdaterController } from "./updater-controller"
 import { createUpdaterSubscriptions } from "./updater-subscriptions"
@@ -29,6 +31,17 @@ export function registerPhysicalIpc(deps: { physical: PhysicalHost; updater: Upd
   ipcMain.handle("physicalsystems:workcells-sign-out", (event) => { assertPhysicalSender(event); return rooms.signOut() })
   ipcMain.handle("physicalsystems:workcells-request", (event, method: unknown, path: unknown, body: unknown) => { assertPhysicalSender(event); return rooms.request(method,path,body) })
   app.once("will-quit", () => rooms.dispose())
+  const conversations = createDesktopConversationAccount()
+  ipcMain.handle("physicalsystems:conversations-snapshot", (event) => { assertPhysicalSender(event); return conversations.snapshot() })
+  ipcMain.handle("physicalsystems:conversations-refresh", (event) => { assertPhysicalSender(event); return conversations.refresh() })
+  ipcMain.handle("physicalsystems:conversations-sign-in", (event) => { assertPhysicalSender(event); return conversations.signIn() })
+  ipcMain.handle("physicalsystems:conversations-cancel-sign-in", (event) => { assertPhysicalSender(event); return conversations.cancelSignIn() })
+  ipcMain.handle("physicalsystems:conversations-sign-out", (event) => { assertPhysicalSender(event); return conversations.signOut() })
+  ipcMain.handle("physicalsystems:conversations-request", (event, method: unknown, path: unknown, body: unknown) => {
+    assertPhysicalSender(event)
+    return conversations.request(method, path, body).then(value => ({ ok: true, value }), conversationRequestFailure)
+  })
+  app.once("will-quit", () => conversations.dispose())
   ipcMain.handle("physicalsystems:models-snapshot", (event) => { assertPhysicalSender(event); return models.snapshot() })
   ipcMain.handle("physicalsystems:models-refresh", (event) => { assertPhysicalSender(event); return models.refresh() })
   ipcMain.handle("physicalsystems:models-sign-in", (event) => { assertPhysicalSender(event); return models.signIn() })

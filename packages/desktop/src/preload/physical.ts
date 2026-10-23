@@ -1,6 +1,7 @@
 import { ipcRenderer } from "electron"
 import type { PhysicalSystemsBridge } from "@opencode/app/physicalsystems-types"
 import type { UpdaterState } from "@opencode/app/updater"
+import type { NativeConversationAccountBridge } from "../shared/conversation-account"
 const updaterCallbacks = new Set<(state: UpdaterState) => void>()
 let updaterState: UpdaterState | undefined
 let updaterSubscription: Promise<void> | undefined
@@ -9,7 +10,7 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
   updaterCallbacks.forEach((callback) => callback(state))
 }
 
-export const physicalBridge: { physicalSystems: PhysicalSystemsBridge; updater: {
+export const physicalBridge: { physicalSystems: Omit<PhysicalSystemsBridge, "conversations"> & { conversations: NativeConversationAccountBridge }; updater: {
 subscribe(cb: (state: UpdaterState) => void): Promise<() => void>
 check(): Promise<UpdaterState>
 download(): Promise<UpdaterState>
@@ -17,6 +18,19 @@ install(): Promise<void>
 recover(): Promise<UpdaterState>
 } } = {
   physicalSystems: {
+    conversations: {
+      snapshot: () => ipcRenderer.invoke("physicalsystems:conversations-snapshot"),
+      refresh: () => ipcRenderer.invoke("physicalsystems:conversations-refresh"),
+      signIn: () => ipcRenderer.invoke("physicalsystems:conversations-sign-in"),
+      cancelSignIn: () => ipcRenderer.invoke("physicalsystems:conversations-cancel-sign-in"),
+      signOut: () => ipcRenderer.invoke("physicalsystems:conversations-sign-out"),
+      request: (method, path, body) => ipcRenderer.invoke("physicalsystems:conversations-request", method, path, body),
+      subscribe: (listener) => {
+        const handler = (_: unknown, state: Parameters<typeof listener>[0]) => listener(state)
+        ipcRenderer.on("physicalsystems:conversations-state", handler)
+        return () => ipcRenderer.removeListener("physicalsystems:conversations-state", handler)
+      },
+    },
     rooms: {
       snapshot: () => ipcRenderer.invoke("physicalsystems:workcells-snapshot"),
       refresh: () => ipcRenderer.invoke("physicalsystems:workcells-refresh"),

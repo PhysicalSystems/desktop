@@ -12,6 +12,7 @@ export const language = {
     ),
 }
 export const useLanguage = () => language
+export const useTheme = () => ({ mode: () => "light" })
 export const portal = {
   urls: [] as string[],
   result: true as boolean | "throw",

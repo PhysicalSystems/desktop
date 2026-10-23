@@ -2,6 +2,20 @@
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
   "physicalsystems.menu": "Physical Systems menu",
+  "physicalsystems.conversations.title": "Workcell conversations",
+  "physicalsystems.conversations.updates": "Workcell updates",
+  "physicalsystems.conversations.signInDescription":
+    "Connect your cloud conversations to use the same private and team chats on the website and desktop. This separate permission allows AI replies; it does not grant robot control or access to local files.",
+  "physicalsystems.conversations.signIn": "Connect cloud conversations",
+  "physicalsystems.conversations.choose": "Conversation",
+  "physicalsystems.conversations.new": "New conversation",
+  "physicalsystems.conversations.visibility": "Visibility",
+  "physicalsystems.conversations.private": "Private",
+  "physicalsystems.conversations.team": "Team",
+  "physicalsystems.conversations.create": "Create conversation",
+  "physicalsystems.conversations.loading": "Loading conversations…",
+  "physicalsystems.conversations.empty": "No conversations are available in this workcell.",
+  "physicalsystems.conversations.more": "More conversations are available on the website.",
   "physicalsystems.rooms.title": "Workcell rooms",
   "physicalsystems.rooms.back": "Back to local conversation",
   "physicalsystems.rooms.error":

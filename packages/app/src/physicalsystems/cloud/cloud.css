@@ -1,0 +1,18 @@
+@import "@opencode/ui/styles/tailwind";
+@import "@opencode/session-ui/styles";
+@import "@opencode/ui/styles/tokens";
+@import "./conversation.css";
+@source "./*.tsx";
+@source "../../composer/**/*.tsx";
+
+/* The isolated frame fills its viewport, including the empty-conversation state. */
+html,
+body,
+#app {
+  height: 100%;
+  min-height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--background-base);
+}
