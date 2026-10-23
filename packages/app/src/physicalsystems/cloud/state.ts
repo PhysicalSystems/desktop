@@ -57,32 +57,57 @@ export function readSnapshot(value: unknown, workcellId: string, conversationId:
 }
 
 type PendingPrompt = { requestId: string; text: string }
-type PendingStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">
+type PendingStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">
 
 export function createCloudConversationClient(options: CloudConversationOptions, storage?: PendingStorage) {
   if (!/^[A-Za-z0-9_:@-]{1,160}$/.test(options.accountKey)) throw new Error("INVALID_CLOUD_ACCOUNT_KEY")
   const path = conversationPath(options.workcellId, options.conversationId)
-  const key = `physicalsystems.cloud-prompt.v1.${options.accountKey}.${options.workcellId}.${options.conversationId}`
+  const key = `physicalsystems.cloud-prompt.v2.${options.accountKey}.${options.workcellId}.${options.conversationId}`
   const controller = new AbortController()
   let disposed = false
   let pending: PendingPrompt | undefined
   let recoveryFailed = false
+  const parse = (saved: string): PendingPrompt => {
+    const value: unknown = JSON.parse(saved)
+    if (
+      !record(value) ||
+      typeof value.requestId !== "string" ||
+      !/^[A-Za-z0-9_-]{8,100}$/.test(value.requestId) ||
+      typeof value.text !== "string" ||
+      !value.text.trim() ||
+      value.text.length > 32000
+    )
+      throw new Error("INVALID_CLOUD_PROMPT")
+    return { requestId: value.requestId, text: value.text }
+  }
+  const savedRequests = () => {
+    if (!storage) throw new Error("CLOUD_PROMPT_RECOVERY_REQUIRED")
+    const keys = Array.from({ length: storage.length }, (_, index) => storage!.key(index))
+      .filter((entry): entry is string => Boolean(entry?.startsWith(`${key}.`)))
+      .sort()
+    if (keys.length > 20) throw new Error("CLOUD_PROMPT_RECOVERY_REQUIRED")
+    return keys.map((entry) => {
+      const value = parse(storage!.getItem(entry) ?? "null")
+      if (entry !== `${key}.${value.requestId}`) throw new Error("INVALID_CLOUD_PROMPT")
+      return value
+    })
+  }
   try {
-    storage ??= sessionStorage
-    const saved = storage.getItem(key)
-    if (saved) {
-      const value: unknown = JSON.parse(saved)
-      if (
-        !record(value) ||
-        typeof value.requestId !== "string" ||
-        !/^[A-Za-z0-9_-]{8,100}$/.test(value.requestId) ||
-        typeof value.text !== "string" ||
-        !value.text.trim() ||
-        value.text.length > 32000
-      )
-        throw new Error("INVALID_CLOUD_PROMPT")
-      pending = { requestId: value.requestId, text: value.text }
+    if (!storage) {
+      storage = localStorage
+      const legacyKey = key.replace("cloud-prompt.v2.", "cloud-prompt.v1.")
+      const legacy = sessionStorage.getItem(legacyKey)
+      if (legacy) {
+        const value = parse(legacy)
+        const target = `${key}.${value.requestId}`
+        const serialized = JSON.stringify(value)
+        const existing = storage.getItem(target)
+        if (existing && existing !== serialized) throw new Error("INVALID_CLOUD_PROMPT")
+        storage.setItem(target, serialized)
+        sessionStorage.removeItem(legacyKey)
+      }
     }
+    pending = savedRequests()[0]
   } catch {
     recoveryFailed = true
   }
@@ -104,29 +129,45 @@ export function createCloudConversationClient(options: CloudConversationOptions,
       if (posting) throw new Error("CLOUD_PROMPT_PENDING")
       if (!text.trim() || text.length > 32000) throw new Error("INVALID_CLOUD_PROMPT")
       if (pending && text !== pending.text) throw new Error("CLOUD_PROMPT_UNCONFIRMED")
+      if (!pending && savedRequests().length >= 20) throw new Error("CLOUD_PROMPT_RECOVERY_REQUIRED")
       pending ??= { requestId: crypto.randomUUID(), text }
       const request = { ...pending }
+      const requestKey = `${key}.${request.requestId}`
+      const serialized = JSON.stringify(request)
+      const existing = storage.getItem(requestKey)
+      if (existing && existing !== serialized) throw new Error("CLOUD_PROMPT_UNCONFIRMED")
       // Persist before dispatch so a reload cannot turn an uncertain POST into a new prompt.
-      storage.setItem(key, JSON.stringify(request))
+      storage.setItem(requestKey, serialized)
       posting = true
       try {
         const result = await options.transport.request("POST", `${path}/prompts`, request, controller.signal)
         check()
         if (!record(result) || result.requestId !== request.requestId || result.admitted !== true)
           throw new Error("CLOUD_PROMPT_UNCONFIRMED")
-        storage.removeItem(key)
-        pending = undefined
+        if (storage.getItem(requestKey) === serialized) storage.removeItem(requestKey)
+        pending = savedRequests()[0]
         return result as CloudPromptAdmission
       } catch (error) {
         const status = record(error) ? error.status : undefined
-        if (active() && typeof status === "number" && status >= 400 && status < 500 && ![408, 429].includes(status)) {
-          storage.removeItem(key)
-          pending = undefined
+        if (
+          active() &&
+          !cloudAccessDenied(error) &&
+          typeof status === "number" &&
+          status >= 400 &&
+          status < 500 &&
+          ![408, 429].includes(status)
+        ) {
+          if (storage.getItem(requestKey) === serialized) storage.removeItem(requestKey)
+          pending = savedRequests()[0]
         }
         throw error
       } finally {
         posting = false
       }
+    },
+    forget() {
+      if (storage) for (const request of savedRequests()) storage.removeItem(`${key}.${request.requestId}`)
+      pending = undefined
     },
     dispose() {
       disposed = true

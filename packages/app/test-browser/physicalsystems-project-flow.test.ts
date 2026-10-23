@@ -66,7 +66,13 @@ afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
 })
 
-async function mount(empty = false, failProjectCreate = false, withoutBridge = false, cloud = false, projectLink = false) {
+async function mount(
+  empty = false,
+  failProjectCreate = false,
+  withoutBridge = false,
+  cloud = false,
+  projectLink = false,
+) {
   const window = new Window({ url: "http://fixture.invalid" })
   windows.push(window)
   window.__fixtureEmpty = empty
@@ -184,41 +190,70 @@ test("sidebar Settings invokes its app command without changing the managed proj
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
 })
 
-test("optional native cloud conversations and saved updates preserve the local session and approval", async () => {
+test("shared workcells and optional cloud AI preserve the existing local session and approval", async () => {
   const fixture = await mount(false, false, false, true)
-  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([])
-  fixture.js(`document.querySelector('button[aria-label="Workcell rooms"]').click()`)
+  expect(fixture.window.document.body.textContent).toContain("Your workcells, together")
+  expect(fixture.window.document.querySelector("[data-ps-projects]")).toBeNull()
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["rooms:refresh"])
+  fixture.js(`document.querySelector('nav.ps-shared-sidebar button[aria-label="Cloud AI conversations"]').click()`)
   await settle()
-  expect(fixture.window.document.body.textContent).toContain("Connect cloud conversations")
-  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["conversations:refresh"])
-  fixture.js(
-    `Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Connect cloud conversations').click()`,
-  )
+  expect(fixture.window.document.body.textContent).toContain("This separate permission allows AI replies")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["rooms:refresh", "conversations:refresh"])
+  fixture.js(`document.querySelector('nav.ps-shared-sidebar button[aria-label="Sign in"]').click()`)
   await settle()
   expect(fixture.window.document.body.textContent).toContain("INERT-CLOUD-CODE")
-  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["conversations:refresh", "conversations:signIn"])
-  expect(fixture.js("window.__fixture.portal.urls")).toEqual([])
-  fixture.js(`Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Workcell updates').click()`)
-  await settle()
-  expect(fixture.window.document.body.textContent).toContain("Connect workcell account")
   expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([
+    "rooms:refresh",
+    "conversations:refresh",
+    "conversations:signIn",
+  ])
+  expect(fixture.js("window.__fixture.portal.urls")).toEqual([])
+  fixture.js(`document.querySelector('nav.ps-shared-sidebar button[aria-label="Shared workcells"]').click()`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("Sign in with your website account")
+  expect(fixture.window.document.body.textContent).not.toContain("INERT-CLOUD-CODE")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([
+    "rooms:refresh",
     "conversations:refresh",
     "conversations:signIn",
     "rooms:refresh",
   ])
-  fixture.js(
-    `Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Back to local conversation').click()`,
-  )
+  fixture.js(`document.querySelector('nav.ps-shared-sidebar button[aria-label="Local workspace"]').click()`)
   await settle()
   expect(fixture.window.document.querySelector("[data-ps-approve]")).not.toBeNull()
+  expect(fixture.window.document.querySelector<HTMLButtonElement>("[data-ps-approve]")!.disabled).toBe(true)
   expect(fixture.js("window.__fixture.calls")).toEqual([])
   expect(fixture.js("window.__fixture.models.calls")).toEqual([])
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
   expect(fixture.js("window.__fixture.state.conversation.sessionId")).toBe("session-a")
 })
 
+test("returning from Settings restores shared mode but choosing another local tab opens that session", async () => {
+  const fixture = await mount(false, false, false, true)
+  const shared = () => fixture.window.document.querySelector("nav.ps-shared-sidebar")
+  expect(shared()).not.toBeNull()
+  fixture.js("window.__fixture.route('/settings')")
+  await settle()
+  expect(fixture.window.document.querySelector<HTMLElement>("[data-ps-workspace]")!.style.display).toBe("none")
+  fixture.js("window.__fixture.route('/server/c2lkZWNhcg==/session/session-a')")
+  await settle()
+  expect(shared()).not.toBeNull()
+  expect(fixture.window.document.querySelector("[data-ps-projects]")).toBeNull()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  fixture.js("window.__fixture.route('/settings')")
+  await settle()
+  fixture.js("window.__fixture.route('/server/c2lkZWNhcg==/session/session-b')")
+  await settle()
+  expect(Boolean(shared())).toBe(false)
+  expect(fixture.window.document.querySelector("[data-ps-projects]")).not.toBeNull()
+  expect(fixture.js("window.__fixture.pathname()")).toBe("/server/c2lkZWNhcg==/session/session-b")
+})
+
 test("confirming a pending website workcell unlocks editing and clears its retry and error state", async () => {
   const fixture = await mount(false, false, false, true, true)
+  expect(fixture.window.document.querySelector("[data-ps-projects]")).toBeNull()
+  fixture.js(`document.querySelector('nav.ps-shared-sidebar button[aria-label="Local workspace"]').click()`)
+  await settle()
   fixture.js(`Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Website workcell').click()`)
   await settle()
   const dialog = () => fixture.window.document.querySelector<HTMLDialogElement>(".ps-project-website")!
@@ -233,7 +268,11 @@ test("confirming a pending website workcell unlocks editing and clears its retry
   expect(fields().disabled).toBe(false)
   expect(dialog().textContent).not.toContain("Retry saved request")
   expect(dialog().querySelector('[role="alert"]')).toBeNull()
-  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["rooms:refresh", "project:retry"])
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([
+    "rooms:refresh",
+    "rooms:refresh",
+    "project:retry",
+  ])
   expect(fixture.js("window.__fixture.calls")).toEqual([])
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
 })

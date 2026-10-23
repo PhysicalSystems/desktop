@@ -27,7 +27,14 @@ export function createWorkcellAccount(input: Input) {
     !(base.protocol === "http:" && ["localhost", "127.0.0.1"].includes(base.hostname))
   )
     throw new Error("INVALID_WORKCELL_ORIGIN")
-  const state: WorkcellAccountState = { revision: 0, status: "signed_out", account: null, pending: null, error: null }
+  const state: WorkcellAccountState = {
+    revision: 0,
+    sessionId: null,
+    status: "signed_out",
+    account: null,
+    pending: null,
+    error: null,
+  }
   const now = input.now ?? Date.now
   let session: Session | undefined
   let attempt: { deviceCode: string; verifier: string; expiresAt: string; interval: number } | undefined
@@ -58,6 +65,7 @@ export function createWorkcellAccount(input: Input) {
   }
   const clear = async () => {
     session = undefined
+    state.sessionId = null
     state.account = null
     await persist(() => input.store.clear())
   }
@@ -78,7 +86,8 @@ export function createWorkcellAccount(input: Input) {
     if (response.status === 403 && options.method === "PATCH") throw new Error("WORKCELL_READ_ONLY")
     if ([401, 403, 410].includes(response.status))
       throw new Error(response.status === 410 ? "SIGN_IN_EXPIRED" : "ACCESS_REVOKED")
-    if (!response.ok && response.status !== 409) throw new Error("UNAVAILABLE")
+    if (!response.ok && response.status !== 409)
+      throw Object.assign(new Error("WORKCELL_HTTP_ERROR"), { status: response.status })
     if (response.status === 204) return {}
     const reader = response.body?.getReader()
     if (!reader) throw new Error("INVALID_RESPONSE")
@@ -96,8 +105,9 @@ export function createWorkcellAccount(input: Input) {
       const value = record(JSON.parse(body + decoder.decode()))
       if (!response.ok) {
         if (value.code === "metadata_conflict") throw new Error("METADATA_CONFLICT")
-        if (value.code === "idempotency_conflict") throw new Error("IDEMPOTENCY_CONFLICT")
-        throw new Error("UNAVAILABLE")
+        if (value.code === "idempotency_conflict")
+          throw Object.assign(new Error("IDEMPOTENCY_CONFLICT"), { status: 409 })
+        throw Object.assign(new Error("WORKCELL_HTTP_ERROR"), { status: response.status })
       }
       return value
     } finally {
@@ -148,6 +158,7 @@ export function createWorkcellAccount(input: Input) {
         throw new Error("ACCESS_REVOKED")
       if (!active(ticket)) return snapshot()
       state.account = session.account
+      state.sessionId = session.sessionId
       state.status = "signed_in"
       state.error = null
       state.pending = null
@@ -190,6 +201,7 @@ export function createWorkcellAccount(input: Input) {
     state.error = null
     state.pending = null
     state.account = null
+    state.sessionId = null
     attempt = undefined
     if (!input.store.available()) return fail(new Error("SECURE_STORE_UNAVAILABLE"), ticket)
     state.status = "signing_in"
@@ -299,8 +311,67 @@ export function createWorkcellAccount(input: Input) {
     },
   }
 }
+/** Preserve known retry/access semantics across Electron without returning remote error text. */
+export function workcellRequestFailure(error: unknown) {
+  const message = error instanceof Error ? error.message : "UNAVAILABLE"
+  const code = [
+    "WORKCELL_HTTP_ERROR",
+    "WORKCELL_ACCESS_REVOKED",
+    "WORKCELL_SIGN_IN_REQUIRED",
+    "WORKCELL_SESSION_CHANGED",
+    "ACCESS_REVOKED",
+    "SIGN_IN_EXPIRED",
+    "INVALID_WORKCELL_REQUEST",
+    "WORKCELL_READ_ONLY",
+    "METADATA_CONFLICT",
+    "IDEMPOTENCY_CONFLICT",
+  ].includes(message)
+    ? message
+    : "UNAVAILABLE"
+  const status =
+    error instanceof Error &&
+    "status" in error &&
+    typeof error.status === "number" &&
+    Number.isInteger(error.status) &&
+    error.status >= 400 &&
+    error.status <= 599
+      ? error.status
+      : undefined
+  return { ok: false as const, error: code, ...(status !== undefined ? { status } : {}) }
+}
+
 export function validateRoomRequest(method: unknown, path: unknown, body?: unknown) {
-  if (typeof path !== "string" || path.length > 400) throw new Error("INVALID_WORKCELL_REQUEST")
+  if (typeof path !== "string" || path.length > 1200) throw new Error("INVALID_WORKCELL_REQUEST")
+  const conversation = /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/conversations(?:\/[A-Za-z0-9_-]{1,160})?$/
+  if (
+    method === "GET" &&
+    body === undefined &&
+    (conversation.test(path) ||
+      /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/conversations\?(?:cursor=[A-Za-z0-9_-]{1,512}&)?limit=(?:[1-9]\d?|1\d\d|200)$/.test(
+        path,
+      ) ||
+      /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/conversations\/[A-Za-z0-9_-]{1,160}\/events\?after=\d{1,15}&limit=(?:[1-9]\d?|100)$/.test(
+        path,
+      ) ||
+      /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/conversations\/[A-Za-z0-9_-]{1,160}\/messages\?(?:before=[1-9]\d{0,14}&)?limit=(?:[1-9]\d?|100)$/.test(
+        path,
+      ))
+  )
+    return
+  if (method === "POST" && /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/conversations$/.test(path)) {
+    const value = record(body)
+    if (
+      Object.keys(value).every((key) => ["requestId", "title", "visibility"].includes(key)) &&
+      typeof value.requestId === "string" &&
+      /^[A-Za-z0-9_-]{8,100}$/.test(value.requestId) &&
+      typeof value.title === "string" &&
+      value.title.trim().length > 0 &&
+      value.title.length <= 120 &&
+      ["private", "team"].includes(String(value.visibility))
+    )
+      return
+    throw new Error("INVALID_WORKCELL_REQUEST")
+  }
   if (
     method === "GET" &&
     body === undefined &&
@@ -328,7 +399,10 @@ export function validateRoomRequest(method: unknown, path: unknown, body?: unkno
     readProjectMetadata(metadata)
     return
   }
-  if (method === "POST" && /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}\/messages$/.test(path)) {
+  if (
+    method === "POST" &&
+    /^\/api\/workcells\/[A-Za-z0-9_-]{1,160}(?:\/conversations\/[A-Za-z0-9_-]{1,160})?\/messages$/.test(path)
+  ) {
     const value = record(body)
     if (
       Object.keys(value).every((key) => ["requestId", "content"].includes(key)) &&

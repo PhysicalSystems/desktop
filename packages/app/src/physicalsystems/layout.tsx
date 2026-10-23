@@ -21,9 +21,7 @@ import { usePhysicalSystems } from "./context"
 import { PhysicalPanel } from "./panel"
 import { LeLabCameras } from "./lelab-cameras"
 import { ModelAccountMenu } from "./robot-model-picker"
-import { NativeWorkcellRooms } from "./rooms-native"
 import { NativeCloudConversations } from "./conversations-native"
-import { prepareTaskPrompt } from "./rooms/state"
 import { MigrationHistory } from "./migration"
 import { ProjectCredentials } from "./credentials"
 import { ProjectWorkcell } from "./project-workcell"
@@ -242,9 +240,9 @@ function PhysicalWorkspace(props: ParentProps) {
   )
   const [state, setState] = createStore({
     create: false,
-    cloudRooms: false,
     search: "",
-    cloudUpdates: false,
+    cloudRooms: Boolean(window.api?.physicalSystems?.rooms),
+    cloudAi: false,
     creatingProject: false,
     initialized: false,
     initializing: false,
@@ -265,6 +263,21 @@ function PhysicalWorkspace(props: ParentProps) {
     const match = /^\/server\/([^/]+)\/session\/([^/]+)$/.exec(location.pathname)
     if (!match) return
     return { serverId: String(requireServerKey(match[1])), sessionId: decodeURIComponent(match[2]) }
+  })
+  let previousPath = location.pathname
+  let settingsOrigin: string | undefined
+  const settingsRoute = () => location.pathname === "/settings"
+  createEffect(() => {
+    const path = location.pathname
+    if (path !== previousPath) {
+      if (path === "/settings") settingsOrigin = previousPath
+      else {
+        const returningFromSettings = previousPath === "/settings" && path === settingsOrigin
+        if (!returningFromSettings && route()) setState("cloudRooms", false)
+        settingsOrigin = undefined
+      }
+    }
+    previousPath = path
   })
   const canLinkConversation = createMemo(() => {
     const identity = route()
@@ -418,6 +431,7 @@ function PhysicalWorkspace(props: ParentProps) {
   createEffect(() => {
     if (
       state.initialized ||
+      state.cloudRooms ||
       !ready() ||
       !physical.state.snapshot ||
       physical.state.unavailable ||
@@ -486,341 +500,321 @@ function PhysicalWorkspace(props: ParentProps) {
     if (recent) return selectConversation(project, recent)
     return newConversation(project)
   }
-  return (
-    <div class="ps-workspace" data-ps-workspace>
-      <nav
-        class="ps-projects"
-        data-ps-projects
-        data-collapsed={!physical.state.sidebarOpen}
-        aria-label={language.t("physicalsystems.projects")}
+  const workspace = (
+    <div class="ps-workspace" data-ps-workspace style={{ display: settingsRoute() ? "none" : undefined }}>
+      <Show
+        keyed
+        when={
+          state.cloudRooms &&
+          (state.cloudAi ? window.api?.physicalSystems?.conversations : window.api?.physicalSystems?.rooms)
+        }
       >
-        <div class="ps-heading">
-          <Show when={physical.state.sidebarOpen}>
-            <strong class="ps-brand">{language.t("physicalsystems.name")}</strong>
-          </Show>
-          <button
-            type="button"
-            aria-label={language.t(
-              physical.state.sidebarOpen ? "physicalsystems.project.collapse" : "physicalsystems.project.expand",
-            )}
-            aria-expanded={physical.state.sidebarOpen}
-            onClick={() => {
-              close()
-              setSaved("sidebarOpen", !physical.state.sidebarOpen)
-            }}
-          >
-            {physical.state.sidebarOpen ? "‹" : "›"}
-          </button>
-        </div>
-        <div class="ps-primary-navigation">
-          <button
-            class="ps-nav-action ps-create-project"
-            type="button"
-            title={language.t("physicalsystems.project.create")}
-            aria-label={language.t("physicalsystems.project.create")}
-            disabled={state.creatingProject || state.creatingConversation}
-            onClick={() => setState("create", true)}
-          >
-            <Icon name="plus" />
-            <Show when={physical.state.sidebarOpen}>
-              <span>{language.t("physicalsystems.project.create")}</span>
-            </Show>
-          </button>
-          <Show when={physical.state.sidebarOpen}>
-            <label class="ps-workcell-search">
-              <Icon name="magnifying-glass" />
-              <input
-                type="search"
-                value={state.search}
-                aria-label={language.t("physicalsystems.navigation.search")}
-                placeholder={language.t("physicalsystems.navigation.search")}
-                onInput={(event) => setState("search", event.currentTarget.value)}
-              />
-            </label>
-          </Show>
-          <For
-            each={
-              [
-                { page: "artefacts", icon: "cube", key: "physicalsystems.navigation.artefacts" },
-                { page: "skills", icon: "brain", key: "physicalsystems.navigation.skills" },
-                { page: "planned", icon: "checklist", key: "physicalsystems.navigation.planned" },
-              ] as const
+        {(bridge) => (
+          <NativeCloudConversations
+            bridge={bridge}
+            allowAi={state.cloudAi}
+            close={() => setState("cloudRooms", false)}
+            openSettings={openSettings}
+            switchAccountMode={
+              window.api?.physicalSystems?.conversations ? () => setState("cloudAi", !state.cloudAi) : undefined
             }
-          >
-            {(item) => (
-              <button
-                class="ps-nav-action"
-                type="button"
-                title={language.t("physicalsystems.navigation.browser", { name: language.t(item.key) })}
-                aria-label={language.t("physicalsystems.navigation.browser", { name: language.t(item.key) })}
-                onClick={() => void openPortal(item.page)}
-              >
-                <Icon name={item.icon} />
-                <Show when={physical.state.sidebarOpen}>
-                  <span>{language.t(item.key)}</span>
-                  <Icon name="outline-square-arrow" size="small" />
-                </Show>
-              </button>
-            )}
-          </For>
-        </div>
-        <Show when={physical.state.sidebarOpen}>
-          <div class="ps-section-label">{language.t("physicalsystems.projects")}</div>
-        </Show>
-        <div class="ps-project-list">
-          <For
-            each={physical.state.snapshot?.projects.filter((project) =>
-              project.name.toLocaleLowerCase().includes(state.search.trim().toLocaleLowerCase()),
-            )}
-          >
-            {(project) => (
-              <button
-                type="button"
-                ref={(element) => anchors.set(project.id, element)}
-                class="ps-project-row"
-                disabled={state.creatingProject || state.creatingConversation || physical.state.pending.selection}
-                data-ps-project-row={project.id}
-                aria-current={physical.state.snapshot?.activeProjectId === project.id ? "true" : undefined}
-                aria-label={language.t("physicalsystems.project.details", { name: project.name })}
-                aria-expanded={state.hover === project.id}
-                aria-controls={state.hover === project.id ? "ps-project-hover" : undefined}
-                onPointerEnter={() => show(project.id)}
-                onPointerLeave={scheduleClose}
-                onFocus={() => {
-                  if (!popup.restoring) show(project.id)
-                }}
-                onBlur={scheduleClose}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") close(true)
-                  if (event.key === "ArrowRight") {
-                    event.preventDefault()
-                    show(project.id)
-                    queueMicrotask(() => popup.element?.querySelector<HTMLButtonElement>("button")?.focus())
-                  }
-                }}
-                onClick={() => void selectProject(project)}
-              >
-                <span class="ps-project-symbol" aria-hidden="true">
-                  {project.name.slice(0, 1).toUpperCase()}
-                </span>
-                <Show when={physical.state.sidebarOpen}>
-                  <span class="ps-project-label">
-                    <strong>{project.name}</strong>
-                    <ConnectionStatus project={project} />
-                  </span>
-                  <span class="ps-project-dot" data-status={project.connection.status} aria-hidden="true" />
-                </Show>
-              </button>
-            )}
-          </For>
-          <Show
-            when={
-              state.search.trim() &&
-              physical.state.snapshot?.projects.length &&
-              !physical.state.snapshot.projects.some((project) =>
-                project.name.toLocaleLowerCase().includes(state.search.trim().toLocaleLowerCase()),
-              ) &&
-              physical.state.sidebarOpen
-            }
-          >
-            <p class="ps-muted">{language.t("physicalsystems.navigation.noResults")}</p>
-          </Show>
-          <Show when={!physical.state.snapshot?.projects.length && physical.state.sidebarOpen}>
-            <p class="ps-muted">{language.t("physicalsystems.project.empty")}</p>
-          </Show>
-        </div>
-        <MigrationHistory />
-        <Show when={window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms}>
-          <button
-            type="button"
-            class="ps-settings-button"
-            aria-label={language.t("physicalsystems.rooms.title")}
-            onClick={() => setState({ cloudRooms: true, cloudUpdates: false })}
-          >
-            <Icon name="chat" />
-            <Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.rooms.title")}</Show>
-          </button>
-        </Show>
-        <button
-          type="button"
-          class="ps-settings-button"
-          data-ps-settings
-          aria-label={language.t("command.settings.open")}
-          title={language.t("command.settings.open")}
-          onClick={openSettings}
+          />
+        )}
+      </Show>
+      <Show when={!state.cloudRooms}>
+        <nav
+          class="ps-projects"
+          data-ps-projects
+          data-collapsed={!physical.state.sidebarOpen}
+          aria-label={language.t("physicalsystems.projects")}
         >
-          <Icon name="settings-gear" />
-          <Show when={physical.state.sidebarOpen}>{language.t("desktop.menu.settings")}</Show>
-        </button>
-        <div class="ps-account-footer">
-          <ModelAccountMenu expanded={physical.state.sidebarOpen} />
-        </div>
-      </nav>
-      <div class="ps-conversation">
-        <div class="ps-contextbar">
-          <div>
-            <Show when={physical.project()}>
-              {(project) => (
-                <>
-                  <strong>{project().name}</strong>
-                  <Show when={project().connection.kind === "simulation"}>
-                    <span class="ps-muted" data-ps-connection-kind="simulation">
-                      {language.t("physicalsystems.project.simulation")}
-                    </span>
-                  </Show>
-                  <Show when={project().connection.label}>
-                    <span class="ps-context-connection-label" title={project().connection.label}>
-                      {project().connection.label}
-                    </span>
-                  </Show>
-                  <ConnectionStatus project={project()} />
-                </>
-              )}
+          <div class="ps-heading">
+            <Show when={physical.state.sidebarOpen}>
+              <strong class="ps-brand">{language.t("physicalsystems.name")}</strong>
             </Show>
+            <button
+              type="button"
+              aria-label={language.t(
+                physical.state.sidebarOpen ? "physicalsystems.project.collapse" : "physicalsystems.project.expand",
+              )}
+              aria-expanded={physical.state.sidebarOpen}
+              onClick={() => {
+                close()
+                setSaved("sidebarOpen", !physical.state.sidebarOpen)
+              }}
+            >
+              {physical.state.sidebarOpen ? "‹" : "›"}
+            </button>
           </div>
-          <div class="ps-actions">
-            <Show
-              when={
-                physical.project() &&
-                window.api?.physicalSystems?.projectWorkcells &&
-                window.api?.physicalSystems?.rooms
+          <div class="ps-primary-navigation">
+            <button
+              class="ps-nav-action ps-create-project"
+              type="button"
+              title={language.t("physicalsystems.project.create")}
+              aria-label={language.t("physicalsystems.project.create")}
+              disabled={state.creatingProject || state.creatingConversation}
+              onClick={() => setState("create", true)}
+            >
+              <Icon name="plus" />
+              <Show when={physical.state.sidebarOpen}>
+                <span>{language.t("physicalsystems.project.create")}</span>
+              </Show>
+            </button>
+            <Show when={physical.state.sidebarOpen}>
+              <label class="ps-workcell-search">
+                <Icon name="magnifying-glass" />
+                <input
+                  type="search"
+                  value={state.search}
+                  aria-label={language.t("physicalsystems.navigation.search")}
+                  placeholder={language.t("physicalsystems.navigation.search")}
+                  onInput={(event) => setState("search", event.currentTarget.value)}
+                />
+              </label>
+            </Show>
+            <For
+              each={
+                [
+                  { page: "artefacts", icon: "cube", key: "physicalsystems.navigation.artefacts" },
+                  { page: "skills", icon: "brain", key: "physicalsystems.navigation.skills" },
+                  { page: "planned", icon: "checklist", key: "physicalsystems.navigation.planned" },
+                ] as const
               }
             >
-              <button type="button" onClick={() => setState("websiteProject", physical.project()!.id)}>
-                {language.t("physicalsystems.projectWebsite.button")}
-              </button>
-            </Show>
-            <Show when={canLinkConversation()}>
-              <button
-                type="button"
-                data-ps-link-conversation
-                disabled={
-                  physical.state.binding ||
-                  physical.state.unavailable ||
-                  state.creatingProject ||
-                  state.creatingConversation
-                }
-                onClick={() => {
-                  const project = physical.project()
-                  const identity = route()
-                  if (project && identity) void bind(project.id, identity)
-                }}
-              >
-                {language.t(
-                  physical.state.binding ? "physicalsystems.conversation.binding" : "physicalsystems.conversation.bind",
-                  { name: physical.project()?.name ?? "" },
-                )}
-              </button>
-            </Show>
-            <Show when={physical.project()}>
-              {(project) => (
+              {(item) => (
                 <button
+                  class="ps-nav-action"
                   type="button"
-                  data-ps-new-conversation
-                  classList={{ "ps-compose": physical.bound(), "ps-primary": !physical.bound() }}
-                  aria-label={language.t("physicalsystems.conversation.newInProject", { name: project().name })}
-                  title={language.t("physicalsystems.conversation.newInProject", { name: project().name })}
-                  disabled={
-                    !project().cwd ||
-                    !server.key ||
-                    physical.state.unavailable ||
-                    physical.state.binding ||
-                    physical.state.pending.selection ||
-                    state.creatingProject ||
-                    state.creatingConversation
-                  }
-                  onClick={() => void newConversation(project())}
+                  title={language.t("physicalsystems.navigation.browser", { name: language.t(item.key) })}
+                  aria-label={language.t("physicalsystems.navigation.browser", { name: language.t(item.key) })}
+                  onClick={() => void openPortal(item.page)}
                 >
-                  <Icon name="edit" size="small" aria-hidden="true" />
-                  <Show when={!physical.bound()}>
-                    {language.t("physicalsystems.conversation.newInProject", { name: project().name })}
+                  <Icon name={item.icon} />
+                  <Show when={physical.state.sidebarOpen}>
+                    <span>{language.t(item.key)}</span>
+                    <Icon name="outline-square-arrow" size="small" />
                   </Show>
                 </button>
               )}
+            </For>
+          </div>
+          <Show when={physical.state.sidebarOpen}>
+            <div class="ps-section-label">{language.t("physicalsystems.projects")}</div>
+          </Show>
+          <div class="ps-project-list">
+            <For
+              each={physical.state.snapshot?.projects.filter((project) =>
+                project.name.toLocaleLowerCase().includes(state.search.trim().toLocaleLowerCase()),
+              )}
+            >
+              {(project) => (
+                <button
+                  type="button"
+                  ref={(element) => anchors.set(project.id, element)}
+                  class="ps-project-row"
+                  disabled={state.creatingProject || state.creatingConversation || physical.state.pending.selection}
+                  data-ps-project-row={project.id}
+                  aria-current={physical.state.snapshot?.activeProjectId === project.id ? "true" : undefined}
+                  aria-label={language.t("physicalsystems.project.details", { name: project.name })}
+                  aria-expanded={state.hover === project.id}
+                  aria-controls={state.hover === project.id ? "ps-project-hover" : undefined}
+                  onPointerEnter={() => show(project.id)}
+                  onPointerLeave={scheduleClose}
+                  onFocus={() => {
+                    if (!popup.restoring) show(project.id)
+                  }}
+                  onBlur={scheduleClose}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") close(true)
+                    if (event.key === "ArrowRight") {
+                      event.preventDefault()
+                      show(project.id)
+                      queueMicrotask(() => popup.element?.querySelector<HTMLButtonElement>("button")?.focus())
+                    }
+                  }}
+                  onClick={() => void selectProject(project)}
+                >
+                  <span class="ps-project-symbol" aria-hidden="true">
+                    {project.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <Show when={physical.state.sidebarOpen}>
+                    <span class="ps-project-label">
+                      <strong>{project.name}</strong>
+                      <ConnectionStatus project={project} />
+                    </span>
+                    <span class="ps-project-dot" data-status={project.connection.status} aria-hidden="true" />
+                  </Show>
+                </button>
+              )}
+            </For>
+            <Show
+              when={
+                state.search.trim() &&
+                physical.state.snapshot?.projects.length &&
+                !physical.state.snapshot.projects.some((project) =>
+                  project.name.toLocaleLowerCase().includes(state.search.trim().toLocaleLowerCase()),
+                ) &&
+                physical.state.sidebarOpen
+              }
+            >
+              <p class="ps-muted">{language.t("physicalsystems.navigation.noResults")}</p>
             </Show>
-            <Show when={!physical.state.panelOpen}>
-              <button
-                type="button"
-                aria-label={language.t("physicalsystems.panel.open")}
-                onClick={() => physical.setState("panelOpen", true)}
-              >
-                {language.t("physicalsystems.name")}
-              </button>
+            <Show when={!physical.state.snapshot?.projects.length && physical.state.sidebarOpen}>
+              <p class="ps-muted">{language.t("physicalsystems.project.empty")}</p>
             </Show>
           </div>
-        </div>
-        <Show when={physical.lelab}>
-          {(bridge) => <LeLabCameras bridge={bridge()} scope={JSON.stringify([physical.project()?.id, route()])} />}
-        </Show>
-        <Show
-          when={
-            physical.state.failures.binding || physical.state.failures.selection || physical.state.failures.conversation
-          }
-        >
-          <p class="ps-error" role="alert">
-            {physical.state.failures.binding ||
-              physical.state.failures.selection ||
-              physical.state.failures.conversation}
-          </p>
-        </Show>
-        <div
-          class="ps-session-content"
-          style={{ "--ps-welcome-wordmark": JSON.stringify(language.t("physicalsystems.name")) }}
-        >
+          <MigrationHistory />
+          <Show when={window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms}>
+            <button
+              type="button"
+              class="ps-settings-button"
+              aria-label={language.t("physicalsystems.rooms.title")}
+              onClick={() => setState({ cloudRooms: true, cloudAi: false })}
+            >
+              <Icon name="chat" />
+              <Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.rooms.title")}</Show>
+            </button>
+          </Show>
+          <button
+            type="button"
+            class="ps-settings-button"
+            data-ps-settings
+            aria-label={language.t("command.settings.open")}
+            title={language.t("command.settings.open")}
+            onClick={openSettings}
+          >
+            <Icon name="settings-gear" />
+            <Show when={physical.state.sidebarOpen}>{language.t("desktop.menu.settings")}</Show>
+          </button>
+          <div class="ps-account-footer">
+            <ModelAccountMenu expanded={physical.state.sidebarOpen} />
+          </div>
+        </nav>
+        <div class="ps-conversation">
+          <div class="ps-contextbar">
+            <div>
+              <Show when={physical.project()}>
+                {(project) => (
+                  <>
+                    <strong>{project().name}</strong>
+                    <Show when={project().connection.kind === "simulation"}>
+                      <span class="ps-muted" data-ps-connection-kind="simulation">
+                        {language.t("physicalsystems.project.simulation")}
+                      </span>
+                    </Show>
+                    <Show when={project().connection.label}>
+                      <span class="ps-context-connection-label" title={project().connection.label}>
+                        {project().connection.label}
+                      </span>
+                    </Show>
+                    <ConnectionStatus project={project()} />
+                  </>
+                )}
+              </Show>
+            </div>
+            <div class="ps-actions">
+              <Show
+                when={
+                  physical.project() &&
+                  window.api?.physicalSystems?.projectWorkcells &&
+                  window.api?.physicalSystems?.rooms
+                }
+              >
+                <button type="button" onClick={() => setState("websiteProject", physical.project()!.id)}>
+                  {language.t("physicalsystems.projectWebsite.button")}
+                </button>
+              </Show>
+              <Show when={canLinkConversation()}>
+                <button
+                  type="button"
+                  data-ps-link-conversation
+                  disabled={
+                    physical.state.binding ||
+                    physical.state.unavailable ||
+                    state.creatingProject ||
+                    state.creatingConversation
+                  }
+                  onClick={() => {
+                    const project = physical.project()
+                    const identity = route()
+                    if (project && identity) void bind(project.id, identity)
+                  }}
+                >
+                  {language.t(
+                    physical.state.binding
+                      ? "physicalsystems.conversation.binding"
+                      : "physicalsystems.conversation.bind",
+                    { name: physical.project()?.name ?? "" },
+                  )}
+                </button>
+              </Show>
+              <Show when={physical.project()}>
+                {(project) => (
+                  <button
+                    type="button"
+                    data-ps-new-conversation
+                    classList={{ "ps-compose": physical.bound(), "ps-primary": !physical.bound() }}
+                    aria-label={language.t("physicalsystems.conversation.newInProject", { name: project().name })}
+                    title={language.t("physicalsystems.conversation.newInProject", { name: project().name })}
+                    disabled={
+                      !project().cwd ||
+                      !server.key ||
+                      physical.state.unavailable ||
+                      physical.state.binding ||
+                      physical.state.pending.selection ||
+                      state.creatingProject ||
+                      state.creatingConversation
+                    }
+                    onClick={() => void newConversation(project())}
+                  >
+                    <Icon name="edit" size="small" aria-hidden="true" />
+                    <Show when={!physical.bound()}>
+                      {language.t("physicalsystems.conversation.newInProject", { name: project().name })}
+                    </Show>
+                  </button>
+                )}
+              </Show>
+              <Show when={!physical.state.panelOpen}>
+                <button
+                  type="button"
+                  aria-label={language.t("physicalsystems.panel.open")}
+                  onClick={() => physical.setState("panelOpen", true)}
+                >
+                  {language.t("physicalsystems.name")}
+                </button>
+              </Show>
+            </div>
+          </div>
+          <Show when={physical.lelab}>
+            {(bridge) => <LeLabCameras bridge={bridge()} scope={JSON.stringify([physical.project()?.id, route()])} />}
+          </Show>
           <Show
             when={
-              state.cloudRooms && (window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms)
+              physical.state.failures.binding ||
+              physical.state.failures.selection ||
+              physical.state.failures.conversation
             }
-            fallback={
+          >
+            <p class="ps-error" role="alert">
+              {physical.state.failures.binding ||
+                physical.state.failures.selection ||
+                physical.state.failures.conversation}
+            </p>
+          </Show>
+          <div
+            class="ps-session-content"
+            style={{ "--ps-welcome-wordmark": JSON.stringify(language.t("physicalsystems.name")) }}
+          >
+            <Show when={!settingsRoute()}>
               <Show when={state.initializing} fallback={props.children}>
                 <p role="status">{language.t("physicalsystems.project.preparing")}</p>
               </Show>
-            }
-          >
-            <Show
-              when={!state.cloudUpdates && window.api?.physicalSystems?.conversations}
-              fallback={
-                <Show when={window.api?.physicalSystems?.rooms}>
-                  {(bridge) => (
-                    <>
-                      <Show when={window.api?.physicalSystems?.conversations}>
-                        <button class="ps-settings-button" onClick={() => setState("cloudUpdates", false)}>
-                          {language.t("physicalsystems.conversations.title")}
-                        </button>
-                      </Show>
-                      <NativeWorkcellRooms
-                        bridge={bridge()}
-                        close={() => setState("cloudRooms", false)}
-                        onDraft={async (room) => {
-                          const project = physical.project()
-                          const connection = server.list.find(
-                            (item) => ServerConnection.key(item) === server.key && ServerConnection.builtin(item),
-                          )
-                          if (!project?.cwd || !connection) throw new Error("LOCAL_PROJECT_REQUIRED")
-                          await tabs.newDraft(
-                            { server: ServerConnection.key(connection), directory: project.cwd },
-                            prepareTaskPrompt(room),
-                          )
-                        }}
-                      />
-                    </>
-                  )}
-                </Show>
-              }
-            >
-              {(bridge) => (
-                <NativeCloudConversations
-                  bridge={bridge()}
-                  close={() => setState("cloudRooms", false)}
-                  openUpdates={window.api?.physicalSystems?.rooms ? () => setState("cloudUpdates", true) : undefined}
-                />
-              )}
             </Show>
-          </Show>
+          </div>
         </div>
-      </div>
-      <Show when={physical.state.panelOpen && !state.cloudRooms}>
-        <PhysicalPanel />
+        <Show when={physical.state.panelOpen && !state.cloudRooms}>
+          <PhysicalPanel />
+        </Show>
       </Show>
       <Show when={hoverProject()}>
         {(project) => (
@@ -1030,5 +1024,11 @@ function PhysicalWorkspace(props: ParentProps) {
         />
       </Show>
     </div>
+  )
+  return (
+    <>
+      <Show when={settingsRoute()}>{props.children}</Show>
+      {workspace}
+    </>
   )
 }
