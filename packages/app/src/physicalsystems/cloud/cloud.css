@@ -4,3 +4,15 @@
 @import "./conversation.css";
 @source "./*.tsx";
 @source "../../../../session-ui/src/v2/components/prompt-input/*.tsx";
+
+/* The isolated frame fills its viewport, including the empty-conversation state. */
+html,
+body,
+#app {
+  height: 100%;
+  min-height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--background-base);
+}
