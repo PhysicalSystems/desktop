@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { afterEach, expect, test } from "bun:test"
-import { createWorkcellAccount, validateRoomRequest, WORKCELL_SCOPE } from "./workcell-account"
+import { createWorkcellAccount, validateRoomRequest, workcellRequestFailure, WORKCELL_SCOPE } from "./workcell-account"
 const close: (() => void)[] = []
 afterEach(() => {
   for (const item of close.splice(0)) item()
@@ -86,11 +86,68 @@ test("independent workcell consent persists its token only in the native store",
   await until(() => client.snapshot().status === "signed_in")
   expect(control.opened).toEqual(["https://physicalsystems.ai/workcells/connect?code=ABCDEF1234567890"])
   expect(JSON.stringify(client.snapshot())).not.toContain(token)
+  expect(client.snapshot().sessionId).toBe("s")
   expect(JSON.stringify(control.stored)).toContain(token)
   expect(await client.request("GET", "/api/workcells")).toEqual({ workcells: [], accepted: true })
   await client.signOut()
+  expect(client.snapshot().sessionId).toBeNull()
   expect(control.stored).toBeUndefined()
   await expect(client.request("GET", "/api/workcells")).rejects.toThrow("WORKCELL_SIGN_IN_REQUIRED")
+})
+
+test("workcell grant carries bounded saved conversations and messages without AI or execution access", async () => {
+  const { client, control } = fixture()
+  await client.signIn()
+  await until(() => client.snapshot().status === "signed_in")
+  const conversation = "/api/workcells/room-a/conversations/chat-a"
+  for (const path of [
+    "/api/workcells/room-a/conversations?limit=100",
+    "/api/workcells/room-a/conversations?cursor=room_cursor-2&limit=100",
+    conversation,
+    `${conversation}/events?after=1&limit=100`,
+    `${conversation}/messages?before=50&limit=100`,
+  ])
+    expect(await client.request("GET", path)).toMatchObject({ accepted: true })
+  await client.request("POST", "/api/workcells/room-a/conversations", {
+    requestId: "request-1",
+    title: "Private questions",
+    visibility: "private",
+  })
+  await client.request("POST", `${conversation}/messages`, { requestId: "request-2", content: "Desktop note" })
+  const count = control.paths.length
+  for (const path of [
+    `${conversation}/runtime`,
+    `${conversation}/prompts`,
+    `${conversation}/abort`,
+    `${conversation}/messages?before=0&limit=100`,
+    `${conversation}/messages?before=1&limit=101`,
+    "/api/workcells/room-a/conversations?limit=201",
+    "/api/workcells/room-a/conversations?cursor=x&limit=100&token=secret",
+  ])
+    await expect(client.request("GET", path)).rejects.toThrow("INVALID_WORKCELL_REQUEST")
+  await expect(
+    client.request("POST", `${conversation}/messages`, {
+      requestId: "request-3",
+      content: "Start robot",
+      execute: true,
+    }),
+  ).rejects.toThrow("INVALID_WORKCELL_REQUEST")
+  expect(control.paths).toHaveLength(count)
+})
+
+test("saved message HTTP failures retain their retry status in the bounded native reply", async () => {
+  const { client, control } = fixture()
+  await client.signIn()
+  await until(() => client.snapshot().status === "signed_in")
+  for (const status of [400, 408, 409, 429, 503]) {
+    control.metadataError = { status, code: status === 409 ? "idempotency_conflict" : "private-server-error" }
+    const reply = await client
+      .request("POST", "/api/workcells/a/conversations/b/messages", { requestId: "request-1", content: "Note" })
+      .then(() => undefined, workcellRequestFailure)
+    expect(reply).toEqual({ ok: false, error: status === 409 ? "IDEMPOTENCY_CONFLICT" : "WORKCELL_HTTP_ERROR", status })
+  }
+  expect(workcellRequestFailure(new Error("private server credentials"))).toEqual({ ok: false, error: "UNAVAILABLE" })
+  expect(client.snapshot().status).toBe("signed_in")
 })
 test("models-only grants and tokens are never accepted as workcell authorization", async () => {
   for (const change of ["scope", "token"] as const) {

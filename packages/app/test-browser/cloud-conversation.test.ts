@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { join, resolve, relative } from "node:path"
 import { pathToFileURL } from "node:url"
 import type { CloudConversationOptions, CloudConversationSnapshot } from "../src/physicalsystems/cloud/types"
+import type { MemberMessage } from "../src/physicalsystems/cloud/types"
 
 test("canonical OpenCode composer mounts once, keeps uncertain retries and clears switched or revoked accounts", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "physicalsystems-cloud-render-"))
@@ -60,19 +61,49 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
       runtime: { status: "ready" },
     }
     const writes: {
-      body: { requestId: string; text: string }
+      body: { requestId: string; text?: string; content?: string }
       resolve(value: unknown): void
       reject(error: unknown): void
     }[] = []
+    const messages: MemberMessage[] = []
+    const member = () => ({
+      ...snapshot.conversation,
+      permissions: { canRead: true, canPost: true },
+      messages,
+      messagesHasMore: false,
+      messagesBefore: null,
+      lastEventSequence: messages.at(-1)?.sequence ?? 0,
+    })
     const transport: CloudConversationOptions["transport"] = {
       request: async (method, path, body) => {
-        expect(path).toMatch(/^\/api\/workcells\/room-1\/conversations\/chat-1\/(runtime|prompts)$/)
+        expect(path).toMatch(
+          /^\/api\/workcells\/room-1\/conversations\/chat-1(?:\/(?:runtime|prompts|messages|events)(?:\?.*)?)?$/,
+        )
         if (method === "POST")
           return new Promise((resolve, reject) =>
             writes.push({ body: body as { requestId: string; text: string }, resolve, reject }),
           )
         gets++
         if (denied) throw Object.assign(new Error("CONVERSATION_ACCESS_REVOKED"), { status: 403 })
+        if (path.endsWith("/chat-1")) return { conversation: structuredClone(member()) }
+        if (path.includes("/events?")) {
+          const after = Number(new URL(path, "https://fixture.invalid").searchParams.get("after"))
+          const events = messages
+            .filter((message) => message.sequence > after)
+            .map((message) => ({
+              workcellId: "room-1",
+              conversationId: "chat-1",
+              type: "message.posted",
+              sequence: message.sequence,
+              message,
+            }))
+          return {
+            events,
+            nextCursor: messages.at(-1)?.sequence ?? after,
+            hasMore: false,
+            lastEventSequence: messages.at(-1)?.sequence ?? after,
+          }
+        }
         return structuredClone(snapshot)
       },
     }
@@ -113,8 +144,13 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
     })
     dispose = mounted.dispose
     await settle()
-    expect(gets).toBe(1)
+    expect(gets).toBe(2)
     expect(container.textContent).toContain("Private workcell planning")
+    const button = (label: string) =>
+      [...container.querySelectorAll("button")].find((item) => item.textContent === label)!
+    expect(button("Message").getAttribute("aria-pressed")).toBe("true")
+    button("Ask AI").click()
+    await settle()
     const editor = container.querySelector<HTMLElement>('[contenteditable="true"]')!
     expect(editor).not.toBeNull()
     const taskDetails = [...container.querySelectorAll("button")].find(
@@ -196,15 +232,69 @@ test("canonical OpenCode composer mounts once, keeps uncertain retries and clear
     await settle()
     expect(container.textContent).toContain("The cloud assistant is not available yet")
     expect(container.querySelector("form")).toBeNull()
+    button("Message").click()
+    await settle()
+    const memberEditor = container.querySelector<HTMLElement>('[contenteditable="true"]')!
+    expect(memberEditor).not.toBeNull()
+    memberEditor.textContent = "Shared without an AI worker"
+    memberEditor.dispatchEvent(new InputEvent("input", { bubbles: true, data: "Shared without an AI worker" }))
+    submit()
+    await settle()
+    expect(writes).toHaveLength(3)
+    expect(writes[2].body.content).toBe("Shared without an AI worker")
+    expect(writes[2].body.text).toBeUndefined()
+    // The server saves the message, but its receipt is lost. Expiry must retain this send.
+    messages.push({
+      id: "saved-1",
+      workcellId: "room-1",
+      conversationId: "chat-1",
+      sequence: 1,
+      role: "user",
+      authorId: "cloud-test-a",
+      authorName: "Alice",
+      content: writes[2].body.content!,
+      createdAt: "2026-10-23T10:00:00Z",
+    })
+    writes[2].reject(new Error("Network interrupted"))
+    await settle()
+    expect(container.textContent).toContain("Your message is queued on this device")
+    expect(container.querySelector('[contenteditable="true"]')).toBeNull()
+    expect(container.querySelector('[contenteditable="false"]')!.textContent).toBe("Shared without an AI worker")
+    denied = true
+    window.dispatchEvent(new Event("focus"))
+    await settle()
+    expect(container.textContent).not.toContain("Shared without an AI worker")
+    denied = false
+    mounted.update({ transport: { ...transport } })
+    await settle()
+    expect(writes).toHaveLength(4)
+    expect(writes[3].body).toEqual(writes[2].body)
+    writes[3].resolve({ conversation: member(), message: messages[0], replayed: true })
+    await settle()
+    expect(container.querySelectorAll(".ps-cloud-member")).toHaveLength(1)
+    expect(container.textContent).toContain("Shared without an AI worker")
+    expect(container.textContent).toContain("Alice")
+    const restoredEditor = container.querySelector<HTMLElement>('[contenteditable="true"]')!
+    restoredEditor.textContent = "Keep this draft unsent"
+    restoredEditor.dispatchEvent(new InputEvent("input", { bubbles: true, data: "Keep this draft unsent" }))
+    await settle()
+    mounted.update({ transport: { ...transport } })
+    await settle()
+    expect(container.querySelector('[contenteditable="true"]')!.textContent).toBe("Keep this draft unsent")
+    expect(writes).toHaveLength(4)
     mounted.update({
       accountKey: "cloud-test-b",
       transport: {
-        request: async () => ({ ...snapshot, conversation: { ...snapshot.conversation, title: "Second account" } }),
+        request: async (_method, path) =>
+          path.endsWith("/runtime")
+            ? { ...snapshot, conversation: { ...snapshot.conversation, title: "Second account" } }
+            : { conversation: { ...member(), title: "Second account", messages: [] } },
       },
     })
     await settle()
     expect(container.textContent).toContain("Second account")
     expect(container.textContent).not.toContain("Private workcell planning")
+    expect(container.textContent).not.toContain("Keep this draft unsent")
     mounted.update({ accountKey: "cloud-test-a", transport })
     denied = true
     window.dispatchEvent(new Event("focus"))

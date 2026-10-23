@@ -2,6 +2,7 @@ import { ipcRenderer } from "electron"
 import type { PhysicalSystemsBridge } from "@opencode/app/physicalsystems-types"
 import type { UpdaterState } from "@opencode/app/updater"
 import type { NativeConversationAccountBridge } from "../shared/conversation-account"
+import type { NativeWorkcellAccountBridge } from "../shared/workcell-account"
 const updaterCallbacks = new Set<(state: UpdaterState) => void>()
 let updaterState: UpdaterState | undefined
 let updaterSubscription: Promise<void> | undefined
@@ -10,13 +11,19 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
   updaterCallbacks.forEach((callback) => callback(state))
 }
 
-export const physicalBridge: { physicalSystems: Omit<PhysicalSystemsBridge, "conversations"> & { conversations: NativeConversationAccountBridge }; updater: {
-subscribe(cb: (state: UpdaterState) => void): Promise<() => void>
-check(): Promise<UpdaterState>
-download(): Promise<UpdaterState>
-install(): Promise<void>
-recover(): Promise<UpdaterState>
-} } = {
+export const physicalBridge: {
+  physicalSystems: Omit<PhysicalSystemsBridge, "conversations" | "rooms"> & {
+    conversations: NativeConversationAccountBridge
+    rooms: NativeWorkcellAccountBridge
+  }
+  updater: {
+    subscribe(cb: (state: UpdaterState) => void): Promise<() => void>
+    check(): Promise<UpdaterState>
+    download(): Promise<UpdaterState>
+    install(): Promise<void>
+    recover(): Promise<UpdaterState>
+  }
+} = {
   physicalSystems: {
     projectWorkcells: {
       inspect: (projectId) =>
@@ -50,11 +57,11 @@ recover(): Promise<UpdaterState>
       signIn: () => ipcRenderer.invoke("physicalsystems:workcells-sign-in"),
       cancelSignIn: () => ipcRenderer.invoke("physicalsystems:workcells-cancel-sign-in"),
       signOut: () => ipcRenderer.invoke("physicalsystems:workcells-sign-out"),
-      request: (method,path,body) => ipcRenderer.invoke("physicalsystems:workcells-request",method,path,body),
+      request: (method, path, body) => ipcRenderer.invoke("physicalsystems:workcells-request", method, path, body),
       subscribe: (listener) => {
         const handler = (_: unknown, state: Parameters<typeof listener>[0]) => listener(state)
-        ipcRenderer.on("physicalsystems:workcells-state",handler)
-        return () => ipcRenderer.removeListener("physicalsystems:workcells-state",handler)
+        ipcRenderer.on("physicalsystems:workcells-state", handler)
+        return () => ipcRenderer.removeListener("physicalsystems:workcells-state", handler)
       },
     },
     models: {

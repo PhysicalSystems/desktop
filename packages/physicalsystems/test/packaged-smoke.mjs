@@ -337,7 +337,9 @@ try {
     ])
       if (!read(file).length) throw new Error("PACKAGED_RUNTIME_FILE_EMPTY")
     const runtimeDirectory = join(dirname(executable), "resources")
-    const runtime = await lstat(join(runtimeDirectory, process.platform === "win32" ? "opencode-cli.exe" : "opencode-cli"))
+    const runtime = await lstat(
+      join(runtimeDirectory, process.platform === "win32" ? "opencode-cli.exe" : "opencode-cli"),
+    )
     const runtimeVersion = (await readFile(join(runtimeDirectory, "opencode-cli.version"), "utf8")).trim()
     const sourceVersion = JSON.parse(await readFile(join(repo, "package.json"), "utf8")).version
     if (!runtime.isFile() || runtime.isSymbolicLink() || runtime.size === 0 || runtimeVersion !== sourceVersion)
@@ -1113,6 +1115,27 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       evaluate(
         `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el || el.disabled) throw new Error('CONTROL_UNAVAILABLE'); el.scrollIntoView({ block: 'center' }); el.click(); })()`,
       )
+    const enterLocalWorkspace = async () => {
+      const destination = await until(
+        () =>
+          evaluate(`(() => {
+          if (document.querySelector('nav[data-ps-projects]')) return 'local';
+          const control = document.querySelector('nav.ps-shared-sidebar button[aria-label="Local workspace"]');
+          return control && !control.disabled ? 'shared' : false;
+        })()`),
+        "PACKAGED_LOCAL_WORKSPACE_UNAVAILABLE",
+      )
+      // The default shared workspace does not create local projects. Exercise the real
+      // explicit local action before qualifying the unchanged isolated simulation path.
+      if (destination === "shared") await click('nav.ps-shared-sidebar button[aria-label="Local workspace"]')
+      await until(
+        () =>
+          evaluate(
+            'Boolean(document.querySelector("nav[data-ps-projects]")) && !document.querySelector("nav.ps-shared-sidebar")',
+          ),
+        "PACKAGED_LOCAL_WORKSPACE_UNAVAILABLE",
+      )
+    }
     const type = async (selector, text) => {
       await evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`)
       await call("Input.insertText", { text })
@@ -1123,6 +1146,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       "PACKAGED_WORKSPACE_UNAVAILABLE",
     )
     startup.dispose()
+    await enterLocalWorkspace()
     if (appImageRuntime) {
       const ids = [child.pid, ...(await descendants(child.pid))]
       const processes = (
@@ -1390,6 +1414,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     stage = "reload"
     await call("Page.reload")
     await until(() => evaluate('Boolean(document.querySelector("[data-ps-workspace]"))'), "PACKAGED_RELOAD_UNAVAILABLE")
+    await enterLocalWorkspace()
     await until(
       () => evaluate('document.body.innerText.includes("Recorded synthetic result")'),
       "PACKAGED_CONVERSATION_NOT_RESTORED",

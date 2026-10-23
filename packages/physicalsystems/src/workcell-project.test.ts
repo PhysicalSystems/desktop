@@ -30,6 +30,7 @@ afterEach(async () => {
 function fixture() {
   const account: WorkcellAccountState = {
     revision: 0,
+    sessionId: "session-a",
     status: "signed_in",
     account: { id: "account-a", name: "A", email: "a@example.invalid" },
     pending: null,
