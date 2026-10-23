@@ -15,6 +15,8 @@ export default defineConfig({
   root: resolve(root, "packages/app"),
   base: "./",
   publicDir: false,
+  // This exported app owns its Tailwind 4 pipeline even inside a Tailwind 3 host.
+  css: { postcss: { plugins: [] } },
   plugins: [
     {
       name: "canonical-source-exports",

@@ -137,6 +137,9 @@ export async function exportCloudConversation({ root, output }) {
         engines: { node: ">=22" },
         scripts: { build: "node build.mjs" },
         dependencies,
+        // Bun's canonical lock uses this compiler with the patched Solid version.
+        // Keep the same pair in npm rather than silently selecting another runtime.
+        overrides: { "babel-preset-solid": { "solid-js": "$solid-js" } },
       },
       null,
       2,
