@@ -50,7 +50,7 @@ test.beforeEach(async ({ page }) => {
 test("opens Appearance without a project and persists explicit light and dark choices", async ({ page }, info) => {
   await page.emulateMedia({ colorScheme: "dark" })
   await page.goto("/")
-  const settings = page.getByRole("navigation", { name: "Projects", exact: true }).getByRole("button", {
+  const settings = page.getByRole("navigation", { name: "Workcells", exact: true }).getByRole("button", {
     name: "Open settings",
     exact: true,
   })
@@ -87,7 +87,7 @@ test("opens Appearance without a project and persists explicit light and dark ch
 test("System follows operating system changes and settings remain available in collapsed sidebar", async ({ page }) => {
   await page.emulateMedia({ colorScheme: "light" })
   await page.goto("/")
-  const projects = page.getByRole("navigation", { name: "Projects", exact: true })
+  const projects = page.getByRole("navigation", { name: "Workcells", exact: true })
   await expect(projects.getByRole("button", { name: "Collapse projects", exact: true })).toBeEnabled()
   const modifier = await page.evaluate(() => (/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? "Meta" : "Control"))
   await page.keyboard.press(`${modifier}+,`)
