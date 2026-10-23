@@ -4,7 +4,7 @@
   background: var(--background-base);
   font-family: var(--font-family-sans), sans-serif;
 }
-.ps-cloud-composer [data-action="prompt-attach"] {
+.ps-cloud-composer [data-action="composer-attach"] {
   display: none;
 }
 .ps-cloud-conversation {

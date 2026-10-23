@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { cloudProfile } from "./profile"
 import { awaitVerifiedAgent, permittedRequest, verifiedAgent, verifiedSession } from "./policy"
 
-if (Bun.version !== "1.3.14") throw new Error("Cloud worker requires Bun 1.3.14")
+if (Bun.version !== "1.4.4") throw new Error("Cloud worker requires Bun 1.4.4")
 const profile = cloudProfile(process.env)
 await Promise.all(
   [
@@ -24,24 +24,25 @@ const child = Bun.spawn(
     "run",
     "./src/index.ts",
     "serve",
+    "--stdio",
     "--hostname",
     "127.0.0.1",
     "--port",
     String(internalPort),
-    "--mdns=false",
   ],
   {
-    cwd: join(import.meta.dir, "../../packages/opencode"),
+    cwd: join(import.meta.dir, "../../packages/cli"),
     env: profile.childEnv,
     stdout: "inherit",
     stderr: "inherit",
-    stdin: "ignore",
+    stdin: "pipe",
   },
 )
-process.on("SIGTERM", () => child.kill("SIGTERM"))
-process.on("SIGINT", () => child.kill("SIGINT"))
+// V2 treats stdin as the worker lease, including when this parent exits unexpectedly.
+process.on("SIGTERM", () => child.stdin.end())
+process.on("SIGINT", () => child.stdin.end())
 const origin = `http://127.0.0.1:${internalPort}`
-const authorization = `Basic ${Buffer.from(`opencode:${profile.childEnv.OPENCODE_SERVER_PASSWORD}`).toString("base64")}`
+const authorization = `Basic ${Buffer.from(`opencode:${profile.childEnv.OPENCODE_PASSWORD}`).toString("base64")}`
 const agentPath = `/api/agent?${new URLSearchParams({ "location[directory]": profile.workspace })}`
 const upstream = (path: string, options: { method?: string; body?: unknown } = {}) =>
   fetch(origin + path, {
@@ -63,7 +64,7 @@ const policy = async () => verifiedAgent(await readPolicy(), profile)
 let ready = false
 for (let i = 0; i < 600; i++) {
   if (child.exitCode !== null) process.exit(child.exitCode || 1)
-  const health = await fetch(origin + "/api/health", {
+  const health = await fetch(origin + "/api/info", {
     headers: { Authorization: authorization },
     signal: AbortSignal.timeout(1000),
   }).catch(() => undefined)
@@ -110,8 +111,14 @@ const proxy = Bun.serve({
         return Response.json({ error: "SESSION_NOT_FOUND" }, { status: 404 })
       if (request.method === "GET" && url.pathname === `/api/session/${target}`) return Response.json(metadata)
     }
-    const response = await upstream(url.pathname + url.search, { method: request.method, body }).catch(() => undefined)
+    // Keep the deployed health contract while V2 serves readiness through server.info.
+    const prompt = body as { id: string; prompt: { text: string }; delivery: "steer" }
+    const response = await upstream(url.pathname === "/api/health" ? "/api/info" : url.pathname + url.search, {
+      method: request.method,
+      body: url.pathname.endsWith("/prompt") ? { id: prompt.id, text: prompt.prompt.text, delivery: prompt.delivery } : body,
+    }).catch(() => undefined)
     if (!response) return Response.json({ error: "WORKER_UNAVAILABLE" }, { status: 503 })
+    if (response.ok && url.pathname === "/api/health") return Response.json({ healthy: true })
     if (response.ok && request.method === "POST" && url.pathname === "/api/session") {
       const metadata: unknown = await response.json().catch(() => undefined)
       if (!verifiedSession(metadata, String((body as { id: string }).id), profile))

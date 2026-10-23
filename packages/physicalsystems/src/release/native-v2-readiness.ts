@@ -8,7 +8,7 @@ const record = (value: unknown): value is Record<string, any> =>
 
 /** Catalog APIs can start before location plugins finish. A model name alone
  * cannot authorize the inert request: its actual endpoint/package must match. */
-export function credentialFixtureCatalogReady(result: unknown, endpoint: string) {
+export function credentialFixtureCatalogReady(result: unknown, endpoint: string, provider: unknown) {
   if (!record(result) || !Array.isArray(result.data)) throw fail("CATALOG")
   const matches = result.data.filter((value: unknown) => {
     if (!record(value) || typeof value.id !== "string" || typeof value.providerID !== "string") throw fail("CATALOG")
@@ -17,27 +17,60 @@ export function credentialFixtureCatalogReady(result: unknown, endpoint: string)
   if (matches.length > 1) throw fail("CATALOG")
   if (!matches.length) return false
   const model = matches[0]
-  return (
-    model.api?.type === "aisdk" &&
-    model.api.package === "@ai-sdk/openai-compatible" &&
-    model.api.id === "fixture" &&
-    model.api.url === endpoint &&
-    model.request?.body?.apiKey === undefined &&
-    model.api.settings?.apiKey === undefined &&
-    !Object.keys(model.request?.headers ?? {}).some((key) => /^(authorization|x-api-key)$/i.test(key))
+  return fixtureRouteReady(model, provider, endpoint)
+}
+
+function fixtureRouteReady(model: Record<string, any>, result: unknown, endpoint: string) {
+  if (!record(result) || !record(result.data) || result.data.id !== "openai") return false
+  const provider = result.data
+  if (
+    model.enabled !== true ||
+    model.modelID !== "fixture" ||
+    (model.package ?? provider.package) !== "@opencode/ai/providers/openai-compatible" ||
+    (model.settings?.baseURL ?? provider.settings?.baseURL) !== endpoint
   )
+    return false
+  if (provider.integrationID !== undefined && provider.integrationID !== "openai") return false
+  const overlays = [provider, model, ...(Array.isArray(model.variants) ? model.variants : [])]
+  return overlays.every((item) => {
+    if (!record(item)) return false
+    if ([item.settings, item.headers, item.body].some((value) => value !== undefined && !record(value))) return false
+    if (item.package !== undefined && item.package !== "@opencode/ai/providers/openai-compatible") return false
+    if (item.settings?.baseURL !== undefined && item.settings.baseURL !== endpoint) return false
+    return (
+      item.settings?.apiKey === undefined &&
+      item.settings?.auth === undefined &&
+      item.body?.apiKey === undefined &&
+      item.settings?.headers === undefined &&
+      item.settings?.body === undefined &&
+      !Object.keys(item.headers ?? {}).some((key) => /^(authorization|x-api-key)$/i.test(key))
+    )
+  })
 }
 
 /** One model switch and one nonce prompt, only after actual restart readiness.
  * Readback retries are bounded; mutations are never retried or duplicated. */
-export function createV2CredentialReadiness(input: {
+type ReadinessInput = {
   request: ReturnType<typeof ownedV2CredentialTransport>
   probe: ReturnType<typeof createNativeV2CredentialProbe>
   sessionId: string
   endpoint: string
   timeoutMs?: number
   pollMs?: number
-}) {
+}
+
+export function createV2CredentialReadiness(input: ReadinessInput) {
+  return createReadiness(input, "present")
+}
+
+/** V2 keeps configured models visible after deleting credentials. Prove removal
+ * through the same bounded native provider route with a fresh nonce and no auth. */
+export function createV2RemovalReadiness(input: ReadinessInput) {
+  const readiness = createReadiness(input, "absent")
+  return { checkpoint: readiness.checkpoint, wait: readiness.dispatch }
+}
+
+function createReadiness(input: ReadinessInput, expected: "present" | "absent") {
   if (
     input.probe.providerID !== "openai" ||
     !/^ses_[a-zA-Z0-9_-]{1,252}$/.test(input.sessionId) ||
@@ -59,7 +92,8 @@ export function createV2CredentialReadiness(input: {
   const state = {
     catalogReads: 0,
     sessionReads: 0,
-    savedConnectionReady: false,
+    expected,
+    connectionReady: false,
     catalogReady: false,
     selectedModelReady: false,
     modelSwitches: 0,
@@ -69,16 +103,20 @@ export function createV2CredentialReadiness(input: {
   const route = `/api/session/${input.sessionId}`
   const readCatalog = async () => {
     state.catalogReady = false
-    state.savedConnectionReady = await input.probe.savedConnectionReady(input.request)
+    state.connectionReady =
+      expected === "present"
+        ? await input.probe.savedConnectionReady(input.request)
+        : await input.probe.removedConnectionReady(input.request)
     // A restarted Location can expose routes before the saved integration is
     // registered. Wait for that prerequisite before reading its model catalog.
-    if (!state.savedConnectionReady) return false
+    if (!state.connectionReady) return false
     state.catalogReads++
     state.catalogReady = credentialFixtureCatalogReady(
       await input.request("/api/model", { method: "GET" }),
       input.endpoint,
+      await input.request("/api/provider/openai", { method: "GET" }),
     )
-    return state.savedConnectionReady && state.catalogReady
+    return state.connectionReady && state.catalogReady
   }
   return {
     checkpoint: () => ({ ...state }),
@@ -112,76 +150,9 @@ export function createV2CredentialReadiness(input: {
       }, "MODEL")
       // Readiness must still hold immediately before admitting the single prompt.
       if (!(await readCatalog())) throw fail("CATALOG")
-      const prompt = input.probe.beginObservation("present")
+      const prompt = input.probe.beginObservation(expected)
       state.prompts++
-      await input.request(route + "/prompt", { method: "POST", body: { prompt: { text: prompt } } })
-    },
-  }
-}
-
-/** Third-process readiness before the separate strict removal assertion. Only
- * read-only registration/catalog absence is retryable; no auth mutation occurs. */
-export function createV2RemovalReadiness(input: {
-  request: ReturnType<typeof ownedV2CredentialTransport>
-  probe: ReturnType<typeof createNativeV2CredentialProbe>
-  endpoint: string
-  timeoutMs?: number
-  pollMs?: number
-}) {
-  const timeoutMs = input.timeoutMs ?? 15000
-  const pollMs = input.pollMs ?? 50
-  if (
-    input.probe.providerID !== "openai" ||
-    !/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}\/v1$/.test(input.endpoint) ||
-    Number(input.endpoint.split(":")[2]?.split("/")[0]) > 65535 ||
-    !Number.isInteger(timeoutMs) ||
-    timeoutMs < 1 ||
-    timeoutMs > 15000 ||
-    !Number.isInteger(pollMs) ||
-    pollMs < 1 ||
-    pollMs > 100
-  )
-    throw fail("REMOVAL")
-  const state = { integrationReads: 0, catalogReads: 0, disconnectedReady: false, catalogReady: false }
-  return {
-    checkpoint: () => ({ ...state }),
-    async wait() {
-      const deadline = Date.now() + timeoutMs
-      while (Date.now() < deadline) {
-        state.integrationReads++
-        state.disconnectedReady = await input.probe.removedConnectionReady(input.request)
-        state.catalogReady = false
-        if (state.disconnectedReady) {
-          state.catalogReads++
-          const result = await input.request("/api/model", { method: "GET" })
-          if (!record(result) || !Array.isArray(result.data)) throw fail("REMOVAL")
-          const matches = result.data.filter((value: unknown) => {
-            if (
-              !record(value) ||
-              typeof value.id !== "string" ||
-              typeof value.providerID !== "string" ||
-              value.providerID === "openai"
-            )
-              throw fail("REMOVAL")
-            return value.id === "fixture" && value.providerID === "fixture"
-          })
-          if (matches.length > 1) throw fail("REMOVAL")
-          if (matches.length) {
-            const model = matches[0]
-            if (
-              model.api?.type !== "aisdk" ||
-              model.api.package !== "@ai-sdk/openai-compatible" ||
-              model.api.id !== "fixture" ||
-              model.api.url !== input.endpoint
-            )
-              throw fail("REMOVAL")
-            state.catalogReady = true
-            return
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(1, deadline - Date.now()))))
-      }
-      throw fail("REMOVAL")
+      await input.request(route + "/prompt", { method: "POST", body: { text: prompt } })
     },
   }
 }

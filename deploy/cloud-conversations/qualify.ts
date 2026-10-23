@@ -103,6 +103,7 @@ try {
     await Bun.sleep(200)
   }
   check(ready, `Worker did not become ready; inspect ${log.name}`)
+  check((await json("/api/health")).healthy === true, "Deployed health contract changed")
   const denied = await fetch(origin + "/api/health")
   check(denied.status === 401, "Worker health must require authorization")
   const agents = verifiedAgent(

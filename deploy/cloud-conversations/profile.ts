@@ -56,7 +56,8 @@ export function cloudProfile(env: Record<string, string | undefined>) {
       [provider]: {
         name: "Physical Systems cloud model",
         env: ["PHYSICALSYSTEMS_AI_API_KEY"],
-        api: { type: "aisdk", package: "@ai-sdk/openai-compatible", url: endpoint.href.replace(/\/$/, "") },
+        package: "@opencode/ai/providers/openai-compatible",
+        settings: { baseURL: endpoint.href.replace(/\/$/, "") },
         models: {
           [model]: {
             name: model,
@@ -100,10 +101,9 @@ export function cloudProfile(env: Record<string, string | undefined>) {
     OPENCODE_DISABLE_MODELS_FETCH: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
     OPENCODE_DISABLE_FFF: "1",
-    OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: "1",
+    OPENCODE_FILEWATCHER_DISABLE: "1",
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-    OPENCODE_SERVER_USERNAME: "opencode",
-    OPENCODE_SERVER_PASSWORD: password,
+    OPENCODE_PASSWORD: password,
     PHYSICALSYSTEMS_AI_API_KEY: key,
   }
   return { workspace, state, port, provider, model, config, childEnv }

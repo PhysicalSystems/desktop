@@ -30,6 +30,11 @@ the open source [OpenCode](https://github.com/anomalyco/opencode) agent and
 desktop client, with a Physical Systems operator layer that owns the boundary to
 real equipment.
 
+The source now integrates OpenCode **2.1.3**, pinned to
+`bb25a2f4a3f3f04d7c344bec0c0574ea3510b3b1`. The Physical Systems installer
+keeps its independent `desktop-v*` version sequence. Updating the upstream
+runtime does not itself publish an installer or update an installed app.
+
 ## What you can do
 
 - Keep conversations and workcell context together inside a project.

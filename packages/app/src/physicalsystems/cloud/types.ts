@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { SessionInfo, SessionMessageInfo } from "@opencode-ai/client/promise"
-import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
+import type { SessionInfo, SessionMessageInfo } from "@opencode/client/promise"
+import type { SessionStatus } from "@opencode/client/promise"
 import type { WorkcellRoomData, WorkcellTransport } from "../rooms/types"
 
 /** Account authorization and canonical OpenCode session mapping belong to the host gateway. */

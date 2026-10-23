@@ -2,7 +2,7 @@
 import { createEffect, For, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
-import { useLanguage } from "../context/language"
+import { useLanguage } from "../runtime/i18n/language"
 import type {
   LegacyArchive,
   LegacyArchiveSummary,
@@ -233,51 +233,65 @@ export function MigrationHistory(props: { bridge?: LegacyMigrationBridge }) {
                         <For each={project.conversations}>
                           {(conversation) => {
                             const [history, setHistory] = createStore({ open: false, count: 100 })
-                            return <details class="ps-card ps-stack" onToggle={(event) => setHistory("open", event.currentTarget.open)}>
-                              <summary>{conversation.title}</summary>
-                              <Show when={history.open}>
-                              <Show when={conversation.draft}>
-                                <label>
-                                  {language.t("physicalsystems.migration.draft")}
-                                  <textarea readonly value={conversation.draft} rows="3" />
-                                </label>
-                                <button type="button" onClick={() => void copy(conversation.id, conversation.draft)}>
-                                  {language.t("physicalsystems.migration.copy")}
-                                </button>
-                                <Show when={state.copied === conversation.id}>
-                                  <p role="status">{language.t("physicalsystems.migration.copied")}</p>
-                                </Show>
-                              </Show>
-                              <Show
-                                when={conversation.messages.length}
-                                fallback={<p class="ps-muted">{language.t("physicalsystems.migration.noMessages")}</p>}
+                            return (
+                              <details
+                                class="ps-card ps-stack"
+                                onToggle={(event) => setHistory("open", event.currentTarget.open)}
                               >
-                                <For each={conversation.messages.slice(0, history.count)}>
-                                  {(message) => (
-                                    <article class="ps-migration-message">
-                                      <strong>
-                                        {language.t(
-                                          message.role === "user"
-                                            ? "physicalsystems.migration.role.user"
-                                            : message.role === "assistant"
-                                              ? "physicalsystems.migration.role.assistant"
-                                              : "physicalsystems.migration.role.historical",
-                                        )}
-                                      </strong>
-                                      <pre>{message.text}</pre>
-                                      <p class="ps-muted">
-                                        {language.t("physicalsystems.migration.branch", {
-                                          id: message.id,
-                                          parent: message.parentId ?? language.t("physicalsystems.migration.root"),
-                                        })}
-                                      </p>
-                                    </article>
-                                  )}
-                                </For>
-                                <Show when={conversation.messages.length > history.count}><button type="button" onClick={() => setHistory("count", (count) => count + 100)}>{language.t("physicalsystems.migration.more")}</button></Show>
-                              </Show>
-                              </Show>
-                            </details>
+                                <summary>{conversation.title}</summary>
+                                <Show when={history.open}>
+                                  <Show when={conversation.draft}>
+                                    <label>
+                                      {language.t("physicalsystems.migration.draft")}
+                                      <textarea readonly value={conversation.draft} rows="3" />
+                                    </label>
+                                    <button
+                                      type="button"
+                                      onClick={() => void copy(conversation.id, conversation.draft)}
+                                    >
+                                      {language.t("physicalsystems.migration.copy")}
+                                    </button>
+                                    <Show when={state.copied === conversation.id}>
+                                      <p role="status">{language.t("physicalsystems.migration.copied")}</p>
+                                    </Show>
+                                  </Show>
+                                  <Show
+                                    when={conversation.messages.length}
+                                    fallback={
+                                      <p class="ps-muted">{language.t("physicalsystems.migration.noMessages")}</p>
+                                    }
+                                  >
+                                    <For each={conversation.messages.slice(0, history.count)}>
+                                      {(message) => (
+                                        <article class="ps-migration-message">
+                                          <strong>
+                                            {language.t(
+                                              message.role === "user"
+                                                ? "physicalsystems.migration.role.user"
+                                                : message.role === "assistant"
+                                                  ? "physicalsystems.migration.role.assistant"
+                                                  : "physicalsystems.migration.role.historical",
+                                            )}
+                                          </strong>
+                                          <pre>{message.text}</pre>
+                                          <p class="ps-muted">
+                                            {language.t("physicalsystems.migration.branch", {
+                                              id: message.id,
+                                              parent: message.parentId ?? language.t("physicalsystems.migration.root"),
+                                            })}
+                                          </p>
+                                        </article>
+                                      )}
+                                    </For>
+                                    <Show when={conversation.messages.length > history.count}>
+                                      <button type="button" onClick={() => setHistory("count", (count) => count + 100)}>
+                                        {language.t("physicalsystems.migration.more")}
+                                      </button>
+                                    </Show>
+                                  </Show>
+                                </Show>
+                              </details>
+                            )
                           }}
                         </For>
                       </section>

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, onCleanup, Show } from "solid-js"
 import { createStore, unwrap } from "solid-js/store"
-import { useLanguage } from "../context/language"
+import { useLanguage } from "../runtime/i18n/language"
 import { usePhysicalSystems } from "./context"
 import { cameraFresh, cameraIdentity } from "./state"
 import type { PhysicalWorkcell } from "./types"

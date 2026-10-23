@@ -7,7 +7,7 @@ import solid from "vite-plugin-solid"
 import tailwindcss from "@tailwindcss/vite"
 
 const root = dirname(fileURLToPath(import.meta.url))
-const packages = ["ui", "session-ui"].map((name) => ({
+const packages = ["ui", "session-ui", "client", "schema", "gui-extensions"].map((name) => ({
   root: resolve(root, "packages", name),
   ...JSON.parse(readFileSync(resolve(root, "packages", name, "package.json"), "utf8")),
 }))
@@ -22,12 +22,12 @@ export default defineConfig({
       name: "canonical-source-exports",
       enforce: "pre",
       resolveId(id) {
-        if (id.startsWith("@opencode-ai/core/util/")) {
-          const name = id.slice("@opencode-ai/core/util/".length)
+        if (id.startsWith("@opencode/util/")) {
+          const name = id.slice("@opencode/util/".length)
           if (!["path", "encode", "binary"].includes(name)) throw new Error("Unexported core dependency")
-          return resolve(root, `packages/core/src/util/${name}.ts`)
+          return resolve(root, `packages/util/src/${name}.ts`)
         }
-        const pkg = packages.find((pkg) => id.startsWith(`${pkg.name}/`))
+        const pkg = packages.find((pkg) => id === pkg.name || id.startsWith(`${pkg.name}/`))
         if (!pkg) return
         const subpath = `.${id.slice(pkg.name.length)}`
         const exact = pkg.exports[subpath]

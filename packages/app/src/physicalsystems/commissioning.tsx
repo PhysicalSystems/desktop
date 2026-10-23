@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useLanguage } from "../context/language"
+import { useLanguage } from "../runtime/i18n/language"
 import { usePhysicalSystems } from "./context"
 import { Phase } from "./experiments"
 import { CommissioningRecovery } from "./commissioning-recovery"

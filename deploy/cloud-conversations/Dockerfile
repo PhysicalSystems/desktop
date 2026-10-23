@@ -1,8 +1,9 @@
-FROM oven/bun:1.3.14
+FROM oven/bun:1.4.4
 WORKDIR /app
 COPY package.json bun.lock bunfig.toml tsconfig.json ./
 COPY patches ./patches
 COPY packages ./packages
+COPY services ./services
 COPY deploy/cloud-conversations ./deploy/cloud-conversations
 RUN bun install --frozen-lockfile --ignore-scripts
 RUN mkdir -p /workspace /state && chown -R bun:bun /workspace /state

@@ -73,12 +73,12 @@ def main():
     plan = private_json(root / "plan.json")
     require(private_json(root / "owner.json") == {"kind": "inert-linux-native-confirmation", "runId": env["GITHUB_RUN_ID"]}
             and plan["root"] == str(root) and plan["runId"] == env["GITHUB_RUN_ID"]
-            and plan["kind"] == "inert-linux-native-confirmation" and plan["engineVersion"] == "42.3.3",
+            and plan["kind"] == "inert-linux-native-confirmation" and plan["engineVersion"] == "44.9.1",
             "INERT_DIALOG_OWNER_INVALID")
     engine = pathlib.Path(plan["engine"])
     expected_engine = (pathlib.Path(__file__).resolve().parents[2] / "desktop/node_modules/electron/dist/electron").resolve(strict=True)
     require(engine == expected_engine and plan["entry"] == str(pathlib.Path(__file__).with_suffix(".cjs"))
-            and engine.is_file() and not engine.is_symlink() and (engine.parent / "version").read_text().strip() == "42.3.3",
+            and engine.is_file() and not engine.is_symlink() and (engine.parent / "version").read_text().strip() == "44.9.1",
             "INERT_DIALOG_ENGINE_INVALID")
     spec = importlib.util.spec_from_file_location("native", pathlib.Path(__file__).parent.parent / "src/release/preview-update-linux.py")
     native = importlib.util.module_from_spec(spec)
@@ -104,7 +104,7 @@ def main():
                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
             backend = None
             try:
-                require(read_event(child, 20) == {"event": "ready", "engineVersion": "42.3.3"}, "INERT_DIALOG_ENGINE_RESPONSE_INVALID")
+                require(read_event(child, 20) == {"event": "ready", "engineVersion": "44.9.1"}, "INERT_DIALOG_ENGINE_RESPONSE_INVALID")
                 identity = identity_for(child, engine)
                 start = identity(child.pid)
                 backend = native.X11DialogBackend()

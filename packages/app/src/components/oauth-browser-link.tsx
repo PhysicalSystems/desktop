@@ -1,9 +1,9 @@
 import { createEffect, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
-import { usePlatform } from "@/context/platform"
-import { useLanguage } from "@/context/language"
-import { oauthBrowserURL } from "@/utils/oauth-attempt"
-import { ExternalLink } from "./external-link"
+import { usePlatform } from "@/runtime/platform/platform"
+import { useLanguage } from "@/runtime/i18n/language"
+import { oauthBrowserURL } from "@/runtime/server/oauth-attempt"
+import { ExternalLink } from "../runtime/platform/external-link"
 
 /** Keep the current authorization link usable when the default browser cannot
  * be launched. An OS acknowledgement never means the account is signed in. */

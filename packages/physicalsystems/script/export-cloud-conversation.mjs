@@ -11,22 +11,47 @@ const scopes = [
   "packages/ui/LICENSE",
   "packages/session-ui/src",
   "packages/session-ui/package.json",
-  "packages/core/src/util/path.ts",
-  "packages/core/src/util/encode.ts",
-  "packages/core/src/util/binary.ts",
+  "packages/util/src/path.ts",
+  "packages/util/src/encode.ts",
+  "packages/util/src/binary.ts",
+  "packages/client/src/promise",
+  "packages/client/src/shared-events.ts",
+  "packages/client/package.json",
+  "packages/schema/src",
+  "packages/schema/package.json",
+  "packages/gui-extensions/src/sdk",
+  "packages/gui-extensions/package.json",
+  "packages/app/package.json",
   "packages/app/src/physicalsystems/cloud",
+  "packages/app/src/physicalsystems/i18n.ts",
+  "packages/app/src/physicalsystems/migration-i18n.ts",
   "packages/app/src/physicalsystems/rooms/types.ts",
   "packages/app/src/physicalsystems/rooms/state.ts",
   "packages/app/src/physicalsystems/rooms/copy.ts",
-  "packages/app/src/utils/session.ts",
-  "packages/app/src/utils/session-title.ts",
-  "packages/app/src/utils/session-message.ts",
+  "packages/app/src/composer",
+  "packages/app/src/runtime/animated-presence.ts",
+  "packages/app/src/runtime/i18n",
+  "packages/app/src/runtime/persistence",
+  "packages/app/src/runtime/platform/platform.tsx",
+  "packages/app/src/runtime/server/scope.ts",
+  "packages/app/src/providers/models/provider-group.tsx",
+  "packages/app/src/providers/catalog/console.ts",
+  "packages/app/src/providers/opencode-logo.tsx",
+  "packages/app/src/providers/custom-managed-provider.svg",
+  "packages/app/src/settings/settings.css",
+  "packages/app/src/shell/mobile-drawer.tsx",
+  "packages/app/src/shell/mobile-drawer.css",
+  "packages/app/src/shell/mobile-panel-drawer.tsx",
+  "packages/app/src/shell/mobile-panel-drawer.css",
+  "packages/app/src/workspaces/path-key.ts",
   "packages/app/cloud-conversation.html",
   "packages/physicalsystems/LICENSE",
   "LICENSE",
   "package.json",
   "bun.lock",
-  "patches/solid-js@1.9.10.patch",
+  "patches/solid-js@1.9.15.patch",
+  "patches/@corvu%2Fdrawer@0.2.4.patch",
+  "patches/vite@8.2.2.patch",
   "packages/physicalsystems/script/cloud-source.vite.mjs",
   "packages/physicalsystems/script/cloud-source-build.mjs",
   "packages/physicalsystems/script/export-cloud-conversation.mjs",
@@ -85,20 +110,27 @@ export async function exportCloudConversation({ root, output }) {
     }),
   )
   const manifests = ["ui", "session-ui"].map((name) => JSON.parse(blobs.get(`packages/${name}/package.json`)))
+  const app = JSON.parse(blobs.get("packages/app/package.json"))
   const dependencies = Object.fromEntries(
     Object.entries({
       ...manifests[0].dependencies,
       ...manifests[1].dependencies,
       ...compilerPins,
       effect: "catalog:",
-      "@tailwindcss/vite": "catalog:",
-      tailwindcss: "catalog:",
-      vite: "catalog:",
-      "vite-plugin-solid": "catalog:",
-      "tw-animate-css": "1.4.0",
+      ...Object.fromEntries(
+        ["@corvu/drawer", "@solid-primitives/i18n", "@solid-primitives/storage", "solid-presence", "tailwindcss"].map(
+          (name) => [name, app.dependencies[name]],
+        ),
+      ),
+      ...Object.fromEntries(
+        ["@tailwindcss/vite", "vite", "vite-plugin-solid", "tw-animate-css"].map((name) => [
+          name,
+          app.devDependencies[name],
+        ]),
+      ),
       "@solidjs/meta": "catalog:",
     })
-      .filter(([name]) => !name.startsWith("@opencode-ai/"))
+      .filter(([name]) => !name.startsWith("@opencode/"))
       .map(([name, version]) => {
         const pinned = version === "catalog:" ? original.workspaces.catalog[name] : version
         if (typeof pinned !== "string" || !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(pinned))
@@ -166,7 +198,7 @@ export async function exportCloudConversation({ root, output }) {
   )
   await writeFile(
     join(output, "README.md"),
-    "# Physical Systems cloud conversation source\n\nPinned canonical source from PhysicalSystems/desktop. Source files are immutable Git blobs, with checksums and their original paths in provenance.json. Keep these bytes with a -text Git attribute. Do not edit this copy; refresh it with export-cloud-conversation.mjs after a reviewed desktop commit. This package includes the existing SessionTurn, PromptInputV2 and session projection, not a second chat engine.\n\nGenerate and review package-lock.json once with npm install --package-lock-only --ignore-scripts; thereafter use npm ci --ignore-scripts and npm run build -- /absolute/output/path. The build verifies every exported source hash and applies the canonical pinned Solid patch before Vite compiles the isolated frame. Commit only source, provenance and the dependency lock; generated output belongs in deployment artifacts.\n\nServe the output at /physicalsystems-conversation/ on the authenticated host origin. index.html contains #app and exposes window.physicalSystemsCloudConversation.mount(element, options). The host supplies an account-keyed scoped transport and disposes the mount on authentication changes. No credential, server URL, directory, provider or model selection is accepted by the frame. Native uses the identical CloudConversation source directly.\n",
+    "# Physical Systems cloud conversation source\n\nPinned canonical source from PhysicalSystems/desktop. Source files are immutable Git blobs, with checksums and their original paths in provenance.json. Keep these bytes with a -text Git attribute. Do not edit this copy; refresh it with export-cloud-conversation.mjs after a reviewed desktop commit. This package includes the canonical V2 session timeline, ComposerEditor and session projection, not a second chat engine.\n\nGenerate and review package-lock.json once with npm install --package-lock-only --ignore-scripts; thereafter use npm ci --ignore-scripts and npm run build -- /absolute/output/path. The build verifies every exported source hash and applies the canonical pinned Solid, drawer and Vite patches before Vite compiles the isolated frame. Commit only source, provenance and the dependency lock; generated output belongs in deployment artifacts.\n\nServe the output at /physicalsystems-conversation/ on the authenticated host origin. index.html contains #app and exposes window.physicalSystemsCloudConversation.mount(element, options). The host supplies an account-keyed scoped transport and disposes the mount on authentication changes. No credential, server URL, directory, provider or model selection is accepted by the frame. Native uses the identical CloudConversation source directly.\n",
   )
   return {
     output,

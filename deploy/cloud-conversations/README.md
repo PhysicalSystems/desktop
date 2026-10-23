@@ -1,6 +1,6 @@
 # Private cloud conversation worker
 
-This profile runs the repository's canonical OpenCode V2 engine using Bun 1.3.14. It is a **private service behind Platform**, not a public OpenCode server. Platform owns user/team authorization, conversation-to-session IDs, quotas and prompt idempotency. The browser and desktop never receive the worker password or provider key.
+This profile runs the repository's canonical OpenCode 2.1.3 engine using Bun 1.4.4. It is a **private service behind Platform**, not a public OpenCode server. Platform owns user/team authorization, conversation-to-session IDs, quotas and prompt idempotency. The browser and desktop never receive the worker password or provider key.
 
 `start.ts` writes a fixed `physicalsystems-cloud` agent into an isolated workspace. It launches OpenCode on loopback, verifies the actual loaded agent, then opens the service port through a restricted proxy. The proxy allows only authenticated health, policy inspection, canonical session metadata/history reads and text prompt admission. It rejects filesystem, terminal, configuration, tool approval, arbitrary agents/models/workspaces and generic OpenCode routes. Agent policy is checked again before every create or prompt. An absent or permissive agent never reaches model execution through this service.
 
@@ -14,7 +14,7 @@ Pin the reviewed repository commit in the host deployment. From the repository r
 docker build -f deploy/cloud-conversations/Dockerfile -t physicalsystems-cloud-conversations .
 ```
 
-The Dockerfile uses `oven/bun:1.3.14` and `bun install --frozen-lockfile --ignore-scripts`. Its Dockerfile-specific ignore file excludes local credentials, `.env` files, app state and dependency/build caches. It runs as the image's unprivileged `bun` user. Mount a persistent volume at `/state` writable by that user; `/workspace` holds only generated policy/config. Do not mount developer home directories or robot/device credentials.
+The Dockerfile uses `oven/bun:1.4.4` and `bun install --frozen-lockfile --ignore-scripts`. Its Dockerfile-specific ignore file excludes local credentials, `.env` files, app state and dependency/build caches. It runs as the image's unprivileged `bun` user. Mount a persistent volume at `/state` writable by that user; `/workspace` holds only generated policy/config. Do not mount developer home directories or robot/device credentials.
 
 Configure these server-only values through the hosting secret store:
 
@@ -33,6 +33,8 @@ Startup is exactly `bun run deploy/cloud-conversations/start.ts`. The child's en
 
 The Docker health check sends authenticated `GET /api/health` to the local service port. Unauthenticated health returns 401. Do not add a public health bypass for a hosting provider; use a private TCP check if authenticated HTTP probes are unavailable. The listener is created only after policy verification.
 
+The proxy preserves Platform's existing health and nested text-prompt contracts while translating them to V2's `server.info` and flat prompt input. The owned CLI uses a held stdin lease so it exits when the worker wrapper stops. Policy verification applies V2's last-matching permission rule and rejects session overrides that could grant tools.
+
 ## Platform connection
 
 Set Platform's `CONVERSATION_RUNTIME_URL` to the exact private service origin and `CONVERSATION_RUNTIME_PASSWORD` to the worker secret. Match `CONVERSATION_RUNTIME_PROVIDER` / `CONVERSATION_RUNTIME_MODEL` to the worker values. Platform's production directory remains `/workspace` and agent remains `physicalsystems-cloud`.
@@ -49,7 +51,7 @@ The proposed Render private Docker service is `1c-2g` (1 CPU, 2 GB RAM), current
 
 ## Local qualification without provider spending
 
-With Bun 1.3.14 and frozen workspace dependencies installed, run unit boundaries from this directory:
+With Bun 1.4.4 and frozen workspace dependencies installed, run unit boundaries from this directory:
 
 ```sh
 bun test profile.test.ts

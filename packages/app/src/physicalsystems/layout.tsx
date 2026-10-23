@@ -1,19 +1,20 @@
+import { Persistence } from "../runtime/persistence/schema"
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, createMemo, For, onCleanup, Show, untrack, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
-import { Icon } from "@opencode-ai/ui/v2/icon"
+import { Icon } from "@opencode/ui/icon"
 import { Portal } from "solid-js/web"
 import { useLocation } from "@solidjs/router"
-import { useLanguage } from "../context/language"
-import { useSettingsCommand } from "../components/settings-dialog"
-import { ServerConnection, useServer } from "../context/server"
-import { tabKey, useTabs } from "../context/tabs"
-import { useGlobal } from "../context/global"
-import { normalizeSessionInfo } from "../utils/session"
+import { useLanguage } from "../runtime/i18n/language"
+import { useSettingsCommand } from "../settings/command"
+import { ServerConnection, useServers } from "../runtime/server/registry"
+import { tabKey, useTabs } from "../shell/tabs/tabs"
+import { useGlobal } from "../runtime/server/runtime"
+import { Schema } from "effect"
 import { createConversationStarter } from "./conversation"
-import { Persist, persisted } from "../utils/persist"
-import { requireServerKey } from "../utils/session-route"
-import { pathKey } from "../utils/path-key"
+import { Persist, persisted } from "../runtime/persistence/storage"
+import { requireServerKey } from "../shell/routes/session"
+import { pathKey } from "../workspaces/path-key"
 import { usePhysicalSystems } from "./context"
 import { PhysicalPanel } from "./panel"
 import { LeLabCameras } from "./lelab-cameras"
@@ -207,12 +208,22 @@ function PhysicalWorkspace(props: ParentProps) {
   const language = useLanguage()
   const tabs = useTabs()
   const global = useGlobal()
-  const server = useServer()
+  const servers = useServers()
+  const server = {
+    get list() {
+      return servers.list
+    },
+    get key() {
+      const local = servers.list.find(ServerConnection.builtin)
+      return local && ServerConnection.key(local)
+    },
+  }
   const location = useLocation()
   const openSettings = useSettingsCommand()
   const [saved, setSaved, , ready] = persisted(
     Persist.window("physicalsystems.ui"),
-    createStore({ sidebarOpen: true, panelOpen: true }),
+    Persistence.struct({ sidebarOpen: Schema.Boolean, panelOpen: Schema.Boolean }),
+    { sidebarOpen: true, panelOpen: true },
   )
   const [state, setState] = createStore({
     create: false,
@@ -341,13 +352,10 @@ function PhysicalWorkspace(props: ParentProps) {
         (item) => ServerConnection.key(item) === serverId && ServerConnection.builtin(item),
       )
       if (!connection || !project.cwd) throw new Error(language.t("physicalsystems.conversation.createFailed"))
-      return global
-        .ensureServerCtx(connection)
-        .sdk.api.session.create({
-          agent: "physical-systems",
-          location: { directory: project.cwd },
-        })
-        .then(normalizeSessionInfo)
+      return global.ensureServerCtx(connection).sdk.api.session.create({
+        agent: "physical-systems",
+        location: { directory: project.cwd },
+      })
     },
     bind: (project, serverId, session) => bind(project.id, { serverId, sessionId: session.id, title: session.title }),
   })
@@ -367,9 +375,8 @@ function PhysicalWorkspace(props: ParentProps) {
       setState("creatingConversation", false)
       return false
     }
-    global.ensureServerCtx(connection).sync.session.remember(session)
     const tab = tabs.addSessionTab({ server: serverId, sessionId: session.id })
-    if ("sessionId" in tab) tabs.rememberSessionInfo(tab, session)
+    if ("sessionId" in tab) tabs.rememberSessionInfo(tab, session, false)
     // Route transitions can wait for lazy content after tabs.select has returned.
     setState("navigation", { from: location.pathname, serverId, sessionId: session.id })
     tabs.select(tab)
@@ -545,8 +552,14 @@ function PhysicalWorkspace(props: ParentProps) {
         </div>
         <MigrationHistory />
         <Show when={window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms}>
-          <button type="button" class="ps-settings-button" aria-label={language.t("physicalsystems.rooms.title")} onClick={() => setState({cloudRooms:true,cloudUpdates:false})}>
-            <Icon name="chat" /><Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.rooms.title")}</Show>
+          <button
+            type="button"
+            class="ps-settings-button"
+            aria-label={language.t("physicalsystems.rooms.title")}
+            onClick={() => setState({ cloudRooms: true, cloudUpdates: false })}
+          >
+            <Icon name="chat" />
+            <Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.rooms.title")}</Show>
           </button>
         </Show>
         <ModelAccountMenu expanded={physical.state.sidebarOpen} />
@@ -662,16 +675,54 @@ function PhysicalWorkspace(props: ParentProps) {
           class="ps-session-content"
           style={{ "--ps-welcome-wordmark": JSON.stringify(language.t("physicalsystems.name")) }}
         >
-          <Show when={state.cloudRooms && (window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms)} fallback={<Show when={state.initializing} fallback={props.children}>
-            <p role="status">{language.t("physicalsystems.project.preparing")}</p>
-          </Show>}>
-            <Show when={!state.cloudUpdates && window.api?.physicalSystems?.conversations} fallback={<Show when={window.api?.physicalSystems?.rooms}>{bridge => <><Show when={window.api?.physicalSystems?.conversations}><button class="ps-settings-button" onClick={() => setState("cloudUpdates",false)}>{language.t("physicalsystems.conversations.title")}</button></Show><NativeWorkcellRooms bridge={bridge()} close={() => setState("cloudRooms",false)} onDraft={async (room) => {
-              const project = physical.project()
-              const connection = server.list.find((item) => ServerConnection.key(item) === server.key && ServerConnection.builtin(item))
-              if (!project?.cwd || !connection) throw new Error("LOCAL_PROJECT_REQUIRED")
-              await tabs.newDraft({server:ServerConnection.key(connection),directory:project.cwd},prepareTaskPrompt(room))
-            }} /></>}</Show>}>
-              {bridge => <NativeCloudConversations bridge={bridge()} close={() => setState("cloudRooms",false)} openUpdates={window.api?.physicalSystems?.rooms ? () => setState("cloudUpdates",true) : undefined} />}
+          <Show
+            when={
+              state.cloudRooms && (window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms)
+            }
+            fallback={
+              <Show when={state.initializing} fallback={props.children}>
+                <p role="status">{language.t("physicalsystems.project.preparing")}</p>
+              </Show>
+            }
+          >
+            <Show
+              when={!state.cloudUpdates && window.api?.physicalSystems?.conversations}
+              fallback={
+                <Show when={window.api?.physicalSystems?.rooms}>
+                  {(bridge) => (
+                    <>
+                      <Show when={window.api?.physicalSystems?.conversations}>
+                        <button class="ps-settings-button" onClick={() => setState("cloudUpdates", false)}>
+                          {language.t("physicalsystems.conversations.title")}
+                        </button>
+                      </Show>
+                      <NativeWorkcellRooms
+                        bridge={bridge()}
+                        close={() => setState("cloudRooms", false)}
+                        onDraft={async (room) => {
+                          const project = physical.project()
+                          const connection = server.list.find(
+                            (item) => ServerConnection.key(item) === server.key && ServerConnection.builtin(item),
+                          )
+                          if (!project?.cwd || !connection) throw new Error("LOCAL_PROJECT_REQUIRED")
+                          await tabs.newDraft(
+                            { server: ServerConnection.key(connection), directory: project.cwd },
+                            prepareTaskPrompt(room),
+                          )
+                        }}
+                      />
+                    </>
+                  )}
+                </Show>
+              }
+            >
+              {(bridge) => (
+                <NativeCloudConversations
+                  bridge={bridge()}
+                  close={() => setState("cloudRooms", false)}
+                  openUpdates={window.api?.physicalSystems?.rooms ? () => setState("cloudUpdates", true) : undefined}
+                />
+              )}
             </Show>
           </Show>
         </div>

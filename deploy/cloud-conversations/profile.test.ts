@@ -22,7 +22,7 @@ const agent = {
   steps: 4,
   model: { id: profile.model, providerID: profile.provider },
   permissions: [{ action: "*", resource: "*", effect: "deny" }],
-  request: { headers: {}, body: {} },
+  request: { settings: {}, headers: {}, body: {} },
 }
 test("worker owns a fixed policy and isolated environment without copying provider keys into config", () => {
   expect(profile.config.agents["physicalsystems-cloud"].permissions).toEqual([
@@ -31,6 +31,15 @@ test("worker owns a fixed policy and isolated environment without copying provid
   expect(JSON.stringify(profile.config)).not.toContain(env.PHYSICALSYSTEMS_AI_API_KEY)
   expect(JSON.stringify(profile.childEnv)).not.toContain("must-not-inherit")
   expect(profile.childEnv.PHYSICALSYSTEMS_AI_API_KEY).toBe(env.PHYSICALSYSTEMS_AI_API_KEY)
+  expect(profile.childEnv.OPENCODE_PASSWORD).toBe(env.OPENCODE_SERVER_PASSWORD)
+  expect(profile.childEnv.OPENCODE_FILEWATCHER_DISABLE).toBe("1")
+  expect(profile.childEnv.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1")
+  expect(profile.config.providers[profile.provider]).toMatchObject({
+    package: "@opencode/ai/providers/openai-compatible",
+    settings: { baseURL: env.CONVERSATION_API_BASE_URL },
+    env: ["PHYSICALSYSTEMS_AI_API_KEY"],
+    models: { [profile.model]: { capabilities: { tools: false } } },
+  })
   expect(profile.config.plugins).toEqual([])
   expect(profile.config.mcp.servers).toEqual({})
   expect(() => cloudProfile({ ...env, OPENCODE_SERVER_PASSWORD: "short" })).toThrow()
@@ -52,6 +61,57 @@ test("actual loaded policy fails closed when agent is missing, overridden, permi
     expect(() => verifiedAgent({ ...envelope, data }, profile)).toThrow("CLOUD_POLICY_UNAVAILABLE")
   expect(() => verifiedAgent({ ...envelope, location: { directory: "/other" } }, profile)).toThrow()
 })
+
+test("V2 inherited permissions are safe only behind a final universal deny with no later allow or ask", () => {
+  const inherited = [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "read", resource: "*.env", effect: "ask" },
+    { action: "read", resource: "*.env.example", effect: "allow" },
+  ]
+  const universal = { action: "*", resource: "*", effect: "deny" }
+  const browser = { action: "browser", resource: "*", effect: "deny" }
+  const verify = (permissions: unknown) =>
+    verifiedAgent({ location: { directory: profile.workspace }, data: [{ ...agent, permissions }] }, profile)
+  expect(verify([...inherited, universal, browser]).data).toHaveLength(1)
+  expect(verify([universal, ...inherited, universal, browser]).data).toHaveLength(1)
+  for (const permissions of [
+    undefined,
+    null,
+    {},
+    [],
+    inherited,
+    [browser],
+    [...inherited, { ...universal, resource: "/workspace/*" }, browser],
+    [universal, { action: "read", resource: "*.env", effect: "allow" }, browser],
+    [universal, { action: "read", resource: "*.env", effect: "ask" }, browser],
+    [universal, { action: "*", resource: "*", effect: "allow" }],
+    [universal, { action: "*", resource: "*", effect: "ask" }],
+    [{ action: "read", effect: "deny" }, universal],
+    [{ action: "", resource: "*", effect: "deny" }, universal],
+    [{ action: "read", resource: 1, effect: "deny" }, universal],
+    [{ action: "read", resource: "*", effect: "unexpected" }, universal],
+    [{ action: "read", resource: "*", effect: ["deny"] }, universal],
+    [{ action: "read", resource: "*", effect: "deny", condition: "unreviewed" }, universal],
+    [universal, null],
+  ])
+    expect(() => verify(permissions)).toThrow("CLOUD_POLICY_UNAVAILABLE")
+})
+
+test("agent request overlays cannot bypass the fixed cloud provider configuration", () => {
+  for (const request of [
+    undefined,
+    { headers: {}, body: {} },
+    { settings: null, headers: {}, body: {} },
+    { settings: [], headers: {}, body: {} },
+    { settings: { baseURL: "https://other.invalid" }, headers: {}, body: {} },
+    { settings: { apiKey: "fixture-bypass" }, headers: {}, body: {} },
+    { settings: {}, headers: { Authorization: "fixture-bypass" }, body: {} },
+    { settings: {}, headers: {}, body: { model: "other" } },
+  ])
+    expect(() =>
+      verifiedAgent({ location: { directory: profile.workspace }, data: [{ ...agent, request }] }, profile),
+    ).toThrow("CLOUD_POLICY_UNAVAILABLE")
+})
 test("private listener forwards only fixed agent sessions, text prompts and bounded metadata", () => {
   const url = (path: string) => new URL(path, "http://worker.invalid")
   const session = "/api/session/ses_123"
@@ -69,6 +129,9 @@ test("private listener forwards only fixed agent sessions, text prompts and boun
   expect(permittedRequest("POST", url("/api/session"), profile, { ...creation, parentID: "ses_other" })).toBe(false)
   const prompt = { id: "msg_123", prompt: { text: "Hello" }, delivery: "steer" }
   expect(permittedRequest("POST", url(session + "/prompt"), profile, prompt)).toBe(true)
+  expect(
+    permittedRequest("POST", url(session + "/prompt"), profile, { id: prompt.id, text: "Hello", delivery: "steer" }),
+  ).toBe(false)
   expect(
     permittedRequest("POST", url(session + "/prompt"), profile, {
       ...prompt,
@@ -133,12 +196,26 @@ test("an adopted old session cannot change the fixed execution binding", () => {
     model: { id: profile.model, providerID: profile.provider },
   }
   expect(verifiedSession({ data }, data.id, profile)).toBe(true)
+  expect(verifiedSession({ data: { ...data, permissions: [] } }, data.id, profile)).toBe(true)
+  expect(
+    verifiedSession(
+      { data: { ...data, permissions: [{ action: "browser", resource: "*", effect: "deny" }] } },
+      data.id,
+      profile,
+    ),
+  ).toBe(true)
   for (const change of [
     { agent: "build" },
     { id: "ses_other" },
     { location: { directory: "/other" } },
     { location: { directory: profile.workspace, workspaceID: "wrk_other" } },
     { model: { id: "other", providerID: profile.provider } },
+    { permissions: [{ action: "bash", resource: "*", effect: "allow" }] },
+    { permissions: [{ action: "read", resource: "*.env", effect: "ask" }] },
+    { permissions: [{ action: "*", effect: "deny" }] },
+    { permissions: [{ action: "*", resource: "*", effect: "invalid" }] },
+    { permissions: null },
+    { permissions: {} },
   ])
     expect(verifiedSession({ data: { ...data, ...change } }, data.id, profile)).toBe(false)
   expect(verifiedSession({}, data.id, profile)).toBe(false)

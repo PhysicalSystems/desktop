@@ -3,6 +3,27 @@ type Policy = { workspace: string; provider: string; model: string }
 const record = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value))
 
+type PermissionRule = { action: string; resource: string; effect: "allow" | "ask" | "deny" }
+function permissionRule(value: unknown): value is PermissionRule {
+  return (
+    record(value) &&
+    Object.keys(value).sort().join() === "action,effect,resource" &&
+    typeof value.action === "string" &&
+    value.action.length > 0 &&
+    typeof value.resource === "string" &&
+    value.resource.length > 0 &&
+    (value.effect === "allow" || value.effect === "ask" || value.effect === "deny")
+  )
+}
+
+function deniesEverything(value: unknown) {
+  if (!Array.isArray(value) || !value.every(permissionRule)) return false
+  // V2 Permission.evaluate uses the last matching rule. Inherited allow/ask
+  // defaults are harmless only before a universal deny that cannot be overridden.
+  const final = value.findLastIndex((rule) => rule.action === "*" && rule.resource === "*" && rule.effect === "deny")
+  return final >= 0 && value.slice(final + 1).every((rule) => rule.effect === "deny")
+}
+
 /** A configured name on a Session is insufficient: missing agents otherwise advertise all tools. */
 export function verifiedAgent(value: unknown, policy: Policy) {
   if (
@@ -22,16 +43,13 @@ export function verifiedAgent(value: unknown, policy: Policy) {
     agent.model.id !== policy.model ||
     agent.model.providerID !== policy.provider ||
     !record(agent.request) ||
+    !record(agent.request.settings) ||
+    Object.keys(agent.request.settings).length !== 0 ||
     !record(agent.request.headers) ||
     Object.keys(agent.request.headers).length !== 0 ||
     !record(agent.request.body) ||
     Object.keys(agent.request.body).length !== 0 ||
-    !Array.isArray(agent.permissions) ||
-    agent.permissions.length === 0 ||
-    agent.permissions.some((rule) => !record(rule) || rule.effect !== "deny") ||
-    !agent.permissions.some(
-      (rule) => record(rule) && rule.action === "*" && rule.resource === "*" && rule.effect === "deny",
-    )
+    !deniesEverything(agent.permissions)
   )
     throw new Error("CLOUD_POLICY_UNAVAILABLE")
   return { ...value, data: [agent] }
@@ -68,7 +86,11 @@ export function verifiedSession(value: unknown, id: string, policy: Policy) {
     session.model.providerID === policy.provider &&
     record(session.location) &&
     session.location.directory === policy.workspace &&
-    !session.location.workspaceID
+    !session.location.workspaceID &&
+    // Session rules follow agent rules in V2 and therefore can override them.
+    (session.permissions === undefined ||
+      (Array.isArray(session.permissions) &&
+        session.permissions.every((rule) => permissionRule(rule) && rule.effect === "deny")))
   )
 }
 

@@ -1,8 +1,8 @@
 import { render } from "solid-js/web"
 import { createStore } from "solid-js/store"
 import { OAuthBrowserLink } from "../../../src/components/oauth-browser-link"
-import { PlatformProvider } from "../../../src/context/platform"
-import { LanguageProvider } from "../../../src/context/language"
+import { PlatformProvider } from "../../../src/runtime/platform/platform"
+import { LanguageProvider } from "../../../src/runtime/i18n/language"
 
 export function mount(
   root: HTMLElement,

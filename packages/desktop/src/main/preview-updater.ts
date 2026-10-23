@@ -10,7 +10,7 @@ import {
   installPreviewUpdate,
   PreviewUpdateInstallError,
 } from "./preview-update-install"
-import { nativeT } from "./native-translations"
+import { nativeT } from "./native/translations"
 import { setAppQuitting } from "./windows"
 import { inspectPreviewUpdateRecovery } from "./preview-update-recovery"
 

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, createMemo, For, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
-import { ToolRegistry, type ToolProps } from "@opencode-ai/session-ui/message-part"
-import { useLanguage } from "../context/language"
+import { ToolRegistry, type ToolProps } from "@opencode/session-ui/message-part"
+import { useLanguage } from "../runtime/i18n/language"
 import { usePhysicalSystems } from "./context"
 import { continuationRequest, experimentExpired, physicalTimestamp, trustedExperiment } from "./state"
 import type { PhysicalExperiment } from "./types"

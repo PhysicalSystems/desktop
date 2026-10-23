@@ -347,7 +347,8 @@ for (const scenario of [
           timeoutMs: scenario === "busy-until-timeout" ? 1000 : 3000,
           observePayload: async (file, reference, bytes, io) => {
             if (scenario === "observer-error") {
-              Reflect.apply(io!.onCheckpoint!, undefined, ["PRIVATE CHECKPOINT"])
+              // @ts-expect-error Deliberately inject an invalid observer checkpoint.
+              io!.onCheckpoint!("PRIVATE CHECKPOINT")
               throw Object.assign(new Error("PRIVATE OBSERVER PATH"), { code: "EBUSY", path: "PRIVATE PATH" })
             }
             if (scenario === "busy-before-absence-only" && busyOpens === 1) await rm(actual)

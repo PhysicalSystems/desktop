@@ -1,4 +1,4 @@
-import "@opencode-ai/ui/styles"
+import "@opencode/ui/styles"
 import "./visual.css"
 import type { UpdaterState } from "../../../src/updater"
 import { mount } from "./entry"

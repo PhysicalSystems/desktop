@@ -24,7 +24,7 @@ export function ownedV2CredentialTransport(
       (init.method === "POST" && (route === "/api/integration/openai/connect/key" || route === session + "/model")) ||
       (init.method === "DELETE" && /^\/api\/credential\/cred_[a-zA-Z0-9]{1,128}$/.test(route))
     const read =
-      init.method === "GET" && ["/api/integration/openai", "/api/model", "/api/session/active", session].includes(route)
+      init.method === "GET" && ["/api/integration/openai", "/api/model", "/api/provider/openai", "/api/provider/fixture", "/api/session/active", session].includes(route)
     const prompt = init.method === "POST" && route === session + "/prompt"
     if (!noContent && !read && !prompt) throw new Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
     const routeKind =
@@ -36,6 +36,8 @@ export function ownedV2CredentialTransport(
             ? "credential-remove"
             : route === "/api/model"
               ? "catalog"
+              : route.startsWith("/api/provider/")
+                ? "provider"
               : route === "/api/session/active"
                 ? "active"
                 : route === session
@@ -96,7 +98,7 @@ export function ownedV2CredentialTransport(
       )
         throw new Error()
       checkpoint.envelopeValid = true
-      if (route === "/api/integration/openai" || route === "/api/model") {
+      if (route === "/api/integration/openai" || route === "/api/model" || route.startsWith("/api/provider/")) {
         checkpoint.locationMatched =
           result.location?.directory === bound.directory && result.location?.workspaceID === undefined
         if (!checkpoint.locationMatched) throw new Error()

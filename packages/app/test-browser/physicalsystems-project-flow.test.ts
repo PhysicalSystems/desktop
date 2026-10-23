@@ -17,22 +17,23 @@ beforeAll(async () => {
   const fixture = resolve(import.meta.dir, "fixtures/physicalsystems")
   const feature = normalizePath(resolve(import.meta.dir, "../src/physicalsystems"))
   const contexts = [
-    "../context/language",
-    "../context/platform",
-    "../context/server",
-    "../context/tabs",
-    "../context/global",
-    "../components/settings-dialog",
-    "../utils/persist",
-    "../utils/toast",
-    "../utils/session-route",
+    "../runtime/i18n/language",
+    "../runtime/platform/platform",
+    "../runtime/server/registry",
+    "../shell/tabs/tabs",
+    "../runtime/server/runtime",
+    "../settings/command",
+    "../runtime/persistence/storage",
+    "../shell/notifications/toast",
+    "../shell/routes/session",
     "@solidjs/router",
-    "@opencode-ai/session-ui/message-part",
+    "@opencode/ui/theme/context",
   ]
   const result = await build({
     configFile: false,
     root: fixture,
     logLevel: "error",
+    define: { "import.meta.url": JSON.stringify("http://fixture.invalid/fixture.js") },
     worker: { format: "es" },
     plugins: [
       {
@@ -57,17 +58,21 @@ beforeAll(async () => {
   const output = (Array.isArray(result) ? result[0] : result).output.find((item) => item.type === "chunk")
   if (!output || output.type !== "chunk") throw new Error("Fixture compilation did not produce JavaScript")
   code = output.code
+  // The actual V2 tool registry includes the standard renderers and their
+  // dependencies; compile that graph once for every isolated DOM case below.
 }, 30000)
 
 afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
 })
 
-async function mount(empty = false, failProjectCreate = false) {
+async function mount(empty = false, failProjectCreate = false, withoutBridge = false, cloud = false) {
   const window = new Window({ url: "http://fixture.invalid" })
   windows.push(window)
   window.__fixtureEmpty = empty
   window.__fixtureFailProjectCreate = failProjectCreate
+  window.__fixtureWithoutBridge = withoutBridge
+  window.__fixtureCloud = cloud
   window.document.body.innerHTML = '<div id="root"></div>'
   const context = createContext({
     ...Object.fromEntries(
@@ -78,6 +83,11 @@ async function mount(empty = false, failProjectCreate = false) {
     window,
     document: window.document,
     navigator: window.navigator,
+    TextEncoder,
+    TextDecoder,
+    URL,
+    crypto: window.crypto,
+    performance: window.performance,
     Node: window.Node,
     CustomEvent: window.CustomEvent,
     MutationObserver: window.MutationObserver,
@@ -111,6 +121,56 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
+test.each(["compact", "text-only"])("V2 %s timeline keeps exact-plan approval visible and scoped", async (preset) => {
+  const fixture = await mount()
+  fixture.js(`window.__fixture.timelinePreset(${JSON.stringify(preset)})`)
+  await settle()
+  const card = () => fixture.window.document.querySelector('[data-timeline-part-id="proposal-part"]')
+  const approval = () => card()?.querySelector<HTMLButtonElement>("[data-ps-approve]") ?? null
+  expect(approval()).not.toBeNull()
+  expect(approval()!.disabled).toBe(true)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  card()!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click()
+  expect(approval()!.disabled).toBe(false)
+  approval()!.click()
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toMatchObject([
+    {
+      type: "experiment.approveAndContinue",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      sessionId: "session-a",
+      serverId: "sidecar",
+      experimentId: "experiment-a",
+      expectedDigest: "digest-a",
+      approved: true,
+    },
+  ])
+  fixture.js("window.__fixture.foreignSession(true)")
+  await settle()
+  expect(approval()).toBeNull()
+  fixture.js("window.__fixture.foreignSession(false); window.__fixture.forge(true)")
+  await settle()
+  expect(approval()).toBeNull()
+  expect(fixture.js("window.__fixture.calls.length")).toBe(1)
+})
+
+test.each(["compact", "text-only"])(
+  "V2 %s timeline preserves preferences when the Physical Systems bridge is absent",
+  async (preset) => {
+    const fixture = await mount(false, false, true)
+    fixture.js(`window.__fixture.timelinePreset(${JSON.stringify(preset)})`)
+    await settle()
+    const timeline = fixture.window.document.querySelector("[data-fixture-timeline]")!
+    expect(timeline.querySelector("[data-ps-approve]")).toBeNull()
+    expect(timeline.querySelectorAll('[data-timeline-row="AssistantPart"]').length).toBe(preset === "compact" ? 1 : 0)
+    expect(timeline.querySelectorAll('[data-component="collapsed-tool-group"]').length).toBe(
+      preset === "compact" ? 1 : 0,
+    )
+    expect(fixture.js("window.__fixture.calls")).toEqual([])
+  },
+)
+
 test("sidebar Settings invokes its app command without changing the managed project", async () => {
   const fixture = await mount()
   let opened = 0
@@ -121,6 +181,39 @@ test("sidebar Settings invokes its app command without changing the managed proj
   expect(opened).toBe(1)
   expect(fixture.js("window.__fixture.calls")).toEqual([])
   expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+})
+
+test("optional native cloud conversations and saved updates preserve the local session and approval", async () => {
+  const fixture = await mount(false, false, false, true)
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([])
+  fixture.js(`document.querySelector('button[aria-label="Workcell rooms"]').click()`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("Connect cloud conversations")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["conversations:refresh"])
+  fixture.js(
+    `Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Connect cloud conversations').click()`,
+  )
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("INERT-CLOUD-CODE")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual(["conversations:refresh", "conversations:signIn"])
+  expect(fixture.js("window.__fixture.portal.urls")).toEqual([])
+  fixture.js(`Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Workcell updates').click()`)
+  await settle()
+  expect(fixture.window.document.body.textContent).toContain("Connect workcell account")
+  expect(fixture.js("window.__fixture.cloudAccounts.calls")).toEqual([
+    "conversations:refresh",
+    "conversations:signIn",
+    "rooms:refresh",
+  ])
+  fixture.js(
+    `Array.from(document.querySelectorAll('button')).find(x=>x.textContent==='Back to local conversation').click()`,
+  )
+  await settle()
+  expect(fixture.window.document.querySelector("[data-ps-approve]")).not.toBeNull()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.models.calls")).toEqual([])
+  expect(fixture.js("window.__fixture.state.activeProjectId")).toBe("project-a")
+  expect(fixture.js("window.__fixture.state.conversation.sessionId")).toBe("session-a")
 })
 
 test("company portal opens only on click and reports failed browser handoffs without changing the project", async () => {

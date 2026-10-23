@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import { batch, createEffect, createMemo, For, onCleanup, onMount, Show, untrack } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useTheme } from "@opencode-ai/ui/theme/context"
-import { useLanguage } from "../context/language"
-import { usePlatform } from "../context/platform"
+import { useTheme } from "@opencode/ui/theme/context"
+import { useLanguage } from "../runtime/i18n/language"
+import { usePlatform } from "../runtime/platform/platform"
 import { CloudConversation } from "./cloud/conversation"
 import type {
   ConversationAccountBridge,

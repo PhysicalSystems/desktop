@@ -9,7 +9,9 @@ on:
       - packages/protocol/**
       - packages/schema/**
       - packages/llm/**
-      - packages/opencode/**
+      - packages/cli/**
+      - packages/ai/**
+      - packages/plugin/**
       - bun.lock
       - package.json
       - patches/**

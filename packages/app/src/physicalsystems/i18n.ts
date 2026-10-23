@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
+  "physicalsystems.menu": "Physical Systems menu",
   "physicalsystems.conversations.title": "Workcell conversations",
   "physicalsystems.conversations.updates": "Workcell updates",
-  "physicalsystems.conversations.signInDescription": "Connect your cloud conversations to use the same private and team chats on the website and desktop. This separate permission allows AI replies; it does not grant robot control or access to local files.",
+  "physicalsystems.conversations.signInDescription":
+    "Connect your cloud conversations to use the same private and team chats on the website and desktop. This separate permission allows AI replies; it does not grant robot control or access to local files.",
   "physicalsystems.conversations.signIn": "Connect cloud conversations",
   "physicalsystems.conversations.choose": "Conversation",
   "physicalsystems.conversations.new": "New conversation",
@@ -16,8 +18,10 @@ export const physicalSystemsEnglish = {
   "physicalsystems.conversations.more": "More conversations are available on the website.",
   "physicalsystems.rooms.title": "Workcell rooms",
   "physicalsystems.rooms.back": "Back to local conversation",
-  "physicalsystems.rooms.error": "The workcell request could not be confirmed. Check your connection and sign-in, then retry.",
-  "physicalsystems.rooms.signInDescription": "Connect your workcell account to share task updates across the website and desktop. This separate permission does not grant robot control or expand company model access.",
+  "physicalsystems.rooms.error":
+    "The workcell request could not be confirmed. Check your connection and sign-in, then retry.",
+  "physicalsystems.rooms.signInDescription":
+    "Connect your workcell account to share task updates across the website and desktop. This separate permission does not grant robot control or expand company model access.",
   "physicalsystems.rooms.signIn": "Connect workcell account",
   "physicalsystems.rooms.verify": "Confirm code {{code}} in your browser.",
   "physicalsystems.rooms.openBrowser": "Open sign-in page",

@@ -18,15 +18,36 @@ test("source export pins canonical blobs, preserves licenses, and rejects dirty 
     "bun.lock",
     "packages/ui/package.json",
     "packages/session-ui/package.json",
+    "packages/client/package.json",
+    "packages/schema/package.json",
+    "packages/gui-extensions/package.json",
+    "packages/app/package.json",
     "packages/ui/LICENSE",
     "LICENSE",
     "packages/physicalsystems/LICENSE",
-    ...["path", "encode", "binary"].map((name) => `packages/core/src/util/${name}.ts`),
+    ...["path", "encode", "binary"].map((name) => `packages/util/src/${name}.ts`),
+    "packages/client/src/shared-events.ts",
     ...["types", "state", "copy"].map((name) => `packages/app/src/physicalsystems/rooms/${name}.ts`),
-    ...["session", "session-title", "session-message"].map((name) => `packages/app/src/utils/${name}.ts`),
+    "packages/app/src/physicalsystems/i18n.ts",
+    "packages/app/src/physicalsystems/migration-i18n.ts",
+    "packages/app/src/runtime/animated-presence.ts",
+    "packages/app/src/runtime/platform/platform.tsx",
+    "packages/app/src/runtime/server/scope.ts",
+    "packages/app/src/providers/models/provider-group.tsx",
+    "packages/app/src/providers/catalog/console.ts",
+    "packages/app/src/providers/opencode-logo.tsx",
+    "packages/app/src/providers/custom-managed-provider.svg",
+    "packages/app/src/settings/settings.css",
+    "packages/app/src/shell/mobile-drawer.tsx",
+    "packages/app/src/shell/mobile-drawer.css",
+    "packages/app/src/shell/mobile-panel-drawer.tsx",
+    "packages/app/src/shell/mobile-panel-drawer.css",
+    "packages/app/src/workspaces/path-key.ts",
     "packages/app/cloud-conversation.html",
     "packages/app/src/physicalsystems/cloud/types.ts",
-    "patches/solid-js@1.9.10.patch",
+    "patches/solid-js@1.9.15.patch",
+    "patches/@corvu%2Fdrawer@0.2.4.patch",
+    "patches/vite@8.2.2.patch",
     "packages/physicalsystems/script/cloud-source.vite.mjs",
     "packages/physicalsystems/script/cloud-source-build.mjs",
     "packages/physicalsystems/script/export-cloud-conversation.mjs",
@@ -67,8 +88,10 @@ test("source export pins canonical blobs, preserves licenses, and rejects dirty 
       if (file.source) expect(bytes).toEqual(git(root, "show", `${manifest.revision}:${file.source}`))
     }
     const pkg = JSON.parse(await readFile(join(output, "package.json"), "utf8"))
-    expect(pkg.dependencies["solid-js"]).toBe("1.9.10")
-    expect(Object.keys(pkg.dependencies).some((name) => name.startsWith("@opencode-ai/"))).toBe(false)
+    expect(pkg.dependencies["solid-js"]).toBe("1.9.15")
+    expect(pkg.dependencies.vite).toBe("8.2.2")
+    expect(pkg.dependencies["@corvu/drawer"]).toBe("0.2.4")
+    expect(Object.keys(pkg.dependencies).some((name) => name.startsWith("@opencode/"))).toBe(false)
     expect(Object.values(pkg.dependencies).every((version) => /^\d+\.\d+\.\d+/.test(String(version)))).toBe(true)
     expect(await readFile(join(output, "packages/app/index.html"), "utf8")).toContain('id="app"')
     await expect(exportCloudConversation({ root, output })).rejects.toThrow("new export directory")

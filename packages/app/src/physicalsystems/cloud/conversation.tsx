@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, createMemo, ErrorBoundary, For, onCleanup, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import { DialogProvider } from "@opencode-ai/ui/context/dialog"
-import { FileComponentProvider } from "@opencode-ai/ui/context/file"
-import { DataProvider } from "@opencode-ai/session-ui/context"
-import { SessionTurn } from "@opencode-ai/session-ui/session-turn"
-import { PromptInputV2, type PromptInputV2PersistedState } from "@opencode-ai/session-ui/v2/prompt-input"
-import { createPromptInputV2Controller } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
-import { normalizeSessionMessages } from "../../utils/session-message"
-import { normalizeSessionInfo } from "../../utils/session"
+import { DialogProvider } from "@opencode/ui/context/dialog"
+import { FileComponentProvider } from "@opencode/ui/context/file"
+import { DataProvider } from "@opencode/session-ui/context"
+import { createReactiveTimelineProjection } from "@opencode/session-ui/timeline/projection"
+import { createSessionTimelineRowRenderer } from "@opencode/session-ui/timeline/row"
+import { ComposerEditor } from "../../composer/editor/editor"
+import { createComposerEditor } from "../../composer/editor/interaction"
+import type { ComposerPersistedState } from "../../composer/types"
 import { roomText } from "../rooms/copy"
 import { cloudText } from "./copy"
 import { cloudAccessDenied, createCloudConversationClient } from "./state"
@@ -38,7 +38,7 @@ function CloudConversationContent(props: CloudConversationOptions) {
     sending: boolean
     uncertain: boolean
   }>({ loading: true, error: "", promptError: "", sending: false, uncertain: false })
-  const draft = createStore<PromptInputV2PersistedState>({ prompt: [], context: { items: [] } })
+  const draft = createStore<ComposerPersistedState>({ prompt: [], context: { items: [] } })
   const client = createCloudConversationClient(props)
   const pending = client.pending()
   if (pending) {
@@ -122,14 +122,19 @@ function CloudConversationContent(props: CloudConversationOptions) {
       if (!closed) setState("sending", false)
     }
   }
-  const composer = createPromptInputV2Controller({
+  const composer = createComposerEditor({
     store: draft,
     commands: () => [],
     context: () => [],
     searchContextFiles: () => [],
     view: {
       placeholder: () => cloudText("placeholder"),
-      submit: { stopping: () => false, onSubmit: () => void send(), onStop: () => {} },
+      submit: {
+        available: () => writable() && !state.sending && !state.uncertain,
+        stopping: () => false,
+        onSubmit: () => void send(),
+        onStop: () => {},
+      },
     },
   })
   // This transport admits text only. Keep the canonical editor while removing
@@ -137,7 +142,7 @@ function CloudConversationContent(props: CloudConversationOptions) {
   const cloudComposer = {
     ...composer,
     openShell: () => {},
-    onInput(value: string, prompt?: PromptInputV2PersistedState["prompt"], cursor?: number) {
+    onInput(value: string, prompt?: ComposerPersistedState["prompt"], cursor?: number) {
       if (value !== "!") {
         composer.onInput(value, prompt, cursor)
         return
@@ -169,17 +174,11 @@ function CloudConversationContent(props: CloudConversationOptions) {
     client.dispose()
     window.removeEventListener("focus", onFocus)
   })
-  const projected = createMemo(() =>
-    normalizeSessionMessages(state.snapshot?.session?.id ?? "", state.snapshot?.messages ?? []),
-  )
-  const turns = createMemo(() => projected().messages.filter((message) => message.role === "user"))
-  const session = createMemo(() => (state.snapshot?.session ? normalizeSessionInfo(state.snapshot.session) : undefined))
+  const session = () => state.snapshot?.session ?? undefined
   const data = createMemo(() => ({
     session: session() ? [session()!] : [],
     session_status: session() ? { [session()!.id]: state.snapshot!.status } : {},
     session_diff: {},
-    message: session() ? { [session()!.id]: projected().messages } : {},
-    part: Object.fromEntries(projected().parts),
   }))
   return (
     <section class="ps-cloud-conversation" aria-label={cloudText("title")}>
@@ -232,19 +231,7 @@ function CloudConversationContent(props: CloudConversationOptions) {
         <DialogProvider>
           <FileComponentProvider component={() => null}>
             <DataProvider data={data()} directory="" sessionID={session()?.id}>
-              <div class="ps-cloud-timeline">
-                <For each={turns()} fallback={<p class="ps-cloud-empty">{cloudText("empty")}</p>}>
-                  {(message) => (
-                    <SessionTurn
-                      sessionID={session()!.id}
-                      messageID={message.id}
-                      messages={projected().messages}
-                      status={state.snapshot!.status}
-                      active={message.id === turns().at(-1)?.id && state.snapshot!.status.type === "busy"}
-                    />
-                  )}
-                </For>
-              </div>
+              <CloudTimeline snapshot={state.snapshot!} />
             </DataProvider>
           </FileComponentProvider>
         </DialogProvider>
@@ -258,7 +245,7 @@ function CloudConversationContent(props: CloudConversationOptions) {
         </Show>
         <Show when={writable()}>
           <div class="ps-cloud-composer">
-            <PromptInputV2
+            <ComposerEditor
               controller={cloudComposer}
               disabled={state.sending || state.uncertain}
               readOnly={state.sending || state.uncertain}
@@ -282,5 +269,31 @@ function CloudConversationContent(props: CloudConversationOptions) {
         </Show>
       </Show>
     </section>
+  )
+}
+
+function CloudTimeline(props: { snapshot: CloudConversationSnapshot }) {
+  const projection = createReactiveTimelineProjection({
+    sessionMessages: () => props.snapshot.messages,
+    status: () => props.snapshot.status,
+    reasoningMode: () => "compact",
+  })
+  const [open, setOpen] = createStore<Record<string, boolean | undefined>>({})
+  const renderer = createSessionTimelineRowRenderer({
+    sessionID: () => props.snapshot.session?.id ?? "",
+    status: () => props.snapshot.status,
+    projection,
+    presentation: () => undefined,
+    reasoningMode: () => "compact",
+    shellToolDefaultOpen: () => false,
+    editToolDefaultOpen: () => false,
+    disclosure: { value: (key) => open[key], set: (key, value) => setOpen(key, value) },
+  })
+  return (
+    <div class="ps-cloud-timeline">
+      <For each={projection.rows()} fallback={<p class="ps-cloud-empty">{cloudText("empty")}</p>}>
+        {(row) => <renderer.Row row={() => row} />}
+      </For>
+    </div>
   )
 }

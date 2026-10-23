@@ -11,8 +11,17 @@ const endpoint = "http://127.0.0.1:32123/credential/v1"
 const model = () => ({
   id: "fixture",
   providerID: "openai",
-  api: { type: "aisdk", package: "@ai-sdk/openai-compatible", id: "fixture", url: endpoint, settings: {} },
-  request: { headers: {}, body: {} },
+  modelID: "fixture",
+  enabled: true,
+  package: "@opencode/ai/providers/openai-compatible",
+  settings: { baseURL: endpoint },
+  headers: {},
+  body: {},
+  variants: [],
+})
+
+const provider = (id = "openai", baseURL = endpoint) => ({
+  data: { id, package: "@opencode/ai/providers/openai-compatible", settings: { baseURL }, headers: {}, body: {} },
 })
 
 async function fixture(
@@ -58,10 +67,11 @@ async function fixture(
       state.saved = false
       return undefined
     }
+    if (route === "/api/provider/openai") return provider()
     if (route === "/api/model") {
       state.modelReads++
       const value = model()
-      if (variation.endpoint) value.api.url = variation.endpoint
+      if (variation.endpoint) value.settings.baseURL = variation.endpoint
       return { data: state.delayed && state.modelReads < 3 ? [] : [value] }
     }
     if (route === "/api/session/ses_inert/model") {
@@ -86,8 +96,8 @@ async function fixture(
     if (route === "/api/session/ses_inert/prompt") {
       if (state.sessionReads < 2 || variation.promptFails) throw new Error("PRIVATE-PROMPT-FAILURE")
       probe.observeProviderRequest({
-        authorization: `Bearer ${state.canary}`,
-        messages: [{ role: "user", content: init.body.prompt.text }],
+        authorization: state.saved ? `Bearer ${state.canary}` : undefined,
+        messages: [{ role: "user", content: init.body.text }],
       })
       return { data: { sessionID: "ses_inert" } }
     }
@@ -117,7 +127,8 @@ test("delayed actual catalog and model readback admit exactly one inert credenti
   expect(f.readiness.checkpoint()).toEqual({
     catalogReads: 4,
     sessionReads: 2,
-    savedConnectionReady: true,
+    expected: "present",
+    connectionReady: true,
     catalogReady: true,
     selectedModelReady: true,
     modelSwitches: 1,
@@ -134,7 +145,7 @@ test("restart waits for initially absent integration registration before switchi
   await f.readiness.dispatch()
   expect(f.state.writes).toEqual(["/api/session/ses_inert/model", "/api/session/ses_inert/prompt"])
   expect(f.probe.finishObservation().authorizationMatched).toBe(true)
-  expect(f.readiness.checkpoint().savedConnectionReady).toBe(true)
+  expect(f.readiness.checkpoint().connectionReady).toBe(true)
   await expect(f.readiness.dispatch()).rejects.toThrow("DISPATCH_UNCONFIRMED")
   expect(f.state.writes).toHaveLength(2)
 })
@@ -201,16 +212,29 @@ test("unregistered connection times out without catalog requests; a registered m
 })
 
 test("wrong endpoint, SDK, fallback key, duplicate model or absent catalog never authorizes the prompt", async () => {
-  expect(credentialFixtureCatalogReady({ data: [] }, endpoint)).toBe(false)
-  expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint)).toBe(true)
+  expect(credentialFixtureCatalogReady({ data: [] }, endpoint, provider())).toBe(false)
+  expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint, provider())).toBe(true)
   for (const changed of [
-    { ...model(), api: { ...model().api, url: "https://api.openai.com/v1" } },
-    { ...model(), api: { ...model().api, package: "@ai-sdk/openai" } },
-    { ...model(), api: { ...model().api, settings: { apiKey: "INERT-BYPASS" } } },
-    { ...model(), request: { headers: { Authorization: "INERT-BYPASS" }, body: {} } },
+    { ...model(), settings: { baseURL: "https://api.openai.com/v1" } },
+    { ...model(), package: "@opencode/ai/providers/openai" },
+    { ...model(), settings: { ...model().settings, apiKey: "INERT-BYPASS" } },
+    { ...model(), headers: { Authorization: "INERT-BYPASS" } },
+    { ...model(), enabled: false },
+    { ...model(), variants: [{ id: "default", settings: { baseURL: "https://api.openai.com/v1" } }] },
+    { ...model(), variants: [{ id: "default", headers: { "x-api-key": "INERT-BYPASS" } }] },
   ])
-    expect(credentialFixtureCatalogReady({ data: [changed] }, endpoint)).toBe(false)
-  expect(() => credentialFixtureCatalogReady({ data: [model(), model()] }, endpoint)).toThrow("CATALOG_UNCONFIRMED")
+    expect(credentialFixtureCatalogReady({ data: [changed] }, endpoint, provider())).toBe(false)
+  for (const changed of [
+    { ...provider().data, id: "foreign" },
+    { ...provider().data, integrationID: "foreign" },
+    { ...provider().data, settings: { baseURL: endpoint, apiKey: "INERT-BYPASS" } },
+    { ...provider().data, settings: { baseURL: "https://api.openai.com/v1" } },
+    { ...provider().data, headers: { authorization: "INERT-BYPASS" } },
+  ])
+    expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint, { data: changed })).toBe(false)
+  expect(() => credentialFixtureCatalogReady({ data: [model(), model()] }, endpoint, provider())).toThrow(
+    "CATALOG_UNCONFIRMED",
+  )
   const f = await fixture({ endpoint: "https://api.openai.com/v1" })
   await expect(f.readiness.dispatch()).rejects.toThrow("V2_CREDENTIAL_PROBE_CATALOG_UNCONFIRMED")
   expect(f.state.writes).toEqual([])
@@ -227,52 +251,46 @@ test("wrong selected model or failed mutation cannot be retried into a credentia
   }
 })
 
-test("third process waits for registered disconnection and actual inert catalog before strict absence assertion", async () => {
+test("third process proves a disconnected credential by one unauthenticated nonce through the still-visible configured model", async () => {
   const f = await fixture()
   await f.probe.remove(f.request)
+  f.state.pendingIntegration = 2
   f.state.writes = []
-  const fixtureEndpoint = "http://127.0.0.1:32123/v1"
-  let integrations = 0,
-    catalogs = 0
-  const request = async (route: string, init: { method: "GET" | "POST" | "DELETE" }) => {
-    expect(init.method).toBe("GET")
-    if (route === "/api/integration/openai" && ++integrations <= 2)
-      return { location: { directory: "/owned/inert" }, data: integrations === 1 ? null : undefined }
-    if (route === "/api/model")
-      return {
-        data:
-          ++catalogs <= 2
-            ? []
-            : [
-                {
-                  ...model(),
-                  providerID: "fixture",
-                  api: { ...model().api, url: fixtureEndpoint },
-                },
-              ],
-      }
-    return f.request(route, init)
-  }
   const readiness = createV2RemovalReadiness({
-    request,
+    request: f.request,
     probe: f.probe,
-    endpoint: fixtureEndpoint,
+    endpoint,
+    sessionId: "ses_inert",
     timeoutMs: 100,
     pollMs: 1,
   })
+  await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
   await readiness.wait()
   expect(readiness.checkpoint()).toEqual({
-    integrationReads: 5,
-    catalogReads: 3,
-    disconnectedReady: true,
+    catalogReads: 4,
+    sessionReads: 2,
+    expected: "absent",
+    connectionReady: true,
     catalogReady: true,
+    selectedModelReady: true,
+    modelSwitches: 1,
+    prompts: 1,
   })
-  expect((await f.probe.assertRemoved(request)).credentialAbsent).toBe(true)
-  expect(f.state.writes).toEqual([])
+  // Merely seeing a request is insufficient until its authorization is checked.
+  await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
+  expect(f.probe.finishObservation().authorizationAbsent).toBe(true)
+  expect(await f.probe.assertRemoved(f.request)).toEqual({
+    api: "v2-integration",
+    credentialAbsent: true,
+    authorizationAbsent: true,
+    requestObserved: true,
+  })
+  expect(f.state.writes).toEqual(["/api/session/ses_inert/model", "/api/session/ses_inert/prompt"])
+  await expect(readiness.wait()).rejects.toThrow("DISPATCH_UNCONFIRMED")
+  expect(f.state.writes).toHaveLength(2)
 })
 
-test("uninitialized, malformed, reconnected or foreign catalog cannot establish removal or repeat DELETE", async () => {
-  const fixtureEndpoint = "http://127.0.0.1:32123/v1"
+test("uninitialized, malformed, reconnected or foreign configured routes cannot admit a removal nonce or repeat DELETE", async () => {
   for (const variation of [
     "pending",
     "empty",
@@ -281,15 +299,13 @@ test("uninitialized, malformed, reconnected or foreign catalog cannot establish 
     "malformed",
     "http",
     "wrong-endpoint",
-    "still-available",
+    "fallback-key",
     "duplicate",
   ]) {
     const f = await fixture()
     await f.probe.remove(f.request)
     f.state.writes = []
-    let requests = 0
-    const request = async (route: string, init: { method: "GET" | "POST" | "DELETE" }) => {
-      requests++
+    const request = async (route: string, init: Parameters<typeof f.request>[1]) => {
       expect(init.method).toBe("GET")
       if (route === "/api/integration/openai") {
         if (variation === "pending") return { location: { directory: "/owned/inert" }, data: null }
@@ -308,29 +324,54 @@ test("uninitialized, malformed, reconnected or foreign catalog cannot establish 
           }
         return f.request(route, init)
       }
-      const value = { ...model(), providerID: "fixture", api: { ...model().api, url: fixtureEndpoint } }
-      if (variation === "wrong-endpoint") value.api.url = "https://external.example"
-      return {
-        data:
-          variation === "empty"
-            ? []
-            : variation === "still-available"
-              ? [model()]
-              : variation === "duplicate"
-                ? [value, value]
-                : [value],
-      }
+      if (route === "/api/provider/openai")
+        return variation === "fallback-key"
+          ? { data: { ...provider().data, settings: { baseURL: endpoint, apiKey: "INERT-FALLBACK" } } }
+          : provider()
+      const value = model()
+      if (variation === "wrong-endpoint") value.settings.baseURL = "https://external.example"
+      return { data: variation === "empty" ? [] : variation === "duplicate" ? [value, value] : [value] }
     }
     const readiness = createV2RemovalReadiness({
       request,
       probe: f.probe,
-      endpoint: fixtureEndpoint,
+      endpoint,
+      sessionId: "ses_inert",
       timeoutMs: 20,
       pollMs: 1,
     })
-    await expect(readiness.wait()).rejects.toThrow("REMOVAL_UNCONFIRMED")
+    await expect(readiness.wait()).rejects.toThrow()
     expect(f.state.writes).toEqual([])
     expect(readiness.checkpoint().catalogReady).toBe(false)
-    if (!["pending", "empty"].includes(variation)) expect(requests).toBeLessThanOrEqual(2)
+    expect(f.probe.observationReady()).toBe(false)
+    await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
   }
+})
+
+test("a removal prompt carrying any saved or fallback authorization cannot establish credential absence", async () => {
+  const f = await fixture()
+  await f.probe.remove(f.request)
+  f.state.writes = []
+  const request = async (route: string, init: Parameters<typeof f.request>[1]) => {
+    if (route.endsWith("/prompt")) {
+      f.probe.observeProviderRequest({
+        authorization: `Bearer ${f.state.canary}`,
+        messages: [{ role: "user", content: init.body.text }],
+      })
+      return { data: { sessionID: "ses_inert" } }
+    }
+    return f.request(route, init)
+  }
+  const readiness = createV2RemovalReadiness({
+    request,
+    probe: f.probe,
+    endpoint,
+    sessionId: "ses_inert",
+    timeoutMs: 100,
+    pollMs: 1,
+  })
+  await readiness.wait()
+  expect(() => f.probe.finishObservation()).toThrow("RETRIEVAL_UNCONFIRMED")
+  await expect(f.probe.assertRemoved(request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
+  await expect(readiness.wait()).rejects.toThrow("DISPATCH_UNCONFIRMED")
 })

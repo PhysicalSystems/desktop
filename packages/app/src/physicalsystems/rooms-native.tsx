@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, For, onCleanup, onMount, Show } from "solid-js"
-import { useTheme } from "@opencode-ai/ui/theme/context"
+import { useTheme } from "@opencode/ui/theme/context"
 import { createStore } from "solid-js/store"
-import { useLanguage } from "../context/language"
-import { usePlatform } from "../context/platform"
+import { useLanguage } from "../runtime/i18n/language"
+import { usePlatform } from "../runtime/platform/platform"
 import { WorkcellRoom } from "./rooms/room"
 import type { WorkcellAccountBridge, WorkcellAccountState } from "../../../physicalsystems/src/workcell-account-types"
 import type { WorkcellRoomData, WorkcellTransport } from "./rooms/types"

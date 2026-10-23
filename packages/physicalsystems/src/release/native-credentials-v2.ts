@@ -33,9 +33,16 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
   if (options.providerID !== undefined && options.providerID !== "openai")
     throw new Error("V2_CREDENTIAL_PROBE_PROVIDER_INVALID")
   const providerID = options.providerID ?? "physicalsystems-v2-vault-fixture"
-  const state: { canary?: string; credentialID?: string; observed: boolean; removed: boolean } = {
+  const state: {
+    canary?: string
+    credentialID?: string
+    observed: boolean
+    removed: boolean
+    absenceConfirmed: boolean
+  } = {
     observed: false,
     removed: false,
+    absenceConfirmed: false,
   }
   let integrationState: { boundary: IntegrationBoundary; shape?: ReturnType<typeof integrationShape> } = {
     boundary: "idle",
@@ -126,6 +133,7 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
     beginObservation(expected: "present" | "absent") {
       const prompt = probe.beginObservation(expected)
       state.observed = false
+      state.absenceConfirmed = false
       return prompt
     },
     observeProviderRequest(input: Parameters<typeof probe.observeProviderRequest>[0]) {
@@ -160,7 +168,11 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
     },
     /** A nonce-matched request arrived; finishObservation still validates auth. */
     observationReady: () => state.observed,
-    finishObservation: probe.finishObservation,
+    finishObservation() {
+      const result = probe.finishObservation()
+      state.absenceConfirmed = state.removed && result.authorizationAbsent
+      return result
+    },
     async save(run: V2CredentialProbeRequest) {
       if (saveAttempted) throw new Error("V2_CREDENTIAL_PROBE_SAVE_WRITE_UNCONFIRMED")
       saveAttempted = true
@@ -229,32 +241,24 @@ export function createNativeV2CredentialProbe(options: { timeoutMs?: number; pro
           throw new Error()
         if ((await connections(run)).length) throw new Error()
         state.removed = true
+        state.absenceConfirmed = false
       } catch {
         throw new Error("V2_CREDENTIAL_PROBE_AUTH_UNCONFIRMED")
       }
     },
-    /** After a real restart, the removed integration must be disconnected and
-     * unavailable to the actual V2 model runner. API failures are not absence. */
+    /** After a real restart, require disconnected native credentials plus an
+     * observed nonce request without authorization. V2 configured models remain
+     * visible without a key; catalog disappearance is not deletion evidence. */
     async assertRemoved(run: V2CredentialProbeRequest) {
       try {
-        if (!state.removed || !state.credentialID || (await connections(run)).length) throw new Error()
-        const result = await request(run, "/api/model", { method: "GET" })
-        if (!result || typeof result !== "object" || !("data" in result) || !Array.isArray(result.data))
+        if (!state.removed || !state.credentialID || !state.absenceConfirmed || (await connections(run)).length)
           throw new Error()
-        if (
-          result.data.some(
-            (model: unknown) =>
-              !model ||
-              typeof model !== "object" ||
-              !("id" in model) ||
-              typeof model.id !== "string" ||
-              !("providerID" in model) ||
-              typeof model.providerID !== "string" ||
-              model.providerID === providerID,
-          )
-        )
-          throw new Error()
-        return { api: "v2-integration" as const, credentialAbsent: true as const, catalogUnavailable: true as const }
+        return {
+          api: "v2-integration" as const,
+          credentialAbsent: true as const,
+          authorizationAbsent: true as const,
+          requestObserved: true as const,
+        }
       } catch {
         throw new Error("V2_CREDENTIAL_PROBE_REMOVAL_UNCONFIRMED")
       }

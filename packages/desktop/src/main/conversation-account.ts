@@ -5,7 +5,7 @@ import { app, BrowserWindow, safeStorage } from "electron"
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { createConversationAccount } from "../../../physicalsystems/src/conversation-account"
 import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
-import { openExternalURL } from "./windows"
+import { openPhysicalExternalURL } from "./external-opener"
 export function createDesktopConversationAccount() {
   const file = join(app.getPath("userData"), "conversation-account.enc")
   const vault = createCredentialVault(file, safeStorage)
@@ -23,7 +23,7 @@ export function createDesktopConversationAccount() {
         })
       },
     },
-    openBrowser: openExternalURL,
+    openBrowser: openPhysicalExternalURL,
     changed: (state) => {
       for (const window of BrowserWindow.getAllWindows()) {
         if (

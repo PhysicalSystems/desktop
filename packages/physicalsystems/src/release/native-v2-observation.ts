@@ -5,6 +5,7 @@ const methods = {
   "key-write": "POST",
   "credential-remove": "DELETE",
   catalog: "GET",
+  provider: "GET",
   active: "GET",
   "session-read": "GET",
   "model-switch": "POST",

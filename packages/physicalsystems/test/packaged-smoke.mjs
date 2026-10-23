@@ -25,7 +25,6 @@ import { probePackagedRenderer } from "../src/release/cdp-discovery.ts"
 import { allocateLinuxQualificationTemporary } from "../src/release/linux-temporary.ts"
 import { openPackagedArchive } from "../src/release/packaged-archive.ts"
 import { fixtureCheckpointDetail } from "../src/release/fixture-checkpoint.ts"
-import { legacyApprovalReady } from "../src/release/approval-readiness.ts"
 import { observePrivateLog, startupCheckpointDetail } from "../src/release/startup-observation.ts"
 import { isDiagnosticsPublicKey, sealDiagnostics } from "../src/release/sealed-diagnostics.ts"
 import { windowsAppShutdownNative } from "../src/release/windows-app-shutdown-native.ts"
@@ -40,6 +39,7 @@ import { ownedV2CredentialTransport } from "../src/release/native-v2-transport.t
 import { createV2CredentialReadiness, createV2RemovalReadiness } from "../src/release/native-v2-readiness.ts"
 import { createV2TransportObservation } from "../src/release/native-v2-observation.ts"
 import { observeCredentialBackend } from "../src/release/credential-backend.ts"
+import { readPreservedTranscript } from "../src/release/preserved-transcript.ts"
 import {
   nsisInstallArguments,
   nsisSpawnOptions,
@@ -329,15 +329,19 @@ try {
     for (const file of [
       "out/main/index.js",
       "out/main/physical-worker.js",
-      "out/main/sidecar.js",
-      "out/main/server/node.js",
-      "out/preload/index.js",
+      "out/preload/index.cjs",
       "out/renderer/index.html",
       "out/legal/OpenCode-LICENSE",
       "out/legal/PhysicalSystems-LICENSE",
       "out/legal/PhysicalSystems-NOTICE",
     ])
       if (!read(file).length) throw new Error("PACKAGED_RUNTIME_FILE_EMPTY")
+    const runtimeDirectory = join(dirname(executable), "resources")
+    const runtime = await lstat(join(runtimeDirectory, process.platform === "win32" ? "opencode-cli.exe" : "opencode-cli"))
+    const runtimeVersion = (await readFile(join(runtimeDirectory, "opencode-cli.version"), "utf8")).trim()
+    const sourceVersion = JSON.parse(await readFile(join(repo, "package.json"), "utf8")).version
+    if (!runtime.isFile() || runtime.isSymbolicLink() || runtime.size === 0 || runtimeVersion !== sourceVersion)
+      throw new Error("PACKAGED_RUNTIME_FILE_EMPTY")
     const manifest = archive.json("out/legal/PhysicalSystems-manifest.json")
     for (const skill of ["inspect-workcell", "transfer-container"])
       for (const name of ["SKILL.md", "physicalsystems.binding.json"]) {
@@ -994,8 +998,10 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       ...expected,
     })
     v2Request = ownedV2CredentialTransport(attached, undefined, credentialTransportObservation)
-    api = async (path, body, init = {}) =>
-      fetch(`${attached.url}${path}?directory=${encodeURIComponent(attached.directory)}`, {
+    api = async (path, body, init = {}) => {
+      const url = new URL(path, attached.url)
+      url.searchParams.set("location[directory]", attached.directory)
+      return fetch(url, {
         method: init.method || (body === undefined ? "GET" : "POST"),
         headers: {
           Authorization: `Basic ${Buffer.from(`${attached.username}:${attached.password}`).toString("base64")}`,
@@ -1005,6 +1011,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         redirect: "error",
         signal: init.signal || AbortSignal.timeout(6000),
       })
+    }
   }
   const v2Idle = async () => {
     const result = await v2Request("/api/session/active", { method: "GET" })
@@ -1026,17 +1033,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       state.trials.some((trial) => trial.status !== "COMPLETED")
     )
       throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
-    const response = await api(`/session/${attached.sessionId}/message`)
-    if (!response.ok) throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
-    const transcript = await response.text()
-    if (transcript.length > 4 * 1024 * 1024) throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
-    const messages = JSON.parse(transcript)
-    if (
-      !Array.isArray(messages) ||
-      !messages.length ||
-      messages.some((message) => message.info?.sessionID !== attached.sessionId)
-    )
-      throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+    const messages = await readPreservedTranscript(api, attached.sessionId)
     return {
       projectId: state.projectId,
       sessionId: state.sessionId,
@@ -1245,11 +1242,24 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         probe.finishObservation()
       } else {
         const requestsBefore = provider.calls.length
-        removalReadiness = createV2RemovalReadiness({ request: v2Request, probe, endpoint: provider.url })
+        removalReadiness = createV2RemovalReadiness({
+          request: v2Request,
+          probe,
+          sessionId: attached.sessionId,
+          endpoint: provider.credentialURL,
+        })
         await removalReadiness.wait()
+        await until(() => probe.observationReady(), "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED", 30000)
+        await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED", 30000)
+        probe.finishObservation()
         state.absence = await probe.assertRemoved(v2Request)
-        if (!(await v2Idle()) || provider.calls.length !== requestsBefore)
+        const absentCalls = provider.calls.slice(requestsBefore)
+        if (absentCalls.length !== 1 || absentCalls[0].credential !== true || absentCalls[0].tool !== null)
           throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+        await v2Request(`/api/session/${attached.sessionId}/model`, {
+          method: "POST",
+          body: { model: { providerID: "fixture", id: "fixture" } },
+        })
       }
       const experiment = await evaluate("window.api.physicalSystems.snapshot().then(s => s.experiments?.current)")
       if (experiment?.id !== state.experimentId || experiment?.trials.length !== 3 || experiment.phase !== "COMPLETED")
@@ -1283,7 +1293,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     stage = "synthetic-chat"
     // Exercise the first-launch chat directly; creating a second project would hide onboarding regressions.
     await until(
-      () => evaluate('Boolean(document.querySelector("[data-component=prompt-input]"))'),
+      () => evaluate('Boolean(document.querySelector("[data-component=composer-editor]"))'),
       "PACKAGED_COMPOSER_UNAVAILABLE",
     )
     const waitForComposer = async () => {
@@ -1325,7 +1335,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     })
     check(stage, "PASS", JSON.stringify(display))
     stage = "synthetic-chat"
-    await type("[data-component=prompt-input]", qualificationPrompt)
+    await type("[data-component=composer-editor]", qualificationPrompt)
     await waitForComposer()
     await click('button[aria-label="Send"]')
     await until(() => provider.calls.some((call) => call.syntheticPrompt === true), "PACKAGED_PROMPT_NOT_ADMITTED")
@@ -1346,16 +1356,15 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     await attach()
     stage = "inline-approval"
     await until(async () => {
-      // The composer uses the legacy compatibility route. Its projected
-      // checkbox can precede the proposal turn's authoritative idle state.
-      return legacyApprovalReady(await api("/session/status"), attached.sessionId, () =>
-        evaluate(`window.api.physicalSystems.snapshot().then(s => {
+      // The proposal projection can precede the V2 runner's idle state.
+      // Approval is exercised only after the owned runtime has no active run.
+      if (!(await v2Idle())) return false
+      return evaluate(`window.api.physicalSystems.snapshot().then(s => {
           const current = s.experiments?.current;
           return current?.id === ${JSON.stringify(proposed.id)} &&
             current?.planDigest === ${JSON.stringify(proposed.planDigest)} && current?.phase === "PROPOSED" &&
             document.querySelector(".ps-experiment input[type=checkbox]")?.disabled === false;
-        })`),
-      )
+        })`)
     }, "PACKAGED_APPROVAL_NOT_READY")
     await click('.ps-experiment input[type="checkbox"]')
     await click("[data-ps-approve]")
@@ -1534,7 +1543,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       if (appImageRuntime && !electronPid) throw new Error("APPIMAGE_RUNTIME_OWNER_UNCONFIRMED")
       if (api) {
         const attachment = JSON.parse(await readFile(join(profile, "desktop", "runtime-attach.json"), "utf8"))
-        if (attachment.sessionId) await api(`/session/${attachment.sessionId}/abort`, {})
+        if (attachment.sessionId) await api(`/api/session/${attachment.sessionId}/interrupt`, {})
       }
       if (evaluate) {
         await evaluate(

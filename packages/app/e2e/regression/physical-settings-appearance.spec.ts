@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 import type { PhysicalSnapshot } from "../../src/physicalsystems/types"
 import { mockOpenCodeServer } from "../utils/mock-server"
 
@@ -56,26 +56,29 @@ test("opens Appearance without a project and persists explicit light and dark ch
   })
   await expect(settings).toBeEnabled()
   await settings.click()
+  await openAppearance(page)
 
-  const dialog = page.locator(".settings-v2-dialog")
-  await expect(dialog.getByRole("tab", { name: "Appearance", exact: true })).toHaveAttribute("aria-selected", "true")
+  const dialog = page.locator(".settings-screen")
   const scheme = dialog.locator('[data-action="settings-color-scheme"]')
-  await expect(scheme.getByRole("radio", { name: "System", exact: true })).toBeChecked()
-  await scheme.getByRole("radio", { name: "Light", exact: true }).check()
+  await expect(scheme).toContainText("System")
+  await scheme.click()
+  await page.getByRole("option", { name: "Light", exact: true }).click()
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light")
-  await expect(scheme.getByRole("radio", { name: "Light", exact: true })).toBeChecked()
+  await expect(scheme).toContainText("Light")
   await page.screenshot({ path: info.outputPath("appearance-light.png") })
 
-  await page.keyboard.press("Escape")
+  await dialog.getByRole("button", { name: "Back to app", exact: true }).click()
   await expect(dialog).toHaveCount(0)
   await page.reload()
   await expect(settings).toBeEnabled()
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light")
   await settings.click()
-  await expect(scheme.getByRole("radio", { name: "Light", exact: true })).toBeChecked()
-  await scheme.getByRole("radio", { name: "Dark", exact: true }).check()
+  await openAppearance(page)
+  await expect(scheme).toContainText("Light")
+  await scheme.click()
+  await page.getByRole("option", { name: "Dark", exact: true }).click()
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark")
-  await expect(scheme.getByRole("radio", { name: "Dark", exact: true })).toBeChecked()
+  await expect(scheme).toContainText("Dark")
   await page.screenshot({ path: info.outputPath("appearance-dark.png") })
   await page.emulateMedia({ colorScheme: "light" })
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark")
@@ -88,24 +91,37 @@ test("System follows operating system changes and settings remain available in c
   await expect(projects.getByRole("button", { name: "Collapse projects", exact: true })).toBeEnabled()
   const modifier = await page.evaluate(() => (/Mac|iPod|iPhone|iPad/.test(navigator.platform) ? "Meta" : "Control"))
   await page.keyboard.press(`${modifier}+,`)
-  const dialog = page.locator(".settings-v2-dialog")
-  await expect(dialog.getByRole("tab", { name: "Appearance", exact: true })).toHaveAttribute("aria-selected", "true")
+  const dialog = page.locator(".settings-screen")
+  await openAppearance(page)
   await page.keyboard.press("Escape")
   await expect(dialog).toHaveCount(0)
   await projects.getByRole("button", { name: "Collapse projects", exact: true }).click()
   await projects.getByRole("button", { name: "Open settings", exact: true }).click()
+  await openAppearance(page)
 
   const scheme = dialog.locator('[data-action="settings-color-scheme"]')
-  await expect(scheme.getByRole("radio", { name: "System", exact: true })).toBeChecked()
+  await expect(scheme).toContainText("System")
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light")
   await page.emulateMedia({ colorScheme: "dark" })
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "dark")
-  await expect(scheme.getByRole("radio", { name: "System", exact: true })).toBeChecked()
+  await expect(scheme).toContainText("System")
   await page.emulateMedia({ colorScheme: "light" })
   await expect(page.locator("html")).toHaveAttribute("data-color-scheme", "light")
 
   await page.keyboard.press("Escape")
   await expect(dialog).toHaveCount(0)
   await projects.getByRole("button", { name: "Open settings", exact: true }).click()
-  await expect(dialog.getByRole("tab", { name: "Appearance", exact: true })).toHaveAttribute("aria-selected", "true")
+  await openAppearance(page)
 })
+
+async function openAppearance(page: Page) {
+  const settings = page.locator(".settings-screen")
+  await expect(settings).toBeVisible()
+  const menu = settings.locator(".settings-mobile-menu-trigger")
+  if (await menu.isVisible()) {
+    await menu.click()
+    await page.getByRole("menuitemradio", { name: "Appearance", exact: true }).click()
+    return
+  }
+  await settings.getByRole("tab", { name: "Appearance", exact: true }).click()
+}

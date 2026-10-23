@@ -1,9 +1,9 @@
-@import "@opencode-ai/ui/styles/tailwind";
-@import "@opencode-ai/session-ui/styles";
-@import "@opencode-ai/ui/v2/styles/tailwind.css";
+@import "@opencode/ui/styles/tailwind";
+@import "@opencode/session-ui/styles";
+@import "@opencode/ui/styles/tokens";
 @import "./conversation.css";
 @source "./*.tsx";
-@source "../../../../session-ui/src/v2/components/prompt-input/*.tsx";
+@source "../../composer/**/*.tsx";
 
 /* The isolated frame fills its viewport, including the empty-conversation state. */
 html,

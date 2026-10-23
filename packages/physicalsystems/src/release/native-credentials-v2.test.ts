@@ -85,14 +85,16 @@ test("V2 probe saves through integration/key and removes only the same sanitized
     expect(f.state.calls.filter((call) => call.method === "DELETE")).toEqual([])
     f.state.ids = ["cred_fixture123"]
     await f.probe.remove(f.request)
-    expect(await f.probe.assertRemoved(f.request)).toEqual({
-      api: "v2-integration",
-      credentialAbsent: true,
-      catalogUnavailable: true,
-    })
+    await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
     const absent = f.probe.beginObservation("absent")
     f.probe.observeProviderRequest({ authorization: undefined, messages: [{ role: "user", content: absent }] })
     expect(f.probe.finishObservation().authorizationAbsent).toBe(true)
+    expect(await f.probe.assertRemoved(f.request)).toEqual({
+      api: "v2-integration",
+      credentialAbsent: true,
+      authorizationAbsent: true,
+      requestObserved: true,
+    })
     expect(f.state.calls.some((call) => call.route.startsWith("/auth/"))).toBe(false)
     expect(f.state.calls.filter((call) => call.method === "POST" || call.method === "DELETE")).toEqual([
       { route: `/api/integration/${f.probe.providerID}/connect/key`, method: "POST" },
@@ -106,33 +108,36 @@ test("V2 probe saves through integration/key and removes only the same sanitized
   }
 })
 
-test("V2 removal requires successful disconnected integration and unavailable catalog, never a swallowed API error", async () => {
+test("V2 removal requires observed nonce auth absence and successful disconnected integration, never swallowed API failure", async () => {
   const f = await fixture()
   try {
     await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
     await f.probe.save(f.request)
     await f.probe.remove(f.request)
+    await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
+    const nonce = f.probe.beginObservation("absent")
+    f.probe.observeProviderRequest({ authorization: undefined, messages: [{ role: "user", content: nonce }] })
+    await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
+    f.probe.finishObservation()
     for (const data of [
       undefined,
       {},
       { data: null },
-      { data: [{ id: "fixture", providerID: f.probe.providerID }] },
-      { data: [{}] },
+      { data: { id: f.probe.providerID, connections: [{ type: "credential", id: "cred_resurrected" }] } },
+      { data: { id: f.probe.providerID, connections: [{ type: "env", name: "INERT_FALLBACK" }] } },
+      { data: { id: "foreign", connections: [] } },
     ]) {
-      await expect(
-        f.probe.assertRemoved((route, init) =>
-          route === "/api/model" ? Promise.resolve(data) : f.request(route, init),
-        ),
-      ).rejects.toThrow("REMOVAL_UNCONFIRMED")
+      await expect(f.probe.assertRemoved(async () => data)).rejects.toThrow("REMOVAL_UNCONFIRMED")
     }
     await expect(
-      f.probe.assertRemoved((route, init) =>
-        route === "/api/model" ? Promise.reject(new Error("private API failure")) : f.request(route, init),
-      ),
+      f.probe.assertRemoved(async () => {
+        throw Error("private API failure")
+      }),
     ).rejects.toThrow("REMOVAL_UNCONFIRMED")
-    expect((await f.probe.assertRemoved(f.request)).catalogUnavailable).toBe(true)
-    const registered = createNativeV2CredentialProbe({ providerID: "openai" })
-    expect(registered.providerID).toBe("openai")
+    expect((await f.probe.assertRemoved(f.request)).authorizationAbsent).toBe(true)
+    // A new observation invalidates the previous proof until checked again.
+    f.probe.beginObservation("absent")
+    await expect(f.probe.assertRemoved(f.request)).rejects.toThrow("REMOVAL_UNCONFIRMED")
   } finally {
     await f.close()
   }

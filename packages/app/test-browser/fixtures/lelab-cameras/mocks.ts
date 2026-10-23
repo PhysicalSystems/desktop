@@ -1,3 +1,4 @@
+import { createStore } from "solid-js/store"
 import { physicalSystemsEnglish } from "../../../src/physicalsystems/i18n"
 
 export const useLanguage = () => ({
@@ -8,4 +9,4 @@ export const useLanguage = () => ({
     ),
 })
 export const Persist = { window: (key: string) => key }
-export const persisted = <T extends unknown[]>(_key: string, store: T) => store
+export const persisted = (_key: string, _schema: unknown, initial: object) => createStore(initial)

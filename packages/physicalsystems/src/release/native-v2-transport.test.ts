@@ -65,6 +65,23 @@ test("V2 transport refuses malformed, redirected, foreign-location and unbounded
   )
 })
 
+test("V2 provider readback is limited to the two fixture providers in the exact owned location", async () => {
+  let reads = 0
+  const transport = ownedV2CredentialTransport(attachment, async () => {
+    reads++
+    return Response.json({ location: { directory: attachment.directory }, data: { id: "openai" } })
+  })
+  for (const route of ["/api/provider/openai", "/api/provider/fixture"])
+    expect(await transport(route, { method: "GET" })).toMatchObject({ data: { id: "openai" } })
+  for (const route of ["/api/provider/foreign", "/api/provider/openai?location[directory]=foreign"])
+    await expect(transport(route, { method: "GET" })).rejects.toThrow("AUTH_UNCONFIRMED")
+  expect(reads).toBe(2)
+  for (const location of [undefined, { directory: "/foreign" }, { directory: attachment.directory, workspaceID: "foreign" }]) {
+    const rejected = ownedV2CredentialTransport(attachment, async () => Response.json({ location, data: { id: "openai" } }))
+    await expect(rejected("/api/provider/openai", { method: "GET" })).rejects.toThrow("AUTH_UNCONFIRMED")
+  }
+})
+
 test("integration UndefinedOr wire encoding alone permits omitted data with the exact owned location", async () => {
   // The actual GET contract is Location.response(UndefinedOr(Integration.Info));
   // pinned Effect HttpApiBuilder serializes that value with JSON.stringify.

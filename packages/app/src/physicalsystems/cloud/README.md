@@ -1,6 +1,6 @@
 # Shared cloud conversation
 
-`CloudConversation` reuses the existing Physical Systems/OpenCode `SessionTurn`, `PromptInputV2`, `normalizeSessionMessages` and `normalizeSessionInfo`. The native app mounts it directly with `conversation.css`. The website uses the source export's isolated same-origin frame, which imports the canonical style layers and exposes `window.physicalSystemsCloudConversation.mount(document.getElementById("app"), options)`.
+`CloudConversation` reuses the canonical OpenCode V2 timeline projection, row renderer and `ComposerEditor`. It consumes V2 session records directly without the former message/part normalization. The native app mounts it directly with `conversation.css`. The website uses the source export's isolated same-origin frame, which imports the canonical style layers and exposes `window.physicalSystemsCloudConversation.mount(document.getElementById("app"), options)`.
 
 Options are `accountKey`, `workcellId`, `conversationId`, `transport`, optional `theme` and optional authenticated `workcell` context. `accountKey` is a non-secret stable user identifier, never a token. The host must replace the transport and dispose/remount the view whenever authentication changes, including same-user token changes. `mount` returns `{dispose, update}`; identity or transport changes remount the entire conversation and cancel outstanding work. The host supplies no worker address, arbitrary route, filesystem path, provider/model setting or credentials to this UI.
 

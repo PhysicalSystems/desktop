@@ -1,15 +1,26 @@
-import { render, Dynamic, Portal } from "solid-js/web"
+import { render, Portal } from "solid-js/web"
+import { createSessionTimelineRowRenderer } from "@opencode/session-ui/timeline/row"
+import { timelinePresets } from "@opencode/session-ui/timeline/detail"
+import { createTimelineDetail, createTimelineProjection } from "../../../src/session/timeline/projection"
+import { DataProvider } from "@opencode/session-ui/context"
+import { DialogProvider } from "@opencode/ui/context/dialog"
 import { PhysicalSystemsProvider } from "../../../src/physicalsystems/context"
 import { PhysicalSystemsLayout } from "../../../src/physicalsystems/layout"
 import { PhysicalOperations } from "../../../src/physicalsystems/operations"
-import { ToolRegistry, setLocation, location, sessions, setTabInfo, tabKey, navigation, portal } from "./mocks"
+import { setLocation, location, sessions, setTabInfo, tabKey, navigation, portal } from "./mocks"
 import type { PhysicalCommand, PhysicalSnapshot } from "../../../src/physicalsystems/types"
 import { createStore } from "solid-js/store"
-import { Show } from "solid-js"
+import { For, Show } from "solid-js"
 import { modelBridge, models } from "./models"
 import { RobotModelPicker } from "../../../src/physicalsystems/robot-model-picker"
+import { cloudAccounts, conversationBridge, roomsBridge } from "./cloud-accounts"
 
-const [fixture, setFixture] = createStore({ gate: true, forged: false })
+const [fixture, setFixture] = createStore({
+  gate: true,
+  forged: false,
+  foreignSession: false,
+  timelinePreset: "compact",
+})
 const state: PhysicalSnapshot = {
   revision: 1,
   serviceId: "service-fixture",
@@ -99,6 +110,7 @@ if ((window as typeof window & { __fixtureEmpty?: boolean }).__fixtureEmpty) {
 }
 const fixtureWindow = window as typeof window & {
   __fixture: {
+    cloudAccounts: typeof cloudAccounts
     models: typeof models
     portal: typeof portal
     state: PhysicalSnapshot
@@ -106,6 +118,8 @@ const fixtureWindow = window as typeof window & {
     emit: (patch?: Partial<PhysicalSnapshot>) => void
     gate: (value: boolean) => void
     forge: (value: boolean) => void
+    foreignSession: (value: boolean) => void
+    timelinePreset: (value: string) => void
     route: (value: string, directory?: string) => void
     failBinding: boolean
     failProjectCreate: boolean
@@ -127,6 +141,7 @@ const fixtureWindow = window as typeof window & {
 }
 const listeners = new Set<(value: PhysicalSnapshot) => void>()
 fixtureWindow.__fixture = {
+  cloudAccounts,
   models,
   portal,
   state,
@@ -201,6 +216,8 @@ fixtureWindow.__fixture = {
   },
   gate: (value) => setFixture("gate", value),
   forge: (value) => setFixture("forged", value),
+  foreignSession: (value) => setFixture("foreignSession", value),
+  timelinePreset: (value) => setFixture("timelinePreset", value),
   route(value, directory) {
     const match = /^\/server\/([^/]+)\/session\/([^/]+)$/.exec(value)
     if (match && directory) setTabInfo(tabKey({ server: atob(match[1]), sessionId: match[2] }), { directory })
@@ -211,6 +228,9 @@ window.addEventListener("error", (event) => fixtureWindow.__fixture.errors.push(
 window.addEventListener("unhandledrejection", (event) => fixtureWindow.__fixture.errors.push(String(event.reason)))
 window.api = {
   physicalSystems: {
+    ...((window as typeof window & { __fixtureCloud?: boolean }).__fixtureCloud
+      ? { conversations: conversationBridge, rooms: roomsBridge }
+      : {}),
     models: modelBridge,
     snapshot: async () => structuredClone(state),
     async recover() {
@@ -363,6 +383,8 @@ window.api = {
     },
   },
 }
+if ((window as typeof window & { __fixtureWithoutBridge?: boolean }).__fixtureWithoutBridge) window.api = undefined
+
 function ComposerFixture(props: { name: string }) {
   return (
     <div data-fixture-composer={props.name}>
@@ -383,6 +405,69 @@ function ComposerFixture(props: { name: string }) {
   )
 }
 
+function TimelineFixture() {
+  const detail = createTimelineDetail(
+    () => timelinePresets.find((preset) => preset.id === fixture.timelinePreset)!.value,
+  )
+  const projection = createTimelineProjection({
+    sessionMessages: () => [
+      { id: "msg_user", type: "user", text: "Propose a synthetic experiment", time: { created: 1 } },
+      {
+        id: "msg_assistant",
+        type: "assistant",
+        agent: "physical-systems",
+        model: { providerID: "fixture", id: "fixture", variant: "default" },
+        content: [
+          {
+            type: "tool",
+            id: "proposal-part",
+            name: "propose_local_experiment",
+            time: { created: 2, completed: 3 },
+            state: {
+              status: "completed",
+              input: {},
+              content: [{ type: "text", text: "Synthetic plan proposed" }],
+              metadata: {
+                physicalSystems: {
+                  projectId: "project-a",
+                  conversationId: "conversation-a",
+                  serverId: "sidecar",
+                  sessionId: fixture.foreignSession ? "session-b" : "session-a",
+                  experimentId: "experiment-a",
+                  planDigest: fixture.forged ? "forged-digest" : "digest-a",
+                },
+              },
+            },
+          },
+        ],
+        time: { created: 2, completed: 3 },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      },
+    ],
+    status: () => ({ type: "idle" }),
+    reasoningMode: () => "compact",
+    timelineDetail: detail,
+  })
+  const [open, setOpen] = createStore<Record<string, boolean | undefined>>({})
+  const renderer = createSessionTimelineRowRenderer({
+    sessionID: () => "session-a",
+    status: () => ({ type: "idle" }),
+    projection,
+    presentation: () => undefined,
+    reasoningMode: () => "compact",
+    shellToolDefaultOpen: () => false,
+    editToolDefaultOpen: () => false,
+    timelineDetail: detail,
+    disclosure: { value: (key) => open[key], set: (key, value) => setOpen(key, value) },
+  })
+  return (
+    <div data-fixture-timeline>
+      <For each={projection.rows()}>{(row) => <renderer.Row row={() => row} />}</For>
+    </div>
+  )
+}
+
 render(
   () => (
     <PhysicalSystemsProvider>
@@ -398,23 +483,15 @@ render(
             <p>Fixture native conversation content</p>
             <ComposerFixture name="inside" />
             <RobotModelPicker />
-            <Dynamic
-              component={ToolRegistry.render("propose_local_experiment")}
-              tool="propose_local_experiment"
-              input={{}}
+            <DataProvider
+              data={{ session: [], session_status: {}, session_diff: {} }}
+              directory="/fixture/a"
               sessionID="session-a"
-              status="completed"
-              metadata={{
-                physicalSystems: {
-                  projectId: "project-a",
-                  conversationId: "conversation-a",
-                  serverId: "sidecar",
-                  sessionId: "session-a",
-                  experimentId: "experiment-a",
-                  planDigest: fixture.forged ? "forged-digest" : "digest-a",
-                },
-              }}
-            />
+            >
+              <DialogProvider>
+                <TimelineFixture />
+              </DialogProvider>
+            </DataProvider>
           </div>
         </PhysicalSystemsLayout>
       </Show>

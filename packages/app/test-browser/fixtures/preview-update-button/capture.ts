@@ -72,7 +72,7 @@ try {
     plugins: [solid()],
     resolve: {
       alias: [
-        { find: "@/utils/toast", replacement: join(fixture, "environment.ts") },
+        { find: "@/shell/notifications/toast", replacement: join(fixture, "environment.ts") },
         { find: "@", replacement: resolve(fixture, "../../../src") },
       ],
     },

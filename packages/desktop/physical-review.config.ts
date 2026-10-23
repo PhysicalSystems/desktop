@@ -11,7 +11,7 @@ const config: Configuration = {
   electronDist: "node_modules/electron/dist",
   npmRebuild: false,
   files: ["out/**/*", "resources/**/*", "!resources/opencode-cli*"],
-  extraResources: [{ from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
+  extraResources: [{ from: "resources", to: ".", filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version"] }, { from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
   extraMetadata: { version: "0.0.0-physical-review.1", name: "physical-systems-desktop-review" },
   publish: null,
   mac: { target: "dir", icon: "icons/physicalsystems/icon.icns", identity: null, notarize: false },
