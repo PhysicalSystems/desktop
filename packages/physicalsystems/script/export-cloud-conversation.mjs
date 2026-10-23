@@ -25,6 +25,7 @@ const scopes = [
   "packages/physicalsystems/LICENSE",
   "LICENSE",
   "package.json",
+  "bun.lock",
   "patches/solid-js@1.9.10.patch",
   "packages/physicalsystems/script/cloud-source.vite.mjs",
   "packages/physicalsystems/script/cloud-source-build.mjs",
@@ -75,11 +76,20 @@ export async function exportCloudConversation({ root, output }) {
     }),
   )
   const original = JSON.parse(blobs.get("package.json"))
+  const lock = blobs.get("bun.lock").toString("utf8")
+  const compilerPins = Object.fromEntries(
+    ["babel-preset-solid", "babel-plugin-jsx-dom-expressions"].map((name) => {
+      const version = lock.match(new RegExp(`^\\s*"${name}": \\["${name}@([^"\\s]+)"`, "m"))?.[1]
+      if (!version) throw new Error(`Missing canonical compiler pin: ${name}`)
+      return [name, version]
+    }),
+  )
   const manifests = ["ui", "session-ui"].map((name) => JSON.parse(blobs.get(`packages/${name}/package.json`)))
   const dependencies = Object.fromEntries(
     Object.entries({
       ...manifests[0].dependencies,
       ...manifests[1].dependencies,
+      ...compilerPins,
       effect: "catalog:",
       "@tailwindcss/vite": "catalog:",
       tailwindcss: "catalog:",
@@ -98,6 +108,7 @@ export async function exportCloudConversation({ root, output }) {
   )
   const renames = {
     "package.json": "source-package.json",
+    "bun.lock": "source-bun.lock",
     "packages/app/cloud-conversation.html": "packages/app/index.html",
     "packages/physicalsystems/script/cloud-source.vite.mjs": "vite.config.mjs",
     "packages/physicalsystems/script/cloud-source-build.mjs": "build.mjs",

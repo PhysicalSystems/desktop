@@ -15,6 +15,7 @@ test("source export pins canonical blobs, preserves licenses, and rejects dirty 
   const canonical = resolve(import.meta.dir, "../../..")
   const files = [
     "package.json",
+    "bun.lock",
     "packages/ui/package.json",
     "packages/session-ui/package.json",
     "packages/ui/LICENSE",

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, realpath, symlink, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash } from "node:crypto"
@@ -32,4 +32,17 @@ for (const patch of parsePatch(await readFile(resolve(root, "patches/solid-js@1.
     throw new Error("Solid patch does not match the pinned dependency")
 }
 const output = process.argv[2] ? resolve(process.argv[2]) : resolve(root, "dist")
+// Tailwind resolves CSS package exports independently from Vite's JS resolver.
+// Link only these immutable browser packages after npm installs external dependencies.
+await mkdir(resolve(root, "node_modules/@opencode-ai"), { recursive: true })
+for (const name of ["ui", "session-ui"]) {
+  const source = resolve(root, "packages", name)
+  const link = resolve(root, "node_modules/@opencode-ai", name)
+  const existing = await realpath(link).catch((error) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+  if (existing && existing !== (await realpath(source))) throw new Error("Unexpected browser source link")
+  if (!existing) await symlink(source, link, process.platform === "win32" ? "junction" : "dir")
+}
 await build({ configFile: resolve(root, "vite.config.mjs"), build: { outDir: output, emptyOutDir: false } })
