@@ -64,6 +64,8 @@ PHYSICALSYSTEMS_UI_BROWSER_TESTS=1 PHYSICALSYSTEMS_INFERENCE_ONLY=1 \
 It uses a local Firefox/WebDriver fixture. It does not connect to real equipment
 or replace a packaged Windows installation test.
 
+![Model controls in the synthetic browser fixture](docs/model-runtime-ready.png)
+
 ### First gripper check
 
 The **Setup → Gripper check** controls use the optional Node
