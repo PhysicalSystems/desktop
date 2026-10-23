@@ -1,0 +1,56 @@
+name: Cloud conversation worker
+
+on:
+  pull_request:
+    paths:
+      - deploy/cloud-conversations/**
+      - packages/core/**
+      - packages/server/**
+      - packages/protocol/**
+      - packages/schema/**
+      - packages/llm/**
+      - packages/opencode/**
+      - bun.lock
+      - package.json
+      - patches/**
+      - .github/workflows/cloud-conversations.yml
+  push:
+    branches: [cloud-conversations]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-conversations-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-worker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Build pinned Bun worker image
+        run: docker build -f deploy/cloud-conversations/Dockerfile -t physicalsystems-cloud-qualification .
+      - name: Check deployment types and boundary tests
+        run: |
+          docker run --rm --network none physicalsystems-cloud-qualification bun run --cwd deploy/cloud-conversations typecheck
+          docker run --rm --network none physicalsystems-cloud-qualification bun run --cwd deploy/cloud-conversations test
+      - name: Qualify actual engine with isolated fake provider
+        run: |
+          mkdir -p "$RUNNER_TEMP/cloud-conversations-evidence"
+          docker run --rm --network none --user "$(id -u):$(id -g)" --env HOME=/tmp --tmpfs /tmp:rw,mode=1777 \
+            -v "$RUNNER_TEMP/cloud-conversations-evidence:/evidence" \
+            physicalsystems-cloud-qualification bun run deploy/cloud-conversations/qualify.ts /evidence
+      - name: Preserve synthetic qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cloud-conversations-qualification-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/cloud-conversations-evidence/**/qualification.json
+            ${{ runner.temp }}/cloud-conversations-evidence/**/fixture-requests.json
+            ${{ runner.temp }}/cloud-conversations-evidence/**/worker.log
+          if-no-files-found: warn
+          retention-days: 14

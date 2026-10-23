@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["bun", "node"],
+    "typeRoots": ["../../packages/physicalsystems/node_modules/@types"]
+  },
+  "include": ["./*.ts"]
+}
