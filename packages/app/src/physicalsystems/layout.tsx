@@ -250,10 +250,18 @@ function PhysicalWorkspace(props: ParentProps) {
     return { serverId: String(requireServerKey(match[1])), sessionId: decodeURIComponent(match[2]) }
   })
   let previousPath = location.pathname
+  let settingsOrigin: string | undefined
   const settingsRoute = () => location.pathname === "/settings"
   createEffect(() => {
     const path = location.pathname
-    if (path !== previousPath && previousPath !== "/settings" && route()) setState("cloudRooms", false)
+    if (path !== previousPath) {
+      if (path === "/settings") settingsOrigin = previousPath
+      else {
+        const returningFromSettings = previousPath === "/settings" && path === settingsOrigin
+        if (!returningFromSettings && route()) setState("cloudRooms", false)
+        settingsOrigin = undefined
+      }
+    }
     previousPath = path
   })
   const canLinkConversation = createMemo(() => {

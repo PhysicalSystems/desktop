@@ -228,6 +228,27 @@ test("shared workcells and optional cloud AI preserve the existing local session
   expect(fixture.js("window.__fixture.state.conversation.sessionId")).toBe("session-a")
 })
 
+test("returning from Settings restores shared mode but choosing another local tab opens that session", async () => {
+  const fixture = await mount(false, false, false, true)
+  const shared = () => fixture.window.document.querySelector("nav.ps-shared-sidebar")
+  expect(shared()).not.toBeNull()
+  fixture.js("window.__fixture.route('/settings')")
+  await settle()
+  expect(fixture.window.document.querySelector<HTMLElement>("[data-ps-workspace]")!.style.display).toBe("none")
+  fixture.js("window.__fixture.route('/server/c2lkZWNhcg==/session/session-a')")
+  await settle()
+  expect(shared()).not.toBeNull()
+  expect(fixture.window.document.querySelector("[data-ps-projects]")).toBeNull()
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  fixture.js("window.__fixture.route('/settings')")
+  await settle()
+  fixture.js("window.__fixture.route('/server/c2lkZWNhcg==/session/session-b')")
+  await settle()
+  expect(Boolean(shared())).toBe(false)
+  expect(fixture.window.document.querySelector("[data-ps-projects]")).not.toBeNull()
+  expect(fixture.js("window.__fixture.pathname()")).toBe("/server/c2lkZWNhcg==/session/session-b")
+})
+
 test("confirming a pending website workcell unlocks editing and clears its retry and error state", async () => {
   const fixture = await mount(false, false, false, true, true)
   expect(fixture.window.document.querySelector("[data-ps-projects]")).toBeNull()
