@@ -81,7 +81,7 @@ test("live, reused, unreadable or malformed PID rechecks cannot turn missing aux
     for (const last of [
       processStat(),
       processStat({ ...identity, birth: "123457" }),
-      processStat({ ...identity, state: "Z" }),
+      processStat({ ...identity, state: "Z", birth: "123457" }),
       "malformed",
       procError("EACCES"),
     ]) {
@@ -107,6 +107,47 @@ test("live, reused, unreadable or malformed PID rechecks cannot turn missing aux
   expect(f.calls).toEqual(["stat"])
 })
 
+test("an exact owned process that exits during signal proof is never signaled", async () => {
+  const zombie = processStat({ ...identity, state: "Z" })
+  for (const input of [
+    { stats: [zombie] },
+    { stats: [processStat(), zombie] },
+    { stats: [processStat(), zombie], command: "" },
+    { stats: [processStat(), zombie], command: "\0\0" },
+    { stats: [processStat(), procError("ENOENT"), procError("ESRCH")], command: "" },
+    ...["ENOENT", "ESRCH"].flatMap((code) => [
+      { stats: [procError(code), zombie] },
+      { stats: [processStat(), procError(code), zombie] },
+      ...["status", "command", "executable"].map((stage) => ({
+        stats: [processStat(), zombie],
+        [stage]: procError(code),
+      })),
+    ]),
+  ]) {
+    const f = signalProofFixture(input)
+    let signals = 0
+    if (await reviewBrowserSignalProof(identity, f.input, f.io)) signals++
+    expect(signals).toBe(0)
+    expect(f.calls.at(-1)).toBe("stat")
+  }
+})
+
+test("empty Crashpad command lines require an exact exited process, never a live or reused PID", async () => {
+  for (const last of [
+    processStat(),
+    processStat({ ...identity, state: "Z", pid: 401 }),
+    processStat({ ...identity, state: "Z", birth: "123457" }),
+    processStat({ ...identity, state: "Z", session: 401 }),
+    processStat({ ...identity, state: "Z", group: 401 }),
+    "malformed",
+    procError("EACCES"),
+  ]) {
+    const f = signalProofFixture({ stats: [processStat(), last], command: "" })
+    await expect(reviewBrowserSignalProof(identity, f.input, f.io)).rejects.toThrow()
+    expect(f.calls).toEqual(["stat", "status", "command", "stat"])
+  }
+})
+
 test("successful signal proof rechecks immutable identity after auxiliary reads and retains every ownership gate", async () => {
   const safe = signalProofFixture()
   expect(await reviewBrowserSignalProof(identity, safe.input, safe.io)).toBe(true)
@@ -116,7 +157,10 @@ test("successful signal proof rechecks immutable identity after auxiliary reads 
     true,
   )
   expect(session.calls).toEqual(["stat", "status", "stat"])
-  for (const changed of [{ pid: 401 }, { birth: "123457" }, { session: 401 }, { group: 401 }]) {
+  for (const changed of [{ pid: 401 }, { birth: "123457" }, { session: 401 }, { group: 401 }].flatMap((value) => [
+    value,
+    { ...value, state: "Z" },
+  ])) {
     const final = signalProofFixture({ stats: [processStat(), processStat({ ...identity, ...changed })] })
     await expect(reviewBrowserSignalProof(identity, final.input, final.io)).rejects.toThrow("BROWSER_UNCONFIRMED")
     const first = signalProofFixture({ stats: [processStat({ ...identity, ...changed })], status: procError("ENOENT") })
