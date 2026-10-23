@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { resolve, join } from "node:path"
 import { spawn } from "node:child_process"
+import { createRequire } from "node:module"
 import { readAttachment } from "../src/attachment"
 import { physicalEnvironment } from "../src/environment"
 
@@ -23,5 +24,6 @@ const env = physicalEnvironment(process.env, resolve(root))
 if (attachment.username !== "opencode") throw new Error("Unsupported desktop attachment identity")
 env.OPENCODE_PASSWORD = attachment.password
 const cli = resolve(import.meta.dir, "../../cli/src/index.ts")
-const child = spawn(process.execPath, [cli, "--server", attachment.url, "--session", attachment.sessionId, attachment.directory], { env, stdio: "inherit" })
+const preload = createRequire(cli).resolve("@opentui/solid/preload")
+const child = spawn(process.execPath, ["--preload", preload, cli, "--server", attachment.url, "--session", attachment.sessionId, attachment.directory], { env, stdio: "inherit" })
 child.on("exit", (code) => { process.exitCode = code ?? 1 })
