@@ -39,6 +39,7 @@ import { ownedV2CredentialTransport } from "../src/release/native-v2-transport.t
 import { createV2CredentialReadiness, createV2RemovalReadiness } from "../src/release/native-v2-readiness.ts"
 import { createV2TransportObservation } from "../src/release/native-v2-observation.ts"
 import { observeCredentialBackend } from "../src/release/credential-backend.ts"
+import { readPreservedTranscript } from "../src/release/preserved-transcript.ts"
 import {
   nsisInstallArguments,
   nsisSpawnOptions,
@@ -1032,19 +1033,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
       state.trials.some((trial) => trial.status !== "COMPLETED")
     )
       throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
-    const response = await api(`/api/session/${attached.sessionId}/message?limit=200&order=asc`)
-    if (!response.ok) throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
-    const transcript = await response.text()
-    if (transcript.length > 4 * 1024 * 1024) throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
-    const page = JSON.parse(transcript)
-    const messages = page.data
-    if (
-      !Array.isArray(messages) ||
-      !messages.length ||
-      page.cursor?.next !== undefined ||
-      messages.some((message) => typeof message.id !== "string" || typeof message.type !== "string")
-    )
-      throw new Error("PACKAGED_REINSTALL_STATE_CHANGED")
+    const messages = await readPreservedTranscript(api, attached.sessionId)
     return {
       projectId: state.projectId,
       sessionId: state.sessionId,
