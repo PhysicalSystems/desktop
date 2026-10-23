@@ -191,7 +191,7 @@ export async function buildPublicDesktop(
     const manifestFile = join(desktop, "package.json")
     const manifest = JSON.parse(await readFile(manifestFile, "utf8"))
     await writeFile(manifestFile, json({ ...manifest, version: inputs.version }))
-    await execute(process.execPath, ["packages/opencode/script/build-node.ts"], stage, env.build)
+    await execute(process.execPath, ["script/desktop-build-agent.ts"], stage, env.build)
     await execute(process.execPath, ["./node_modules/electron-vite/bin/electron-vite.js", "build"], desktop, env.build)
     const identity = JSON.parse(await readFile(join(desktop, "out/legal/physical-build-identity.json"), "utf8"))
     verifyCompiledPublicIdentity(

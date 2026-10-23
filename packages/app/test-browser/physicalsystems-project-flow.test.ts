@@ -17,17 +17,17 @@ beforeAll(async () => {
   const fixture = resolve(import.meta.dir, "fixtures/physicalsystems")
   const feature = normalizePath(resolve(import.meta.dir, "../src/physicalsystems"))
   const contexts = [
-    "../context/language",
-    "../context/platform",
-    "../context/server",
-    "../context/tabs",
-    "../context/global",
-    "../components/settings-dialog",
-    "../utils/persist",
-    "../utils/toast",
-    "../utils/session-route",
+    "../runtime/i18n/language",
+    "../runtime/platform/platform",
+    "../runtime/server/registry",
+    "../shell/tabs/tabs",
+    "../runtime/server/runtime",
+    "../settings/command",
+    "../runtime/persistence/storage",
+    "../shell/notifications/toast",
+    "../shell/routes/session",
     "@solidjs/router",
-    "@opencode-ai/session-ui/message-part",
+    "@opencode/session-ui/message-part",
   ]
   const result = await build({
     configFile: false,

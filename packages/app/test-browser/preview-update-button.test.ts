@@ -22,7 +22,7 @@ test("actual update button downloads and hands installation to native control wi
       resolve: {
         alias: [
           {
-            find: "@/utils/toast",
+            find: "@/shell/notifications/toast",
             replacement: resolve(import.meta.dir, "fixtures/preview-update-button/environment.ts"),
           },
           { find: "@", replacement: resolve(import.meta.dir, "../src") },

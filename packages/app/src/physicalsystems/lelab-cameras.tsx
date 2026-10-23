@@ -1,8 +1,10 @@
+import { Persistence } from "../runtime/persistence/schema"
+import { Schema } from "effect"
 // SPDX-License-Identifier: Apache-2.0
 import { createEffect, For, onCleanup, Show, untrack } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import { useLanguage } from "../context/language"
-import { Persist, persisted } from "../utils/persist"
+import { useLanguage } from "../runtime/i18n/language"
+import { Persist, persisted } from "../runtime/persistence/storage"
 import type { LeLabCameraBridge, LeLabErrorCode, LeLabRobot } from "../../../physicalsystems/src/lelab-types"
 import { createLeLabPreview } from "./lelab-preview"
 
@@ -10,7 +12,8 @@ export function LeLabCameras(props: { bridge: LeLabCameraBridge; scope: string }
   const language = useLanguage()
   const [saved, setSaved] = persisted(
     Persist.window("physicalsystems.lelab-cameras"),
-    createStore({ url: "http://127.0.0.1:8000", robotName: "" }),
+    Persistence.struct({ url: Schema.String, robotName: Schema.String }),
+    { url: "http://127.0.0.1:8000", robotName: "" },
   )
   const [state, setState] = createStore({
     on: false,

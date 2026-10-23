@@ -1,9 +1,10 @@
+import { Root } from "@kobalte/core/dialog"
 import { render } from "solid-js/web"
 import { MemoryRouter, Route } from "@solidjs/router"
-import { ProviderConnection } from "../../../src/components/dialog-connect-provider"
-import { PlatformProvider } from "../../../src/context/platform"
-import { LanguageProvider } from "../../../src/context/language"
-import { DialogProvider } from "@opencode-ai/ui/context/dialog"
+import { ProviderConnection } from "../../../src/providers/connect/dialog"
+import { PlatformProvider } from "../../../src/runtime/platform/platform"
+import { LanguageProvider } from "../../../src/runtime/i18n/language"
+import { DialogProvider } from "@opencode/ui/context/dialog"
 import { fixture } from "./environment"
 
 export function mount(
@@ -28,16 +29,20 @@ export function mount(
             >
               <LanguageProvider locale="en">
                 <DialogProvider>
-                  <ProviderConnection
-                    provider="fixture"
-                    directory={() => "/owned-project"}
-                    onBack={() => {
-                      control.exited = true
-                    }}
-                    setBack={(back) => {
-                      control.back = back
-                    }}
-                  />
+                  <Root open>
+                    <ProviderConnection
+                      provider="fixture"
+                      directory="/owned-project"
+                      onAuthorization={() => {}}
+                      onFirstConnection={() => {}}
+                      onBack={() => {
+                        control.exited = true
+                      }}
+                      setBack={(back) => {
+                        control.back = back
+                      }}
+                    />
+                  </Root>
                 </DialogProvider>
               </LanguageProvider>
             </PlatformProvider>

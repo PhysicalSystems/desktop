@@ -35,7 +35,7 @@ export const ServerConnection = {
   key: (value: typeof connection) => value.key,
   builtin: (value: typeof connection) => value.key === "sidecar",
 }
-export const useServer = () => ({ key: "sidecar", list: [connection] })
+export const useServers = () => ({ key: "sidecar", list: [connection] })
 export const sessions = {
   created: [] as { agent: string; location: { directory: string } }[],
   remembered: [] as string[],
@@ -82,8 +82,10 @@ export const [tabInfo, setTabInfo] = createStore<Record<string, { directory?: st
 export const useTabs = () => ({
   info: tabInfo,
   addSessionTab: (tab: { server: string; sessionId: string }) => tab,
-  rememberSessionInfo: (tab: { server: string; sessionId: string }, info: { directory: string; title: string }) =>
-    setTabInfo(tabKey(tab), info),
+  rememberSessionInfo: (
+    tab: { server: string; sessionId: string },
+    info: { location: { directory: string }; title: string },
+  ) => setTabInfo(tabKey(tab), { directory: info.location.directory, title: info.title }),
   select(tab: { server: string; sessionId: string }) {
     const pathname = `/server/${btoa(tab.server)}/session/${tab.sessionId}`
     if (navigation.hold) {
@@ -98,7 +100,11 @@ export const useTabs = () => ({
   },
 })
 export const Persist = { window: (key: string) => key }
-export const persisted = (_key: unknown, store: unknown[]) => [...store, undefined, () => true]
+export const persisted = (_key: unknown, _schema: unknown, initial: object) => [
+  ...createStore(initial),
+  undefined,
+  () => true,
+]
 const registry = new Map<string, Component>()
 export const ToolRegistry = {
   register: (input: { name: string; render: Component }) => registry.set(input.name, input.render),

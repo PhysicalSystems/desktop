@@ -18,7 +18,7 @@ test.skipIf(!enabled)(
     const fixture = resolve(import.meta.dir, "fixtures/lelab-cameras")
     const mocks = join(fixture, "mocks.ts")
     const feature = resolve(import.meta.dir, "../src/physicalsystems")
-    const contexts = ["../context/language", "../utils/persist"]
+    const contexts = ["../runtime/i18n/language", "../runtime/persistence/storage"]
     await build({
       configFile: false,
       root: fixture,

@@ -3,10 +3,10 @@ import { randomUUID } from "node:crypto"
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { admitContinuation } from "../../../physicalsystems/src/continuation"
-import { agentState } from "../../../physicalsystems/src/agent-status"
+import { v2AgentState, v2ContinuationEvidence } from "../../../physicalsystems/src/v2-agent"
 import { createAgentGateway } from "../../../physicalsystems/src/gateway"
 import type { AgentBinding } from "../../../physicalsystems/src/gateway"
-import type { PhysicalSnapshot } from "@opencode-ai/app/physicalsystems-types"
+import type { PhysicalSnapshot } from "@opencode/app/physicalsystems-types"
 
 type Port = { postMessage(value: unknown): void; on(name: string, listener: (message: { data: Record<string, unknown> }) => void): void }
 type Operator = {
@@ -49,10 +49,10 @@ function syncStatus(): Promise<void> {
     for (const [directory, owners] of groups) {
       const generation = ++statusGeneration
       for (const owner of owners) statusRequests.set(owner.sessionId, generation)
-      const status = await modelRequest("/session/status", directory).then((response) => response.json()).catch(() => undefined)
+      const status = await modelRequest("/api/session/active", directory).then((response) => response.json()).catch(() => undefined)
       for (const owner of owners) {
         if (statusRequests.get(owner.sessionId) !== generation) continue
-        const next = agentState(status, owner.sessionId)
+        const next = v2AgentState(status, owner.sessionId)
         const key = JSON.stringify(next)
         if (statusCache.get(owner.sessionId) === key) continue
         await service!.command("session.agentState", { projectId: owner.projectId, conversationId: owner.conversationId, serverId: owner.serverId, sessionId: owner.sessionId, ...next }).then(() => {
@@ -79,7 +79,7 @@ function nativeVault(vault: "provider" | "operator", operation: string, payload:
 async function modelRequest(route: string, directory: string, init?: RequestInit) {
   if (!server) throw new Error("MODEL_SERVER_UNAVAILABLE")
   const target = new URL(route, server.url)
-  target.searchParams.set("directory", directory)
+  target.searchParams.set("location[directory]", directory)
   const response = await fetch(target, {
     ...init, redirect: "error",
     headers: { "Content-Type": "application/json", Authorization: `Basic ${Buffer.from(`opencode:${server.password}`).toString("base64")}`, ...init?.headers },
@@ -107,12 +107,22 @@ async function start(data: Record<string, unknown>) {
       if (!project?.cwd) throw new Error("PROJECT_DIRECTORY_UNAVAILABLE")
       return admitContinuation({ ...request, sessionId: request.binding.sessionId }, {
         read: async (messageID, signal) => {
-          try { return await (await modelRequest(`/session/${encodeURIComponent(request.binding.sessionId)}/message/${messageID}`, project.cwd!, { signal })).json() }
-          catch (error) { if (error instanceof Error && error.message === "MODEL_REQUEST_404") return undefined; throw error }
+          const route = `/api/session/${encodeURIComponent(request.binding.sessionId)}`
+          try {
+            const response: unknown = await (await modelRequest(`${route}/message/${messageID}`, project.cwd!, { signal })).json()
+            if (!record(response) || !record(response.data)) throw new Error("CONTINUATION_UNCONFIRMED")
+            return v2ContinuationEvidence(response.data, messageID, request.binding.sessionId, request.requestId)
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== "MODEL_REQUEST_404") throw error
+            const response: unknown = await (await modelRequest(`${route}/inbox`, project.cwd!, { signal })).json()
+            if (!record(response) || !Array.isArray(response.data)) throw new Error("CONTINUATION_UNCONFIRMED")
+            const item = response.data.find((item) => record(item) && item.id === messageID)
+            return item === undefined ? undefined : v2ContinuationEvidence(item, messageID, request.binding.sessionId, request.requestId)
+          }
         },
         post: async (messageID, signal) => {
-          await modelRequest(`/session/${encodeURIComponent(request.binding.sessionId)}/prompt_async`, project.cwd!, {
-            method: "POST", signal, body: JSON.stringify({ messageID, agent: "physical-systems", parts: [{ type: "text", text: request.text }] }),
+          await modelRequest(`/api/session/${encodeURIComponent(request.binding.sessionId)}/prompt`, project.cwd!, {
+            method: "POST", signal, body: JSON.stringify({ id: messageID, text: request.text, delivery: "steer", metadata: { physicalSystemsContinuation: { requestId: request.requestId, sessionId: request.binding.sessionId } } }),
           })
         },
       })
@@ -154,8 +164,9 @@ async function command(request: Record<string, unknown>) {
     if (!server || payload.serverId !== "sidecar") throw new Error("MODEL_SERVER_SCOPE_MISMATCH")
     const project = service.snapshot().projects.find((item) => item.id === payload.projectId)
     if (!project?.cwd || typeof payload.sessionId !== "string") throw new Error("INVALID_SESSION_BINDING")
-    const info: unknown = await (await modelRequest(`/session/${encodeURIComponent(payload.sessionId)}`, project.cwd)).json()
-    if (!record(info) || info.id !== payload.sessionId || typeof info.directory !== "string" || resolve(info.directory) !== resolve(project.cwd)) {
+    const response: unknown = await (await modelRequest(`/api/session/${encodeURIComponent(payload.sessionId)}`, project.cwd)).json()
+    const info = record(response) ? response.data : undefined
+    if (!record(info) || info.id !== payload.sessionId || info.agent !== "physical-systems" || !record(info.location) || typeof info.location.directory !== "string" || resolve(info.location.directory) !== resolve(project.cwd) || info.location.workspaceID !== undefined) {
       throw new Error("MODEL_SESSION_SCOPE_MISMATCH")
     }
   }
@@ -164,9 +175,9 @@ async function command(request: Record<string, unknown>) {
     if (!owner) throw new Error("MODEL_SESSION_SCOPE_MISMATCH")
     const generation = ++statusGeneration
     statusRequests.set(owner.sessionId, generation)
-    const status = await modelRequest("/session/status", owner.directory, { signal: AbortSignal.timeout(1000) }).then((response) => response.json()).catch(() => undefined)
+    const status = await modelRequest("/api/session/active", owner.directory, { signal: AbortSignal.timeout(1000) }).then((response) => response.json()).catch(() => undefined)
     requireCurrentStatus(owner.sessionId, generation)
-    const next = agentState(status, owner.sessionId)
+    const next = v2AgentState(status, owner.sessionId)
     await service.command("session.agentState", { projectId: owner.projectId, conversationId: owner.conversationId, serverId: owner.serverId, sessionId: owner.sessionId, ...next })
     requireCurrentStatus(owner.sessionId, generation)
     statusCache.set(owner.sessionId, JSON.stringify(next))

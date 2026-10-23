@@ -311,7 +311,7 @@ async function buildCandidate(file: string, platform: CandidatePlatform, outputP
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"))
     manifest.version = inputs.version
     await writeFile(manifestPath, json(manifest))
-    await run(process.execPath, ["packages/opencode/script/build-node.ts"], stage, env)
+    await run(process.execPath, ["script/desktop-build-agent.ts"], stage, env)
     const desktop = join(stage, "packages/desktop")
     await run(process.execPath, ["./node_modules/electron-vite/bin/electron-vite.js", "build"], desktop, env)
     await writeFile(join(desktop, "out/legal/desktop-release-inputs.json"), json(inputs))

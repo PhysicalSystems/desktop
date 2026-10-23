@@ -4,8 +4,9 @@
 // The public desktop's product identity and release channel are independent.
 export const agentBuildChannel = "dev"
 
-// Core database/database.ts uses this default when physicalEnvironment strips
-// ambient OPENCODE_DB / OPENCODE_DISABLE_CHANNEL_DB overrides, as intended.
+// Retain the beta profile's database name across the V2 runtime migration.
+// The owned launcher sets this exact path after stripping ambient DB overrides;
+// V2's generic default is no longer channel-specific.
 export const agentDatabaseName = ["latest", "beta", "prod"].includes(agentBuildChannel)
   ? "opencode.db"
   : `opencode-${agentBuildChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`

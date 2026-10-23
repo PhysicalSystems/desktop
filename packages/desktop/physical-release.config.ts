@@ -24,7 +24,7 @@ const config: Configuration = {
   electronDist: "node_modules/electron/dist",
   npmRebuild: false,
   files: ["out/**/*", "resources/entitlements.plist"],
-  extraResources: [{ from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
+  extraResources: [{ from: "resources", to: ".", filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version"] }, { from: "icons/physicalsystems", to: "icons", filter: ["*.png", "*.ico", "*.icns", "!source.png"] }],
   extraMetadata: {
     name: "physical-systems-desktop-candidate",
     version: inputs.version,

@@ -2,7 +2,7 @@
 import type { PhysicalProject } from "./types"
 
 /** Creates local conversation records only. A failed binding retry reuses its known session. */
-export function createConversationStarter<T extends { id: string; title: string }>(actions: {
+export function createConversationStarter<T extends { id: string; title?: string }>(actions: {
   create(project: PhysicalProject, serverId: string): Promise<T>
   bind(project: PhysicalProject, serverId: string, session: T): Promise<boolean>
 }) {

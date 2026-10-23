@@ -2,7 +2,7 @@
 import { requireDisposablePublicRunner } from "./public-qualification"
 
 const marker = "Display input verification 0123456789"
-const selector = "[data-component=prompt-input][contenteditable=true]"
+const selector = "[data-component=composer-editor][contenteditable=true]"
 type State = {
   visible: boolean
   focused: boolean
@@ -117,7 +117,7 @@ export function displayPixelsExpression(before: string, after: string) {
 
 /** Genuine app composer only. No overlay, fake widget, camera or model request. */
 export function platformDisplayState() {
-  const elements = document.querySelectorAll<HTMLElement>("[data-component=prompt-input][contenteditable=true]")
+  const elements = document.querySelectorAll<HTMLElement>("[data-component=composer-editor][contenteditable=true]")
   const element = elements.length === 1 ? elements[0] : undefined
   const rect = element?.getBoundingClientRect()
   const style = element && getComputedStyle(element)

@@ -1,5 +1,5 @@
 import { Show } from "solid-js"
-import type { useLanguage } from "@/context/language"
+import type { useLanguage } from "@/runtime/i18n/language"
 import type { UpdaterState } from "@/updater"
 import { updaterAction } from "./updater-action"
 

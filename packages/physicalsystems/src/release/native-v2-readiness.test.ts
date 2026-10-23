@@ -11,9 +11,14 @@ const endpoint = "http://127.0.0.1:32123/credential/v1"
 const model = () => ({
   id: "fixture",
   providerID: "openai",
-  api: { type: "aisdk", package: "@ai-sdk/openai-compatible", id: "fixture", url: endpoint, settings: {} },
-  request: { headers: {}, body: {} },
+  modelID: "fixture",
+  enabled: true,
+  package: "@opencode/ai/providers/openai-compatible",
+  settings: { baseURL: endpoint },
+  headers: {}, body: {}, variants: [],
 })
+
+const provider = (id = "openai", baseURL = endpoint) => ({ data: { id, package: "@opencode/ai/providers/openai-compatible", settings: { baseURL }, headers: {}, body: {} } })
 
 async function fixture(
   variation: {
@@ -58,10 +63,11 @@ async function fixture(
       state.saved = false
       return undefined
     }
+    if (route === "/api/provider/openai") return provider()
     if (route === "/api/model") {
       state.modelReads++
       const value = model()
-      if (variation.endpoint) value.api.url = variation.endpoint
+      if (variation.endpoint) value.settings.baseURL = variation.endpoint
       return { data: state.delayed && state.modelReads < 3 ? [] : [value] }
     }
     if (route === "/api/session/ses_inert/model") {
@@ -87,7 +93,7 @@ async function fixture(
       if (state.sessionReads < 2 || variation.promptFails) throw new Error("PRIVATE-PROMPT-FAILURE")
       probe.observeProviderRequest({
         authorization: `Bearer ${state.canary}`,
-        messages: [{ role: "user", content: init.body.prompt.text }],
+        messages: [{ role: "user", content: init.body.text }],
       })
       return { data: { sessionID: "ses_inert" } }
     }
@@ -201,16 +207,27 @@ test("unregistered connection times out without catalog requests; a registered m
 })
 
 test("wrong endpoint, SDK, fallback key, duplicate model or absent catalog never authorizes the prompt", async () => {
-  expect(credentialFixtureCatalogReady({ data: [] }, endpoint)).toBe(false)
-  expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint)).toBe(true)
+  expect(credentialFixtureCatalogReady({ data: [] }, endpoint, provider())).toBe(false)
+  expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint, provider())).toBe(true)
   for (const changed of [
-    { ...model(), api: { ...model().api, url: "https://api.openai.com/v1" } },
-    { ...model(), api: { ...model().api, package: "@ai-sdk/openai" } },
-    { ...model(), api: { ...model().api, settings: { apiKey: "INERT-BYPASS" } } },
-    { ...model(), request: { headers: { Authorization: "INERT-BYPASS" }, body: {} } },
+    { ...model(), settings: { baseURL: "https://api.openai.com/v1" } },
+    { ...model(), package: "@opencode/ai/providers/openai" },
+    { ...model(), settings: { ...model().settings, apiKey: "INERT-BYPASS" } },
+    { ...model(), headers: { Authorization: "INERT-BYPASS" } },
+    { ...model(), enabled: false },
+    { ...model(), variants: [{ id: "default", settings: { baseURL: "https://api.openai.com/v1" } }] },
+    { ...model(), variants: [{ id: "default", headers: { "x-api-key": "INERT-BYPASS" } }] },
   ])
-    expect(credentialFixtureCatalogReady({ data: [changed] }, endpoint)).toBe(false)
-  expect(() => credentialFixtureCatalogReady({ data: [model(), model()] }, endpoint)).toThrow("CATALOG_UNCONFIRMED")
+    expect(credentialFixtureCatalogReady({ data: [changed] }, endpoint, provider())).toBe(false)
+  for (const changed of [
+    { ...provider().data, id: "foreign" },
+    { ...provider().data, integrationID: "foreign" },
+    { ...provider().data, settings: { baseURL: endpoint, apiKey: "INERT-BYPASS" } },
+    { ...provider().data, settings: { baseURL: "https://api.openai.com/v1" } },
+    { ...provider().data, headers: { authorization: "INERT-BYPASS" } },
+  ])
+    expect(credentialFixtureCatalogReady({ data: [model()] }, endpoint, { data: changed })).toBe(false)
+  expect(() => credentialFixtureCatalogReady({ data: [model(), model()] }, endpoint, provider())).toThrow("CATALOG_UNCONFIRMED")
   const f = await fixture({ endpoint: "https://api.openai.com/v1" })
   await expect(f.readiness.dispatch()).rejects.toThrow("V2_CREDENTIAL_PROBE_CATALOG_UNCONFIRMED")
   expect(f.state.writes).toEqual([])
@@ -238,6 +255,7 @@ test("third process waits for registered disconnection and actual inert catalog 
     expect(init.method).toBe("GET")
     if (route === "/api/integration/openai" && ++integrations <= 2)
       return { location: { directory: "/owned/inert" }, data: integrations === 1 ? null : undefined }
+    if (route === "/api/provider/fixture") return provider("fixture", fixtureEndpoint)
     if (route === "/api/model")
       return {
         data:
@@ -247,7 +265,7 @@ test("third process waits for registered disconnection and actual inert catalog 
                 {
                   ...model(),
                   providerID: "fixture",
-                  api: { ...model().api, url: fixtureEndpoint },
+                  settings: { baseURL: fixtureEndpoint },
                 },
               ],
       }
@@ -308,8 +326,9 @@ test("uninitialized, malformed, reconnected or foreign catalog cannot establish 
           }
         return f.request(route, init)
       }
-      const value = { ...model(), providerID: "fixture", api: { ...model().api, url: fixtureEndpoint } }
-      if (variation === "wrong-endpoint") value.api.url = "https://external.example"
+      if (route === "/api/provider/fixture") return provider("fixture", fixtureEndpoint)
+      const value = { ...model(), providerID: "fixture", settings: { baseURL: fixtureEndpoint } }
+      if (variation === "wrong-endpoint") value.settings.baseURL = "https://external.example"
       return {
         data:
           variation === "empty"
@@ -331,6 +350,6 @@ test("uninitialized, malformed, reconnected or foreign catalog cannot establish 
     await expect(readiness.wait()).rejects.toThrow("REMOVAL_UNCONFIRMED")
     expect(f.state.writes).toEqual([])
     expect(readiness.checkpoint().catalogReady).toBe(false)
-    if (!["pending", "empty"].includes(variation)) expect(requests).toBeLessThanOrEqual(2)
+    if (!["pending", "empty"].includes(variation)) expect(requests).toBeLessThanOrEqual(3)
   }
 })

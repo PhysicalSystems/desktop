@@ -242,7 +242,7 @@ async function sourceFixture() {
   const files: Record<string, string | Buffer> = {
     ".gitignore": "node_modules\n",
     "release/desktop.json": json(policy),
-    "package.json": json({ packageManager: "bun@1.3.14" }),
+    "package.json": json({ packageManager: `bun@${Bun.version}` }),
     "packages/desktop/package.json": json({
       version: "0.0.0",
       devDependencies: { electron: "42.3.3", "electron-builder": "26.15.2" },
@@ -300,8 +300,9 @@ async function sourceFixture() {
 }
 
 async function fixture() {
-  const folder = await mkdtemp(join(tmpdir(), "public-build-case-"))
-  directories.push(folder)
+  const parent = await mkdtemp(join(tmpdir(), "public-build-case-"))
+  directories.push(parent)
+  const folder = join(parent, "case")
   // Commit and source-verify once, then isolate each case's files and .git. The
   // real driver still verifies its inputs and stages the immutable commit.
   await cp(template.folder, folder, { recursive: true, errorOnExist: true, force: false })
@@ -356,7 +357,7 @@ test.each(["target", "upgrade-lab", "updater-test"])("staging preserves %s input
         expect(await readFile(join(cwd, "packages/desktop/physical-public.config.ts"), "utf8")).toBe(
           "// committed public config fixture\n",
         )
-      } else if (command[0].includes("build-node")) phases.push("agent")
+      } else if (command[0] === "script/desktop-build-agent.ts") phases.push("agent")
       else if (command[0].includes("electron-vite")) {
         phases.push("bundle")
         expect(loadPublicBuildInputs(env!)).toEqual(data.build)

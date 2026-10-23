@@ -18,7 +18,19 @@ test("real V2 composer exposes selected IDs; loading, unknown choices and mislea
       root: resolve(import.meta.dir, ".."),
       logLevel: "error",
       plugins: [solid()],
-      resolve: { alias: { "@": resolve(import.meta.dir, "../src") } },
+      resolve: {
+        alias: [
+          {
+            find: "@/runtime/server/current",
+            replacement: resolve(import.meta.dir, "fixtures/composer-readiness/environment.ts"),
+          },
+          {
+            find: "@/workspaces/location",
+            replacement: resolve(import.meta.dir, "fixtures/composer-readiness/environment.ts"),
+          },
+          { find: "@", replacement: resolve(import.meta.dir, "../src") },
+        ],
+      },
       build: {
         target: "esnext",
         outDir: temporary,
@@ -48,9 +60,11 @@ test("real V2 composer exposes selected IDs; loading, unknown choices and mislea
     const ready = () => composerReadiness({ ...identity, ...composerSelection(container) })
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
     await settle()
-    expect(container.querySelector('[data-component="prompt-input"]')).not.toBeNull()
+    expect(container.querySelector('[data-component="composer"]')).not.toBeNull()
     // This legacy selector was the cause of the native false negative.
-    expect(container.querySelector('[data-action="prompt-agent"] [data-slot="select-select-trigger-value"]')).toBeNull()
+    expect(
+      container.querySelector('[data-action="composer-agent"] [data-slot="select-select-trigger-value"]'),
+    ).toBeNull()
     expect(composerSelection(container)).toEqual({
       modelId: "fixture",
       providerId: "fixture",
@@ -60,7 +74,7 @@ test("real V2 composer exposes selected IDs; loading, unknown choices and mislea
     for (const paid of [false, true]) {
       fixture.update({ paid })
       await settle()
-      expect(container.querySelector('[data-action="prompt-model"]')?.getAttribute("data-control-type")).toBe(
+      expect(container.querySelector('[data-action="composer-model"]')?.getAttribute("data-control-type")).toBe(
         paid ? "popover" : "dialog",
       )
       for (const patch of [
@@ -90,7 +104,7 @@ test("real V2 composer exposes selected IDs; loading, unknown choices and mislea
       await settle()
       expect(ready()).toBe("READY")
     }
-    const duplicate = container.querySelector('[data-action="prompt-agent"]')!.cloneNode(true)
+    const duplicate = container.querySelector('[data-action="composer-agent"]')!.cloneNode(true)
     container.append(duplicate)
     expect(ready()).toBe("MODEL_NOT_READY")
     duplicate.remove()

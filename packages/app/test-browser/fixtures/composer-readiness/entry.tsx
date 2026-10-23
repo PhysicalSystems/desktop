@@ -1,13 +1,14 @@
 import { render } from "solid-js/web"
 import { createStore } from "solid-js/store"
-import { PromptInputV2 } from "@opencode-ai/session-ui/v2/prompt-input"
-import { createPromptInputV2Controller } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
-import type { PromptInputV2PersistedState } from "@opencode-ai/session-ui/v2/prompt-input/types"
-import { PromptInputV2ModelControl } from "../../../src/components/prompt-input-v2"
-import type { ModelSelection } from "../../../src/context/local"
-import { PlatformProvider } from "../../../src/context/platform"
-import { LanguageProvider } from "../../../src/context/language"
-import { DialogProvider } from "@opencode-ai/ui/context/dialog"
+import { Composer } from "../../../src/composer/composer"
+import { SettingsProvider } from "../../../src/settings/model"
+import { CommandProvider } from "../../../src/shell/commands/command"
+import { createComposerEditor } from "../../../src/composer/editor/interaction"
+import type { ComposerPersistedState } from "../../../src/composer/types"
+import type { ModelSelection } from "../../../src/providers/models/selection"
+import { PlatformProvider } from "../../../src/runtime/platform/platform"
+import { LanguageProvider, UiI18nBridge } from "../../../src/runtime/i18n/language"
+import { DialogProvider } from "@opencode/ui/context/dialog"
 
 export function mount(root: HTMLElement) {
   const result: { update?: (patch: Record<string, unknown>) => void; dispose?: () => void } = {}
@@ -23,12 +24,12 @@ export function mount(root: HTMLElement) {
       agentName: "A translated agent label",
     })
     result.update = (patch) => setSelected(patch)
-    const state = createStore<PromptInputV2PersistedState>({
+    const state = createStore<ComposerPersistedState>({
       prompt: [{ type: "text", content: "", start: 0, end: 0 }],
       cursor: 0,
       context: { items: [] },
     })
-    const controller = createPromptInputV2Controller({
+    const controller = createComposerEditor({
       store: state,
       commands: () => [],
       context: () => [],
@@ -60,24 +61,28 @@ export function mount(root: HTMLElement) {
     return (
       <PlatformProvider value={{ platform: "web", openExternal() {}, async restart() {}, async notify() {} }}>
         <LanguageProvider locale="en">
-          <DialogProvider>
-            <PromptInputV2
-              controller={controller}
-              modelControl={
-                <PromptInputV2ModelControl
-                  loading={selected.loading}
-                  paid={selected.paid}
-                  title="Choose fixture model"
-                  keybind={[]}
-                  model={model}
-                  providerID={selected.providerId}
-                  modelName={selected.modelName}
-                  onClose={() => {}}
-                  onUnpaidClick={() => {}}
-                />
-              }
-            />
-          </DialogProvider>
+          <UiI18nBridge>
+            <DialogProvider>
+              <SettingsProvider>
+                <CommandProvider>
+                  <Composer
+                    model={{
+                      ...controller,
+                      model: {
+                        selection: model,
+                        get loading() {
+                          return selected.loading
+                        },
+                        get paid() {
+                          return selected.paid
+                        },
+                      },
+                    }}
+                  />
+                </CommandProvider>
+              </SettingsProvider>
+            </DialogProvider>
+          </UiI18nBridge>
         </LanguageProvider>
       </PlatformProvider>
     )

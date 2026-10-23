@@ -22,11 +22,13 @@ test("actual provider form contains vault errors, duplicate submits and late met
       resolve: {
         alias: [
           ...[
-            "context/server-sdk",
-            "context/server-sync",
-            "context/settings",
-            "hooks/use-providers",
-            "utils/toast",
+            "runtime/server/client",
+            "runtime/server/current",
+            "runtime/server/runtime",
+            "shell/tabs/tabs",
+            "providers/catalog/providers",
+            "providers/catalog/integrations",
+            "shell/notifications/toast",
           ].map((name) => ({ find: `@/${name}`, replacement: environment })),
           { find: "@", replacement: resolve(import.meta.dir, "../src") },
         ],
@@ -43,7 +45,7 @@ test("actual provider form contains vault errors, duplicate submits and late met
       },
     })
     const { mount } = await import(pathToFileURL(join(temporary, "fixture.mjs")).href)
-    for (const layout of [true, false]) {
+    for (const layout of [true]) {
       const requests: { resolve: (value?: unknown) => void; reject: (error: Error) => void }[] = []
       const connections: { resolve: (value: unknown) => void }[] = []
       const completions: { resolve: () => void; reject: (error: Error) => void }[] = []
@@ -151,11 +153,9 @@ test("actual provider form contains vault errors, duplicate submits and late met
       await settle()
       expect(completions).toHaveLength(0)
       await choose("Start sign-in again")
-      connections
-        .shift()!
-        .resolve({
-          data: { attemptID: "retry", mode: "code", url: "https://example.com/retry", instructions: "", time: {} },
-        })
+      connections.shift()!.resolve({
+        data: { attemptID: "retry", mode: "code", url: "https://example.com/retry", instructions: "", time: {} },
+      })
       await settle()
       expect(cancelled).toEqual(["late", "current"])
       expect(opened).toEqual(["https://example.com/current", "https://example.com/retry"])

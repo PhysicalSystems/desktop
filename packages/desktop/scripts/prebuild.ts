@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
-import { $ } from "bun"
+import { join } from "node:path"
 
-import { downloadCliToResources, resolveChannel } from "./utils"
-
-const channel = resolveChannel()
-await $`bun ./scripts/copy-icons.ts ${channel}`
-await $`bun ./scripts/copy-metainfo.ts ${channel}`
-
-await $`cd ../opencode && bun script/build-node.ts`
-if (channel === "dev") await downloadCliToResources()
+// The fork's reviewed authority code must be built by script/desktop-build-agent.ts.
+// Never download a stock OpenCode runtime for a Physical Systems application.
+const version = (await Bun.file("../../package.json").json()).version
+const resources = join(import.meta.dirname, "../resources")
+const binary = join(resources, process.platform === "win32" ? "opencode-cli.exe" : "opencode-cli")
+const shipped = await Bun.file(join(resources, "opencode-cli.version")).text().catch(() => "")
+if (!await Bun.file(binary).exists() || shipped.trim() !== version)
+  throw new Error("Build the owned runtime first: bun ../../script/desktop-build-agent.ts")

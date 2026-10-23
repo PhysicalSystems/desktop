@@ -1,8 +1,8 @@
 import { createMemo } from "solid-js"
 import type { UpdaterState } from "@/updater"
-import { usePlatform } from "@/context/platform"
-import { useLanguage } from "@/context/language"
-import { showToast } from "@/utils/toast"
+import { usePlatform } from "@/runtime/platform/platform"
+import { useLanguage } from "@/runtime/i18n/language"
+import { showToast } from "@/shell/notifications/toast"
 
 export function updaterAction(state: UpdaterState | undefined) {
   if (!state) return { label: "settings.updates.action.checkNow" as const }

@@ -51,8 +51,8 @@ export function managedWorkspaceReadiness(input: {
 export function composerSelection(root: {
   querySelectorAll(selector: string): ArrayLike<{ getAttribute(name: string): string | null }>
 }) {
-  const models = root.querySelectorAll('[data-action="prompt-model"]')
-  const agents = root.querySelectorAll('[data-action="prompt-agent"]')
+  const models = root.querySelectorAll('[data-action="composer-model"]')
+  const agents = root.querySelectorAll('[data-action="composer-agent"]')
   return {
     modelId: models.length === 1 ? models[0]!.getAttribute("data-model-id") : null,
     providerId: models.length === 1 ? models[0]!.getAttribute("data-provider-id") : null,

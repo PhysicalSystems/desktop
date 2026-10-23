@@ -2,7 +2,7 @@
 import { onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Portal } from "solid-js/web"
-import { useLanguage } from "../context/language"
+import { useLanguage } from "../runtime/i18n/language"
 import { usePhysicalSystems } from "./context"
 import type { PhysicalProject } from "./types"
 

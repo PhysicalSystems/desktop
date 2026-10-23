@@ -8,7 +8,7 @@ const record = (value: unknown): value is Record<string, any> =>
 
 /** Catalog APIs can start before location plugins finish. A model name alone
  * cannot authorize the inert request: its actual endpoint/package must match. */
-export function credentialFixtureCatalogReady(result: unknown, endpoint: string) {
+export function credentialFixtureCatalogReady(result: unknown, endpoint: string, provider: unknown) {
   if (!record(result) || !Array.isArray(result.data)) throw fail("CATALOG")
   const matches = result.data.filter((value: unknown) => {
     if (!record(value) || typeof value.id !== "string" || typeof value.providerID !== "string") throw fail("CATALOG")
@@ -17,15 +17,26 @@ export function credentialFixtureCatalogReady(result: unknown, endpoint: string)
   if (matches.length > 1) throw fail("CATALOG")
   if (!matches.length) return false
   const model = matches[0]
-  return (
-    model.api?.type === "aisdk" &&
-    model.api.package === "@ai-sdk/openai-compatible" &&
-    model.api.id === "fixture" &&
-    model.api.url === endpoint &&
-    model.request?.body?.apiKey === undefined &&
-    model.api.settings?.apiKey === undefined &&
-    !Object.keys(model.request?.headers ?? {}).some((key) => /^(authorization|x-api-key)$/i.test(key))
-  )
+  return fixtureRouteReady(model, provider, "openai", endpoint, true)
+}
+
+function fixtureRouteReady(model: Record<string, any>, result: unknown, providerID: string, endpoint: string, credentialOnly: boolean) {
+  if (!record(result) || !record(result.data) || result.data.id !== providerID) return false
+  const provider = result.data
+  if (model.enabled !== true || model.modelID !== "fixture" || (model.package ?? provider.package) !== "@opencode/ai/providers/openai-compatible" ||
+    (model.settings?.baseURL ?? provider.settings?.baseURL) !== endpoint) return false
+  if (credentialOnly && provider.integrationID !== undefined && provider.integrationID !== providerID) return false
+  const overlays = [provider, model, ...(Array.isArray(model.variants) ? model.variants : [])]
+  return overlays.every((item) => {
+    if (!record(item)) return false
+    if ([item.settings, item.headers, item.body].some((value) => value !== undefined && !record(value))) return false
+    if (item.package !== undefined && item.package !== "@opencode/ai/providers/openai-compatible") return false
+    if (item.settings?.baseURL !== undefined && item.settings.baseURL !== endpoint) return false
+    if (!credentialOnly) return true
+    return item.settings?.apiKey === undefined && item.settings?.auth === undefined && item.body?.apiKey === undefined &&
+      item.settings?.headers === undefined && item.settings?.body === undefined &&
+      !Object.keys(item.headers ?? {}).some((key) => /^(authorization|x-api-key)$/i.test(key))
+  })
 }
 
 /** One model switch and one nonce prompt, only after actual restart readiness.
@@ -77,6 +88,7 @@ export function createV2CredentialReadiness(input: {
     state.catalogReady = credentialFixtureCatalogReady(
       await input.request("/api/model", { method: "GET" }),
       input.endpoint,
+      await input.request("/api/provider/openai", { method: "GET" }),
     )
     return state.savedConnectionReady && state.catalogReady
   }
@@ -114,7 +126,7 @@ export function createV2CredentialReadiness(input: {
       if (!(await readCatalog())) throw fail("CATALOG")
       const prompt = input.probe.beginObservation("present")
       state.prompts++
-      await input.request(route + "/prompt", { method: "POST", body: { prompt: { text: prompt } } })
+      await input.request(route + "/prompt", { method: "POST", body: { text: prompt } })
     },
   }
 }
@@ -168,12 +180,7 @@ export function createV2RemovalReadiness(input: {
           if (matches.length > 1) throw fail("REMOVAL")
           if (matches.length) {
             const model = matches[0]
-            if (
-              model.api?.type !== "aisdk" ||
-              model.api.package !== "@ai-sdk/openai-compatible" ||
-              model.api.id !== "fixture" ||
-              model.api.url !== input.endpoint
-            )
+            if (!fixtureRouteReady(model, await input.request("/api/provider/fixture", { method: "GET" }), "fixture", input.endpoint, false))
               throw fail("REMOVAL")
             state.catalogReady = true
             return

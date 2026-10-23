@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createContext, createMemo, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
-import { useLanguage } from "../context/language"
+import { useLanguage } from "../runtime/i18n/language"
 import { acceptsSnapshot } from "./state"
 import { ModelAccountProvider } from "./model-account"
 import type { PhysicalCommand, PhysicalScope, PhysicalSnapshot, PhysicalSystemsBridge } from "./types"

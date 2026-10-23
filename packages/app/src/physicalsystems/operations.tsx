@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createMemo, For, Show } from "solid-js"
-import { useLanguage } from "../context/language"
+import { useLanguage } from "../runtime/i18n/language"
 import { usePhysicalSystems } from "./context"
 import type { PhysicalCommand } from "./types"
 import { Phase } from "./experiments"

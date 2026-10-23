@@ -1,7 +1,7 @@
-import type { UpdaterState } from "@opencode-ai/app/updater"
+import type { UpdaterState } from "@opencode/app/updater"
 import { compareVersion } from "../../../physicalsystems/src/release/inputs"
 
-export type { UpdaterState } from "@opencode-ai/app/updater"
+export type { UpdaterState } from "@opencode/app/updater"
 export type UpdaterReadyRecord = { version: string }
 export type UpdaterBackend = {
   checkForUpdates(): Promise<{ isUpdateAvailable?: boolean; updateInfo?: { version?: string } } | null | undefined>
