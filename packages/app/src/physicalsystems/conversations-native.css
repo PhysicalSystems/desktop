@@ -1,0 +1,32 @@
+.ps-native-conversations .ps-native-conversation-create {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 0 0 20px;
+}
+.ps-native-conversation-create label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  max-width: 100%;
+}
+.ps-native-conversation-create input,
+.ps-native-conversation-create select {
+  border: 1px solid var(--border-base);
+  background: var(--background-base);
+  border-radius: 6px;
+  padding: 7px 9px;
+  max-width: 100%;
+  color: inherit;
+}
+.ps-native-conversation-create input {
+  min-width: 180px;
+}
+.ps-native-conversations .ps-cloud-room-toolbar label {
+  min-width: 0;
+  max-width: 100%;
+}
+.ps-native-conversations .ps-cloud-room-toolbar select {
+  max-width: min(320px, 100%);
+}

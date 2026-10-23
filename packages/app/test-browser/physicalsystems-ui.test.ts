@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { build } from "vite"
+import { build, normalizePath } from "vite"
 import solid from "vite-plugin-solid"
 import { createServer, request } from "node:http"
 import { spawn } from "node:child_process"
@@ -19,8 +19,8 @@ test.skipIf(!enabled)(
   async () => {
     const temporary = await mkdtemp(join(tmpdir(), "ps-solid-ui-"))
     const fixture = resolve(import.meta.dir, "fixtures/physicalsystems")
-    const mocks = join(fixture, "mocks.ts")
-    const feature = resolve(import.meta.dir, "../src/physicalsystems")
+    const mocks = normalizePath(join(fixture, "mocks.ts"))
+    const feature = normalizePath(resolve(import.meta.dir, "../src/physicalsystems"))
     const contexts = [
       "../context/language",
       "../context/platform",
@@ -38,12 +38,13 @@ test.skipIf(!enabled)(
       configFile: false,
       root: fixture,
       logLevel: "error",
+      worker: { format: "es" },
       plugins: [
         {
           name: "physicalsystems-fixture-contexts",
           enforce: "pre",
           resolveId(id, importer) {
-            if (importer?.startsWith(feature) && contexts.includes(id)) return mocks
+            if (importer && normalizePath(importer).startsWith(feature) && contexts.includes(id)) return mocks
           },
         },
         solid(),

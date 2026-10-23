@@ -12,6 +12,23 @@ const updaterHandler = (_: unknown, state: UpdaterState) => {
 
 const api: ElectronAPI = {
   physicalSystems: {
+    conversations: {
+      snapshot: () => ipcRenderer.invoke("physicalsystems:conversations-snapshot"),
+      refresh: () => ipcRenderer.invoke("physicalsystems:conversations-refresh"),
+      signIn: () => ipcRenderer.invoke("physicalsystems:conversations-sign-in"),
+      cancelSignIn: () => ipcRenderer.invoke("physicalsystems:conversations-cancel-sign-in"),
+      signOut: () => ipcRenderer.invoke("physicalsystems:conversations-sign-out"),
+      request: async (method, path, body) => {
+        const result = await ipcRenderer.invoke("physicalsystems:conversations-request", method, path, body)
+        if (!result.ok) throw Object.assign(new Error(result.error), { code: result.error, status: result.status })
+        return result.value
+      },
+      subscribe: (listener) => {
+        const handler = (_: unknown, state: Parameters<typeof listener>[0]) => listener(state)
+        ipcRenderer.on("physicalsystems:conversations-state", handler)
+        return () => ipcRenderer.removeListener("physicalsystems:conversations-state", handler)
+      },
+    },
     rooms: {
       snapshot: () => ipcRenderer.invoke("physicalsystems:workcells-snapshot"),
       refresh: () => ipcRenderer.invoke("physicalsystems:workcells-refresh"),

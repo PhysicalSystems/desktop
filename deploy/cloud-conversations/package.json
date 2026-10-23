@@ -1,0 +1,9 @@
+{
+  "name": "@physicalsystems/cloud-worker-profile",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test profile.test.ts"
+  }
+}
