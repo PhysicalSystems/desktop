@@ -664,15 +664,18 @@ function PhysicalWorkspace(props: ParentProps) {
             </Show>
           </div>
           <MigrationHistory />
-          <Show when={window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms}>
+          <Show when={window.api?.physicalSystems?.rooms}>
             <button
               type="button"
               class="ps-settings-button"
-              aria-label={language.t("physicalsystems.rooms.title")}
-              onClick={() => setState({ cloudRooms: true, cloudAi: false })}
+              aria-label={language.t("physicalsystems.shared.open")}
+              onClick={() => {
+                close()
+                setState({ cloudRooms: true, cloudAi: false })
+              }}
             >
               <Icon name="chat" />
-              <Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.rooms.title")}</Show>
+              <Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.shared.open")}</Show>
             </button>
           </Show>
           <button
