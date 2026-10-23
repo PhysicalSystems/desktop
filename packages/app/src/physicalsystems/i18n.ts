@@ -15,7 +15,7 @@ export const physicalSystemsEnglish = {
   "physicalsystems.shared.signInDescription":
     "Sign in with your website account to share workcells and messages across your devices. Existing local conversations stay in Local workspace.",
   "physicalsystems.shared.empty":
-    "Create a workcell to start a conversation across your devices, or connect an existing local project from Local workspace.",
+    "Create a workcell to start a conversation across your devices. Your local workcells appear here after you sign in to sync automatically.",
   "physicalsystems.shared.online": "Robot online",
   "physicalsystems.shared.offline": "Robot offline",
   "physicalsystems.shared.unknown": "Robot status unknown",
@@ -23,7 +23,9 @@ export const physicalSystemsEnglish = {
   "physicalsystems.projectWebsite.title": "Connect {{name}} to the website",
   "physicalsystems.projectWebsite.close": "Close",
   "physicalsystems.projectWebsite.description":
-    "Share this project's workcell name and task with your website account. Review the details below. Local conversations, files and robot credentials stay on this computer. Robot connection status is separate.",
+    "Workcells sync automatically after you sign in. Only the name and task details are shared; local files, conversations and credentials stay on this computer.",
+  "physicalsystems.projectWebsite.accountMismatch":
+    "This local workcell belongs to a different account. Sign in to that account to continue.",
   "physicalsystems.projectWebsite.signIn":
     "Connect the same Physical Systems account you use on the website, then create or choose the workcell for this project.",
   "physicalsystems.projectWebsite.account": "Website account: {{email}}",
@@ -95,6 +97,9 @@ export const physicalSystemsEnglish = {
   "physicalsystems.account.title": "Physical Systems account",
   "physicalsystems.account.signIn": "Sign in",
   "physicalsystems.account.google": "Sign in with Google",
+  "physicalsystems.account.enableSync": "Sign in to sync automatically",
+  "physicalsystems.account.browserSignIn":
+    "Continue signing in with Google in your browser. Your workcells will sync with this account.",
   "physicalsystems.account.signOut": "Sign out",
   "physicalsystems.account.company": "Company",
   "physicalsystems.account.noCompanies":

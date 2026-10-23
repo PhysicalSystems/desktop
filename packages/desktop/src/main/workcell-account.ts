@@ -4,12 +4,16 @@ import { join } from "node:path"
 import { app, BrowserWindow, safeStorage } from "electron"
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { createWorkcellAccount } from "../../../physicalsystems/src/workcell-account"
+import { createWorkcellAccountView } from "../../../physicalsystems/src/workcell-account-view"
+import type { DesktopAccount } from "../../../physicalsystems/src/desktop-account"
+import type { WorkcellAccountState } from "../../../physicalsystems/src/workcell-account-types"
 import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
 import { openPhysicalExternalURL } from "./external-opener"
-export function createDesktopWorkcellAccount() {
+export function createDesktopWorkcellAccount(shared: DesktopAccount) {
   const file = join(app.getPath("userData"), "workcell-account.enc")
   const vault = createCredentialVault(file, safeStorage)
-  return createWorkcellAccount({
+  let notifyLegacy = () => {}
+  const legacy = createWorkcellAccount({
     store: {
       available: () =>
         safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== "basic_text",
@@ -24,20 +28,24 @@ export function createDesktopWorkcellAccount() {
       },
     },
     openBrowser: openPhysicalExternalURL,
-    changed: (state) => {
-      for (const window of BrowserWindow.getAllWindows()) {
-        if (
-          !window.isDestroyed() &&
-          trustedRenderer({
-            windowMatches: true,
-            mainFrame: true,
-            url: window.webContents.getURL(),
-            developmentURL: process.env.ELECTRON_RENDERER_URL,
-            packaged: app.isPackaged,
-          })
-        )
-          window.webContents.send("physicalsystems:workcells-state", state)
-      }
-    },
+    changed: () => notifyLegacy(),
   })
+  const changed = (state: WorkcellAccountState) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (
+        !window.isDestroyed() &&
+        trustedRenderer({
+          windowMatches: true,
+          mainFrame: true,
+          url: window.webContents.getURL(),
+          developmentURL: process.env.ELECTRON_RENDERER_URL,
+          packaged: app.isPackaged,
+        })
+      )
+        window.webContents.send("physicalsystems:workcells-state", state)
+    }
+  }
+  const view = createWorkcellAccountView(shared, legacy, changed)
+  notifyLegacy = view.legacyChanged
+  return view
 }

@@ -4,13 +4,15 @@ import { join } from "node:path"
 import { app, BrowserWindow, safeStorage } from "electron"
 import { createCredentialVault } from "../../../physicalsystems/src/credentials"
 import { createModelAccount } from "../../../physicalsystems/src/model-account"
+import type { DesktopAccount } from "../../../physicalsystems/src/desktop-account"
 import { trustedRenderer } from "../../../physicalsystems/src/renderer-authority"
 import { openPhysicalExternalURL } from "./external-opener"
 
-export function createDesktopModelAccount() {
+export function createDesktopModelAccount(shared: DesktopAccount) {
   const file = join(app.getPath("userData"), "company-account.enc")
   const vault = createCredentialVault(file, safeStorage)
-  return createModelAccount({
+  const models = createModelAccount({
+    shared,
     store: {
       available: () =>
         safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== "basic_text",
@@ -42,4 +44,18 @@ export function createDesktopModelAccount() {
       }
     },
   })
+  let identity = ""
+  const unsubscribe = shared.subscribe((state) => {
+    const next = JSON.stringify([state.status, state.account?.id, state.sessionId, state.pending, state.error])
+    if (next === identity) return
+    identity = next
+    models.syncShared()
+  })
+  return {
+    ...models,
+    dispose() {
+      unsubscribe()
+      models.dispose()
+    },
+  }
 }

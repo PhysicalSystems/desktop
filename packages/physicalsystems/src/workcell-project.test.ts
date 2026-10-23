@@ -39,6 +39,7 @@ function fixture() {
   const control = {
     account,
     generation: 0,
+    automatic: true,
     journal: undefined as unknown,
     exists: true,
     failWrite: false,
@@ -49,6 +50,7 @@ function fixture() {
     account: {
       snapshot: () => structuredClone(account),
       generation: () => control.generation,
+      automaticSyncEnabled: () => control.automatic,
       request: async (method: unknown, path: unknown, body?: unknown) => {
         validateRoomRequest(method, path, body)
         control.calls.push({ method, path, body: structuredClone(body) })
@@ -147,7 +149,9 @@ test("account switch hides old results, preserves old pending recovery and rejec
     expect(result.errorCode).toBe("WORKCELL_SESSION_CHANGED")
   }
   expect(control.calls).toHaveLength(1)
-  expect((await client.dispatch({ operation: "inspect", projectId: "project-one" })).status).toBe("local")
+  expect((await client.dispatch({ operation: "inspect", projectId: "project-one" })).errorCode).toBe(
+    "PROJECT_ACCOUNT_MISMATCH",
+  )
   control.account.account = { id: "account-a", name: "A", email: "a@example.invalid" }
   control.generation++
   expect((await client.dispatch({ operation: "inspect", projectId: "project-one" })).status).toBe("pending")
@@ -288,4 +292,152 @@ test("encrypted native journal restores a linked project without reading the loc
   const encrypted = await readFile(file)
   expect(encrypted.includes(Buffer.from("Simulation test"))).toBe(false)
   expect(encrypted.includes(Buffer.from("account-a"))).toBe(false)
+})
+
+test("automatic draft registration binds the first account before network and retries the exact payload after restart", async () => {
+  const { client, control, input } = fixture()
+  control.request = async () => {
+    throw new Error("Offline")
+  }
+  const pending = await client.dispatch({
+    operation: "ensure",
+    projectId: "project-one",
+    metadata: { name: "Simulation test", task: "" },
+  })
+  expect(pending.status).toBe("pending")
+  expect(pending.pendingOperation).toBe("ensure")
+  const original = structuredClone(control.calls[0])
+  expect(original.path).toBe("/api/workcells/ensure")
+  expect(original.body).toEqual({
+    requestId: expect.any(String),
+    localProjectId: "project-one",
+    name: "Simulation test",
+    task: "",
+  })
+  expect(JSON.stringify(control.journal)).toContain((original.body as { requestId: string }).requestId)
+  control.account.account = { id: "account-b", name: "B", email: "b@example.invalid" }
+  control.generation++
+  const restarted = createProjectWorkcells(input)
+  const blocked = await restarted.dispatch({
+    operation: "ensure",
+    projectId: "project-one",
+    metadata: { name: "Changed local name", task: "" },
+  })
+  expect(blocked.errorCode).toBe("PROJECT_ACCOUNT_MISMATCH")
+  expect(blocked.workcell).toBeNull()
+  expect(blocked.pendingMetadata).toBeUndefined()
+  for (const operation of ["inspect", "refresh", "create"])
+    expect(
+      (
+        await restarted.dispatch({
+          operation,
+          projectId: "project-one",
+          ...(operation === "create" ? { metadata } : {}),
+        })
+      ).errorCode,
+    ).toBe("PROJECT_ACCOUNT_MISMATCH")
+  expect(control.calls).toHaveLength(1)
+  control.account.account = { id: "account-a", name: "A", email: "a@example.invalid" }
+  control.generation++
+  control.request = async () => ({ workcell: { ...room(), task: "" }, replayed: true })
+  const linked = await restarted.dispatch({
+    operation: "ensure",
+    projectId: "project-one",
+    metadata: { name: "Changed local name", task: "" },
+  })
+  expect(linked.status).toBe("linked")
+  expect(linked.workcell?.task).toBe("")
+  expect(control.calls[1]).toEqual(original)
+  await restarted.dispatch({
+    operation: "ensure",
+    projectId: "project-one",
+    metadata: { name: "Changed local name", task: "" },
+  })
+  expect(control.calls).toHaveLength(2)
+})
+
+test("automatic registration requires the new disclosed session and retains existing manual mappings without cloud overwrites", async () => {
+  const { client, control } = fixture()
+  control.automatic = false
+  expect(
+    (
+      await client.dispatch({
+        operation: "ensure",
+        projectId: "project-one",
+        metadata: { name: "Simulation test", task: "" },
+      })
+    ).errorCode,
+  ).toBe("AUTOMATIC_SYNC_DISABLED")
+  expect(control.calls).toHaveLength(0)
+  expect(control.journal).toBeUndefined()
+  await client.dispatch({ operation: "link", projectId: "project-one", workcellId: id })
+  control.automatic = true
+  const linked = await client.dispatch({
+    operation: "ensure",
+    projectId: "project-one",
+    metadata: { name: "Local name", task: "" },
+  })
+  expect(linked.workcell?.name).toBe(metadata.name)
+  expect(control.calls).toHaveLength(1)
+  expect(control.calls[0].method).toBe("GET")
+  control.account.account = { id: "account-b", name: "B", email: "b@example.invalid" }
+  control.generation++
+  expect(
+    (
+      await client.dispatch({
+        operation: "ensure",
+        projectId: "project-one",
+        metadata: { name: "Local name", task: "" },
+      })
+    ).errorCode,
+  ).toBe("PROJECT_ACCOUNT_MISMATCH")
+  expect(control.calls).toHaveLength(1)
+})
+
+test("failed ownership persistence, account changes during save and extra metadata never authorize automatic upload", async () => {
+  const { client, control, input } = fixture()
+  control.failWrite = true
+  expect(
+    (
+      await client.dispatch({
+        operation: "ensure",
+        projectId: "project-one",
+        metadata: { name: "Simulation test", task: "" },
+      })
+    ).errorCode,
+  ).toBe("PROJECT_LINK_STORE_UNAVAILABLE")
+  expect(control.calls).toHaveLength(0)
+  control.failWrite = false
+  const write = input.store.write
+  input.store.write = async (value) => {
+    await write(value)
+    control.account.account = { id: "account-b", name: "B", email: "b@example.invalid" }
+    control.generation++
+  }
+  const switched = await client.dispatch({
+    operation: "ensure",
+    projectId: "project-one",
+    metadata: { name: "Simulation test", task: "" },
+  })
+  expect(switched.errorCode).toBe("WORKCELL_SESSION_CHANGED")
+  expect(control.calls).toHaveLength(0)
+  expect(
+    (
+      await client.dispatch({
+        operation: "ensure",
+        projectId: "project-one",
+        metadata: { name: "Simulation test", task: "" },
+      })
+    ).errorCode,
+  ).toBe("PROJECT_ACCOUNT_MISMATCH")
+  for (const raw of [
+    {
+      operation: "ensure",
+      projectId: "project-one",
+      metadata: { name: "Simulation test", task: "", objects: "not in the automatic allowlist" },
+    },
+    { operation: "ensure", projectId: "project\nunsafe", metadata: { name: "Simulation test", task: "" } },
+  ])
+    await expect(client.dispatch(raw)).rejects.toThrow("INVALID_PROJECT_REQUEST")
+  expect(control.calls).toHaveLength(0)
 })

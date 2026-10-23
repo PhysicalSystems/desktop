@@ -92,7 +92,11 @@ export function NativeWorkcellRooms(props: {
             >
               {(pending) => (
                 <>
-                  <p>{language.t("physicalsystems.rooms.verify", { code: pending().userCode })}</p>
+                  <p>
+                    {pending().userCode
+                      ? language.t("physicalsystems.rooms.verify", { code: pending().userCode! })
+                      : language.t("physicalsystems.account.browserSignIn")}
+                  </p>
                   <button onClick={() => void platform.openExternal(pending().verificationUrl)}>
                     {language.t("physicalsystems.rooms.openBrowser")}
                   </button>

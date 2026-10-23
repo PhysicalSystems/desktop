@@ -162,6 +162,8 @@ export function ProjectWorkcell(props: {
     Boolean(state.link?.workcell && !state.link.workcell.canWrite)
   const status = () => state.link?.status ?? "signed_out"
   const error = () => {
+    if (state.link?.errorCode === "PROJECT_ACCOUNT_MISMATCH")
+      return language.t("physicalsystems.projectWebsite.accountMismatch")
     if (state.link?.errorCode === "METADATA_CONFLICT") return language.t("physicalsystems.projectWebsite.conflict")
     if (state.link?.errorCode === "WORKCELL_ACCESS_REVOKED") return language.t("physicalsystems.projectWebsite.revoked")
     if (state.link?.errorCode === "PROJECT_LINK_STORE_UNAVAILABLE")
@@ -202,7 +204,11 @@ export function ProjectWorkcell(props: {
                 >
                   {(pending) => (
                     <>
-                      <p>{language.t("physicalsystems.rooms.verify", { code: pending().userCode })}</p>
+                      <p>
+                        {pending().userCode
+                          ? language.t("physicalsystems.rooms.verify", { code: pending().userCode! })
+                          : language.t("physicalsystems.account.browserSignIn")}
+                      </p>
                       <button onClick={() => void platform.openExternal(pending().verificationUrl)}>
                         {language.t("physicalsystems.rooms.openBrowser")}
                       </button>

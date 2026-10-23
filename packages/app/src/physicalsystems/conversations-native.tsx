@@ -473,6 +473,11 @@ export function NativeCloudConversations(props: {
               </summary>
               <div class="ps-shared-account-menu">
                 <p>{state.account?.account?.email}</p>
+                <Show when={!props.allowAi && !state.account?.syncEnabled}>
+                  <button disabled={state.accountBusy} onClick={() => void call(() => props.bridge.signIn())}>
+                    {language.t("physicalsystems.account.enableSync")}
+                  </button>
+                </Show>
                 <button disabled={state.accountBusy} onClick={() => void call(() => props.bridge.refresh())}>
                   {language.t("physicalsystems.refresh")}
                 </button>
@@ -529,7 +534,11 @@ export function NativeCloudConversations(props: {
               >
                 {(pending) => (
                   <>
-                    <p>{language.t("physicalsystems.rooms.verify", { code: pending().userCode })}</p>
+                    <p>
+                      {pending().userCode
+                        ? language.t("physicalsystems.rooms.verify", { code: pending().userCode! })
+                        : language.t("physicalsystems.account.browserSignIn")}
+                    </p>
                     <button onClick={() => void platform.openExternal(pending().verificationUrl)}>
                       {language.t("physicalsystems.rooms.openBrowser")}
                     </button>

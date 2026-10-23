@@ -50,6 +50,7 @@ export type RobotModelSelection =
   | { kind: "generic"; id: string; revision: string }
 export type ModelAccountState = {
   revision: number
+  syncEnabled?: boolean
   status: "signed_out" | "signing_in" | "signed_in" | "unavailable"
   account: { id: string; name: string; email: string } | null
   companies: ModelCompany[]
@@ -58,7 +59,7 @@ export type ModelAccountState = {
   devices: ModelDevice[]
   generic: GenericRobotModel[]
   selection: RobotModelSelection | null
-  pending: { userCode: string; verificationUrl: string; expiresAt: string; browserOpened: boolean } | null
+  pending: { userCode?: string; verificationUrl: string; expiresAt: string; browserOpened: boolean } | null
   checkedAt: string | null
   error: ModelAccountError | null
 }

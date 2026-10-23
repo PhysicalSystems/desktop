@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createHash, randomBytes } from "node:crypto"
+import { DESKTOP_ACCOUNT_SCOPE } from "./desktop-account"
+import type { DesktopAccount } from "./desktop-account"
 import type {
   CompanyModelRelease,
   GenericRobotModel,
@@ -29,6 +31,7 @@ type Store = {
   clear(): Promise<void>
 }
 type Input = {
+  shared?: DesktopAccount
   store: Store
   openBrowser(url: string): Promise<boolean>
   changed(state: ModelAccountState): void
@@ -74,7 +77,10 @@ export function createModelAccount(input: Input) {
   let polling: ReturnType<typeof setTimeout> | undefined
   let controller = new AbortController()
   let persistence = Promise.resolve()
-  const snapshot = () => structuredClone(state)
+  const snapshot = () => ({
+    ...structuredClone(state),
+    ...(input.shared?.managed() ? { syncEnabled: input.shared.snapshot().syncEnabled } : {}),
+  })
   function publish() {
     state.revision++
     if (!disposed) input.changed(snapshot())
@@ -112,6 +118,8 @@ export function createModelAccount(input: Input) {
     await persist(() => input.store.clear())
   }
   async function request(path: string, options: { body?: unknown; token?: string; method?: string } = {}) {
+    if (input.shared?.managed() && path.startsWith("/desktop/"))
+      return object(await input.shared.request(options.method ?? "GET", `/api/model-delivery${path}`, options.body))
     const response = await (input.fetch ?? fetch)(`${base.origin}/api/model-delivery${path}`, {
       method: options.method ?? (options.body ? "POST" : "GET"),
       redirect: "error",
@@ -135,6 +143,15 @@ export function createModelAccount(input: Input) {
     return readResponse(response)
   }
   async function save() {
+    if (input.shared?.managed()) {
+      if (state.account)
+        await input.shared.savePreferences({
+          accountId: state.account.id,
+          companyId: state.companyId,
+          selection: state.selection,
+        })
+      return
+    }
     if (!session) return
     if (!input.store.available()) throw new AccountFailure("SECURE_STORE_UNAVAILABLE")
     const ticket = epoch
@@ -148,7 +165,7 @@ export function createModelAccount(input: Input) {
   async function failed(error: unknown, ticket: number) {
     if (!current(ticket)) return snapshot()
     const code = error instanceof AccountFailure ? error.code : "UNAVAILABLE"
-    if (code === "SESSION_EXPIRED") await forget().catch(() => {})
+    if (code === "SESSION_EXPIRED" && !input.shared?.managed()) await forget().catch(() => {})
     if (!current(ticket)) return snapshot()
     if (code === "SECURE_STORE_UNAVAILABLE" && !session) restored = false
     attempt = undefined
@@ -182,10 +199,33 @@ export function createModelAccount(input: Input) {
     )
       state.selection = null
   }
-  async function refresh() {
+  async function refresh(sharedVerified = false) {
     if (attempt || disposed) return snapshot()
     const ticket = begin()
     try {
+      if (input.shared && !sharedVerified) await input.shared.refresh()
+      if (!current(ticket)) return snapshot()
+      if (input.shared?.managed()) {
+        const shared = input.shared.snapshot()
+        if (shared.status !== "signed_in") {
+          session = undefined
+          clearPrivate()
+          state.status = shared.status
+          state.pending = shared.pending
+          state.error = shared.error as ModelAccountError | null
+          return publish()
+        }
+        const credential = input.shared.credential()!
+        const preferences = input.shared.preferences()
+        session = {
+          ...credential,
+          companyId: preferences?.accountId === credential.account.id ? preferences.companyId : null,
+          selection: preferences?.accountId === credential.account.id ? preferences.selection : null,
+        }
+        state.companyId = session.companyId
+        state.selection = session.selection
+        restored = true
+      }
       const catalog = await request("/catalog")
       const generic = list(catalog.models).map(readGeneric)
       if (!current(ticket)) return snapshot()
@@ -215,7 +255,7 @@ export function createModelAccount(input: Input) {
       if (
         account.id !== session.account.id ||
         string(remoteSession.id) !== session.sessionId ||
-        remoteSession.scope !== "models:read" ||
+        remoteSession.scope !== (input.shared?.managed() ? DESKTOP_ACCOUNT_SCOPE : "models:read") ||
         Date.parse(date(remoteSession.expiresAt)) <= now()
       )
         throw new AccountFailure("SESSION_EXPIRED")
@@ -286,6 +326,10 @@ export function createModelAccount(input: Input) {
     }
   }
   async function signIn() {
+    if (input.shared) {
+      await input.shared.signIn()
+      return refresh(true)
+    }
     const ticket = begin()
     attempt = undefined
     clearPrivate()
@@ -335,6 +379,10 @@ export function createModelAccount(input: Input) {
     }
   }
   async function cancelSignIn() {
+    if (input.shared?.managed()) {
+      await input.shared.cancelSignIn()
+      return refresh(true)
+    }
     const previous = attempt
     const ticket = begin()
     attempt = undefined
@@ -347,6 +395,10 @@ export function createModelAccount(input: Input) {
     return refresh()
   }
   async function signOut() {
+    if (input.shared?.managed()) {
+      await input.shared.signOut()
+      return refresh(true)
+    }
     const previous = session
     begin()
     attempt = undefined
@@ -426,6 +478,19 @@ export function createModelAccount(input: Input) {
   }, 30_000)
   maintenance.unref?.()
   return {
+    syncShared() {
+      if (!input.shared?.managed()) return
+      begin()
+      attempt = undefined
+      session = undefined
+      clearPrivate()
+      const shared = input.shared.snapshot()
+      state.status = shared.status
+      state.pending = shared.pending
+      state.error = shared.error as ModelAccountError | null
+      publish()
+      if (shared.status === "signed_in") void refresh(true)
+    },
     snapshot,
     refresh,
     signIn,
