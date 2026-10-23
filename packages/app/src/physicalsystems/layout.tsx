@@ -217,6 +217,7 @@ function PhysicalWorkspace(props: ParentProps) {
   const [state, setState] = createStore({
     create: false,
     cloudRooms: false,
+    cloudUpdates: false,
     creatingProject: false,
     initialized: false,
     initializing: false,
@@ -544,7 +545,7 @@ function PhysicalWorkspace(props: ParentProps) {
         </div>
         <MigrationHistory />
         <Show when={window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms}>
-          <button type="button" class="ps-settings-button" aria-label={language.t("physicalsystems.rooms.title")} onClick={() => setState("cloudRooms",true)}>
+          <button type="button" class="ps-settings-button" aria-label={language.t("physicalsystems.rooms.title")} onClick={() => setState({cloudRooms:true,cloudUpdates:false})}>
             <Icon name="chat" /><Show when={physical.state.sidebarOpen}>{language.t("physicalsystems.rooms.title")}</Show>
           </button>
         </Show>
@@ -664,13 +665,13 @@ function PhysicalWorkspace(props: ParentProps) {
           <Show when={state.cloudRooms && (window.api?.physicalSystems?.conversations || window.api?.physicalSystems?.rooms)} fallback={<Show when={state.initializing} fallback={props.children}>
             <p role="status">{language.t("physicalsystems.project.preparing")}</p>
           </Show>}>
-            <Show when={window.api?.physicalSystems?.conversations} fallback={<Show when={window.api?.physicalSystems?.rooms}>{bridge => <NativeWorkcellRooms bridge={bridge()} close={() => setState("cloudRooms",false)} onDraft={async (room) => {
+            <Show when={!state.cloudUpdates && window.api?.physicalSystems?.conversations} fallback={<Show when={window.api?.physicalSystems?.rooms}>{bridge => <><Show when={window.api?.physicalSystems?.conversations}><button class="ps-settings-button" onClick={() => setState("cloudUpdates",false)}>{language.t("physicalsystems.conversations.title")}</button></Show><NativeWorkcellRooms bridge={bridge()} close={() => setState("cloudRooms",false)} onDraft={async (room) => {
               const project = physical.project()
               const connection = server.list.find((item) => ServerConnection.key(item) === server.key && ServerConnection.builtin(item))
               if (!project?.cwd || !connection) throw new Error("LOCAL_PROJECT_REQUIRED")
               await tabs.newDraft({server:ServerConnection.key(connection),directory:project.cwd},prepareTaskPrompt(room))
-            }} />}</Show>}>
-              {bridge => <NativeCloudConversations bridge={bridge()} close={() => setState("cloudRooms",false)} />}
+            }} /></>}</Show>}>
+              {bridge => <NativeCloudConversations bridge={bridge()} close={() => setState("cloudRooms",false)} openUpdates={window.api?.physicalSystems?.rooms ? () => setState("cloudUpdates",true) : undefined} />}
             </Show>
           </Show>
         </div>

@@ -96,7 +96,7 @@ export function createConversationAccount(input: Input) {
         const part = await reader.read()
         if (part.done) break
         bytes += part.value.byteLength
-        if (bytes > 2000000) throw new Error("INVALID_RESPONSE")
+        if (bytes > (path.endsWith("/runtime") ? 9000000 : 2000000)) throw new Error("INVALID_RESPONSE")
         body += decoder.decode(part.value, { stream: true })
       }
       return record(JSON.parse(body + decoder.decode()))

@@ -2,6 +2,7 @@
 /** Feature copy joins the shared typed English fallback; upstream locale dictionaries stay intact. */
 export const physicalSystemsEnglish = {
   "physicalsystems.conversations.title": "Workcell conversations",
+  "physicalsystems.conversations.updates": "Workcell updates",
   "physicalsystems.conversations.signInDescription": "Connect your cloud conversations to use the same private and team chats on the website and desktop. This separate permission allows AI replies; it does not grant robot control or access to local files.",
   "physicalsystems.conversations.signIn": "Connect cloud conversations",
   "physicalsystems.conversations.choose": "Conversation",

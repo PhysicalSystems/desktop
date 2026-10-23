@@ -30,6 +30,7 @@ function fixture() {
     available: true,
     missing: false,
     status: 200,
+    responseBytes: 0,
     slow: undefined as Promise<Response> | undefined,
   }
   const client = createConversationAccount({
@@ -75,6 +76,7 @@ function fixture() {
       if (path.endsWith(roomId) && control.slow) return control.slow
       if (control.missing) return new Response("", { status: 404 })
       if (control.status !== 200) return new Response("", { status: control.status })
+      if (control.responseBytes) return Response.json({ data: "x".repeat(control.responseBytes) })
       return control.revoked ? new Response("", { status: 403 }) : Response.json({ workcells: [], accepted: true })
     },
   })
@@ -255,5 +257,16 @@ test("the native IPC envelope preserves retry semantics without leaking server e
     expect(result).toEqual({ ok: false, error: "CONVERSATION_HTTP_ERROR", status })
   }
   expect(conversationRequestFailure(new Error("secret remote message"))).toEqual({ ok: false, error: "UNAVAILABLE" })
+  expect(client.snapshot().status).toBe("signed_in")
+})
+test("bounded runtime history supports the Platform snapshot size without widening account responses", async () => {
+  const { client, control } = fixture()
+  await client.signIn()
+  await until(() => client.snapshot().status === "signed_in")
+  control.responseBytes = 8000000
+  expect((await client.request("GET", `${conversationPath}/runtime`)).data).toHaveLength(8000000)
+  await expect(client.request("GET", `/api/workcells/${roomId}`)).rejects.toThrow("INVALID_RESPONSE")
+  control.responseBytes = 9000000
+  await expect(client.request("GET", `${conversationPath}/runtime`)).rejects.toThrow("INVALID_RESPONSE")
   expect(client.snapshot().status).toBe("signed_in")
 })

@@ -18,6 +18,7 @@ type Conversation = {
   workcellId: string
   title: string
   visibility: "private" | "team"
+  isDefault: boolean
   permissions: { canRead: boolean; canPost: boolean }
 }
 type ConversationList = {
@@ -27,7 +28,11 @@ type ConversationList = {
   permissions: { canCreate: boolean; canCreateTeam: boolean }
 }
 
-export function NativeCloudConversations(props: { bridge: ConversationAccountBridge; close(): void }) {
+export function NativeCloudConversations(props: {
+  bridge: ConversationAccountBridge
+  close(): void
+  openUpdates?(): void
+}) {
   const language = useLanguage()
   const platform = usePlatform()
   const theme = useTheme()
@@ -140,15 +145,10 @@ export function NativeCloudConversations(props: { bridge: ConversationAccountBri
       })
       return
     }
-    setState({ conversations: data.conversations, permissions: data.permissions, hasMore: data.hasMore, error: false })
+    const conversations = data.conversations.filter((item) => !item.isDefault)
+    setState({ conversations, permissions: data.permissions, hasMore: data.hasMore, error: false })
     const wanted = selected ?? state.conversationId
-    setState(
-      "conversationId",
-      data.conversations.find((item) => item.id === wanted)?.id ??
-        data.conversations.find((item) => item.id === data.defaultConversationId)?.id ??
-        data.conversations[0]?.id ??
-        "",
-    )
+    setState("conversationId", conversations.find((item) => item.id === wanted)?.id ?? conversations[0]?.id ?? "")
     const room =
       results[1].status === "fulfilled" ? (results[1].value as { workcell?: WorkcellRoomData }).workcell : undefined
     setState("room", room?.id === workcellId ? room : undefined)
@@ -226,15 +226,19 @@ export function NativeCloudConversations(props: { bridge: ConversationAccountBri
     },
   }
   const selection = createMemo(() => {
-    const accountKey = identity()
-    return accountKey && state.workcellId && state.conversationId
-      ? { accountKey, workcellId: state.workcellId, conversationId: state.conversationId }
+    const grantKey = identity()
+    const accountKey = state.account?.account?.id
+    return grantKey && accountKey && state.workcellId && state.conversationId
+      ? { accountKey, grantKey, workcellId: state.workcellId, conversationId: state.conversationId }
       : undefined
   })
   return (
     <section class="ps-cloud-rooms ps-native-conversations">
       <div class="ps-heading">
         <strong>{language.t("physicalsystems.conversations.title")}</strong>
+        <Show when={props.openUpdates}>
+          <button onClick={() => props.openUpdates?.()}>{language.t("physicalsystems.conversations.updates")}</button>
+        </Show>
         <button onClick={props.close}>{language.t("physicalsystems.rooms.back")}</button>
       </div>
       <Show when={state.error || state.account?.error}>
