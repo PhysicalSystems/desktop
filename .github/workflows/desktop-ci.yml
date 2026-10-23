@@ -134,7 +134,7 @@ jobs:
 
       - name: Integration and release regression tests
         working-directory: packages/physicalsystems
-        run: bun test src
+        run: bun test src ./test/preview-update-state.test.ts
 
       - name: Physical Systems UI regression tests
         working-directory: packages/app

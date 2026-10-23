@@ -3,7 +3,7 @@ import { expect, test } from "bun:test"
 import { randomUUID } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { resolve, dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { createContext, SourceTextModule, SyntheticModule } from "node:vm"
 
 function deferred<T>() {
@@ -96,9 +96,16 @@ async function fixture() {
       },
     },
     fetch: async (url: URL) => {
-      if (url.pathname === "/session/session-inert")
-        return { ok: true, json: async () => ({ id: owner.sessionId, directory: owner.directory }) }
-      if (url.pathname !== "/session/status") throw new Error("FORBIDDEN_INERT_ROUTE")
+      if (url.searchParams.get("location[directory]") !== owner.directory || url.searchParams.has("directory"))
+        throw new Error("FORBIDDEN_INERT_LOCATION")
+      if (url.pathname === "/api/session/session-inert")
+        return {
+          ok: true,
+          json: async () => ({
+            data: { id: owner.sessionId, agent: "physical-systems", location: { directory: owner.directory } },
+          }),
+        }
+      if (url.pathname !== "/api/session/active") throw new Error("FORBIDDEN_INERT_ROUTE")
       const read = deferred<unknown>()
       reads.push(read)
       return { ok: true, json: () => read.promise }
@@ -119,13 +126,23 @@ async function fixture() {
     ),
     { context },
   )
+  const v2 = new SourceTextModule(
+    transpiler.transformSync(
+      await readFile(new URL("../../../physicalsystems/src/v2-agent.ts", import.meta.url), "utf8"),
+    ),
+    { context },
+  )
+  await v2.link((specifier) => {
+    if (specifier === "./agent-status") return status
+    throw new Error("UNEXPECTED_INERT_IMPORT")
+  })
   const core = fixed({ createOperatorService: async () => operator, agentToolDefinitions: [] })
   const worker = new SourceTextModule(
     transpiler.transformSync(await readFile(new URL("./physical-worker.ts", import.meta.url), "utf8")),
     {
       context,
       initializeImportMeta(meta) {
-        meta.url = "file:///inert/physical-worker.js"
+        meta.url = pathToFileURL(resolve("/inert/physical-worker.js")).href
       },
       async importModuleDynamically() {
         if (core.status === "unlinked")
@@ -141,7 +158,7 @@ async function fixture() {
     if (specifier === "node:crypto") return fixed({ randomUUID })
     if (specifier === "node:path") return fixed({ resolve, dirname, join })
     if (specifier === "node:url") return fixed({ fileURLToPath })
-    if (specifier.endsWith("/agent-status")) return status
+    if (specifier.endsWith("/v2-agent")) return v2
     if (specifier.endsWith("/continuation"))
       return fixed({
         admitContinuation() {
@@ -172,7 +189,7 @@ async function fixture() {
       applied = callback
     },
     status(read: number, value: boolean) {
-      reads[read]!.resolve({ [owner.sessionId]: { type: value ? "busy" : "idle" } })
+      reads[read]!.resolve({ data: value ? { [owner.sessionId]: { type: "running" } } : {} })
     },
     approve: () => send("command", { request: { type: "experiment.approveAndContinue", ...owner } }),
     async poll() {

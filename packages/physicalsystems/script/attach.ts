@@ -9,8 +9,8 @@ if (!root) throw new Error("Usage: bun packages/physicalsystems/script/attach.ts
 const attachment = await readAttachment(join(resolve(root), "desktop", "runtime-attach.json"))
 if (!attachment.directory || !attachment.sessionId) throw new Error("Select a bound Physical Systems conversation in the desktop first")
 const env = physicalEnvironment(process.env, resolve(root))
-env.OPENCODE_SERVER_USERNAME = attachment.username
-env.OPENCODE_SERVER_PASSWORD = attachment.password
-const cli = resolve(import.meta.dir, "../../opencode/src/index.ts")
-const child = spawn(process.execPath, [cli, "attach", attachment.url, "--dir", attachment.directory, "--session", attachment.sessionId], { env, stdio: "inherit" })
+if (attachment.username !== "opencode") throw new Error("Unsupported desktop attachment identity")
+env.OPENCODE_PASSWORD = attachment.password
+const cli = resolve(import.meta.dir, "../../cli/src/index.ts")
+const child = spawn(process.execPath, [cli, "--server", attachment.url, "--session", attachment.sessionId, attachment.directory], { env, stdio: "inherit" })
 child.on("exit", (code) => { process.exitCode = code ?? 1 })

@@ -328,15 +328,19 @@ try {
     for (const file of [
       "out/main/index.js",
       "out/main/physical-worker.js",
-      "out/main/sidecar.js",
-      "out/main/server/node.js",
-      "out/preload/index.js",
+      "out/preload/index.cjs",
       "out/renderer/index.html",
       "out/legal/OpenCode-LICENSE",
       "out/legal/PhysicalSystems-LICENSE",
       "out/legal/PhysicalSystems-NOTICE",
     ])
       if (!read(file).length) throw new Error("PACKAGED_RUNTIME_FILE_EMPTY")
+    const runtimeDirectory = join(dirname(executable), "resources")
+    const runtime = await lstat(join(runtimeDirectory, process.platform === "win32" ? "opencode-cli.exe" : "opencode-cli"))
+    const runtimeVersion = (await readFile(join(runtimeDirectory, "opencode-cli.version"), "utf8")).trim()
+    const sourceVersion = JSON.parse(await readFile(join(repo, "package.json"), "utf8")).version
+    if (!runtime.isFile() || runtime.isSymbolicLink() || runtime.size === 0 || runtimeVersion !== sourceVersion)
+      throw new Error("PACKAGED_RUNTIME_FILE_EMPTY")
     const manifest = archive.json("out/legal/PhysicalSystems-manifest.json")
     for (const skill of ["inspect-workcell", "transfer-container"])
       for (const name of ["SKILL.md", "physicalsystems.binding.json"]) {
@@ -995,7 +999,7 @@ async function launch(executable, credentialPhase, lab, providerReview) {
     v2Request = ownedV2CredentialTransport(attached, undefined, credentialTransportObservation)
     api = async (path, body, init = {}) => {
       const url = new URL(path, attached.url)
-      url.searchParams.set("directory", attached.directory)
+      url.searchParams.set("location[directory]", attached.directory)
       return fetch(url, {
         method: init.method || (body === undefined ? "GET" : "POST"),
         headers: {

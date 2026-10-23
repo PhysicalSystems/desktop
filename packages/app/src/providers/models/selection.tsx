@@ -98,7 +98,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       ),
     )
 
-    const agentsVisible = createMemo(() => settings.visibility.customAgents() || hasCustomAgent(list()))
+    const agentsVisible = createMemo(
+      () => !!window.api?.physicalSystems || settings.visibility.customAgents() || hasCustomAgent(list()),
+    )
     const connected = createMemo(() => new Set(providers.connected().map((item) => item.id)))
 
     const [saved, setSaved, , savedReady] = persisted(

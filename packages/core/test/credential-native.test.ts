@@ -45,10 +45,16 @@ async function fixture() {
     PHYSICALSYSTEMS_AUTH_URL: `${gateway.url}/auth`,
     PHYSICALSYSTEMS_AGENT_TOKEN: "inert-native-gateway-token-1234567890",
   }
-  const database = Database.layer({ path: join(root, "fixture.db") }).pipe(Layer.provide(LayerNode.compile(Global.node)))
+  const database = Database.layer({ path: join(root, "fixture.db") }).pipe(
+    Layer.provide(LayerNode.compile(Global.node)),
+  )
   const layer = (environment: NodeJS.ProcessEnv = env) =>
     AppNodeBuilder.build(LayerNode.group([Credential.node, Integration.node, Database.node]), [
-      Credential.node.replace(Credential.layerForEnvironment(environment).pipe(Layer.provide(Layer.merge(database, LayerNode.compile(Bus.node))))),
+      Credential.node.replace(
+        Credential.layerForEnvironment(environment).pipe(
+          Layer.provide(Layer.merge(database, LayerNode.compile(Bus.node))),
+        ),
+      ),
       Database.node.replace(database),
     ])
   const run = <A, E>(
@@ -100,7 +106,9 @@ test("actual V2 key/OAuth credentials use the native vault across service restar
         const integrations = yield* Integration.Service
         const credentials = yield* Credential.Service
         expect((yield* credentials.get(id))?.value).toEqual({ type: "key", key })
-        expect(yield* integrations.connection.resolve({ type: "credential", method: "key", id, label: "Work" })).toEqual({
+        expect(
+          yield* integrations.connection.resolve({ type: "credential", method: "key", id, label: "Work" }),
+        ).toEqual({
           type: "key",
           key,
         })
@@ -136,7 +144,9 @@ test("actual V2 key/OAuth credentials use the native vault across service restar
         )
         const attempt = yield* integrations.oauth.connect({ integrationID, methodID })
         yield* integrations.oauth.complete({ integrationID, attemptID: attempt.attemptID, code: "inert-code" })
-        expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe("complete")
+        expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe(
+          "complete",
+        )
         expect(yield* credentials.get(id)).toBeDefined()
       }),
     )
@@ -148,7 +158,12 @@ test("actual V2 key/OAuth credentials use the native vault across service restar
         expect(records).toHaveLength(2)
         expect(records[1]?.value).toMatchObject({ type: "oauth", access, refresh: "inert-refresh" })
         expect(
-          yield* integrations.connection.resolve({ type: "credential", method: "oauth", id: records[1]!.id, label: records[1]!.label }),
+          yield* integrations.connection.resolve({
+            type: "credential",
+            method: "oauth",
+            id: records[1]!.id,
+            label: records[1]!.label,
+          }),
         ).toMatchObject({ type: "oauth", access })
         yield* integrations.connection.remove(records[0]!.id)
         yield* integrations.connection.remove(records[1]!.id)
@@ -158,17 +173,162 @@ test("actual V2 key/OAuth credentials use the native vault across service restar
       Effect.gen(function* () {
         const credentials = yield* Credential.Service
         const { db } = yield* Database.Service
-        expect(yield* credentials.all()).toEqual([])
+        expect((yield* credentials.all()).map((item) => item.integrationID)).toEqual([
+          Integration.ID.make("legacy-provider"),
+        ])
         expect(yield* db.select().from(CredentialTable).all().pipe(Effect.orDie)).toEqual([])
       }),
     )
-    expect(await f.vault.request("all", {})).toEqual({
-      "legacy-provider": { type: "api", key: "inert-legacy-preserved" },
+    const stored = (await f.vault.request("all", {})) as Record<string, unknown>
+    expect(stored["legacy-provider"]).toEqual({ type: "api", key: "inert-legacy-preserved" })
+    expect(stored["physicalsystems.v2." + createHash("sha256").update(integrationID).digest("hex")]).toEqual({
+      kind: "physicalsystems-v2-credentials",
+      records: [],
     })
     for (const name of ["fixture.db", "provider-credentials.enc"]) {
       const bytes = await readFile(join(f.root, name))
       for (const canary of [key, access, "inert-refresh"]) expect(bytes.includes(Buffer.from(canary))).toBe(false)
     }
+  } finally {
+    await f.close()
+  }
+}, 30000)
+
+test("V1 encrypted API and OAuth accounts remain usable without rewriting originals and removed imports cannot return", async () => {
+  const f = await fixture()
+  const api = { type: "api", key: "inert-v1-provider-key", metadata: { region: "inert-region" } }
+  const oauth = {
+    type: "oauth",
+    access: "inert-v1-access",
+    refresh: "inert-v1-refresh",
+    expires: 9000000000000,
+    accountId: "inert-account",
+    enterpriseUrl: "https://example.invalid",
+  }
+  const keyProvider = Integration.ID.make("legacy-key-provider")
+  const openai = Integration.ID.make("openai")
+  try {
+    await f.vault.request("set", { key: keyProvider, info: api })
+    await f.vault.request("set", { key: openai, info: oauth })
+    await f.vault.request("set", { key: "malformed-provider", info: { type: "oauth", access: "incomplete" } })
+    const original = await readFile(f.file)
+    f.control.write = async () => {
+      throw Error("READ_MUST_NOT_REWRITE_LEGACY")
+    }
+    const ids = await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        const integrations = yield* Integration.Service
+        const { db } = yield* Database.Service
+        const records = yield* credentials.all()
+        expect(records).toHaveLength(2)
+        const key = records.find((item) => item.integrationID === keyProvider)!
+        const savedOAuth = records.find((item) => item.integrationID === openai)!
+        expect(key.value).toEqual({ type: "key", key: api.key, metadata: api.metadata })
+        expect(savedOAuth.value).toEqual({
+          type: "oauth",
+          access: oauth.access,
+          refresh: oauth.refresh,
+          expires: oauth.expires,
+            methodID: Integration.MethodID.make("chatgpt-browser"),
+          metadata: { accountID: oauth.accountId, enterpriseUrl: oauth.enterpriseUrl },
+        })
+        expect(
+          yield* integrations.connection.resolve({ type: "credential", method: "key", id: key.id, label: key.label }),
+        ).toEqual(key.value)
+        expect(yield* db.select().from(CredentialTable).all().pipe(Effect.orDie)).toEqual([])
+        return { key: key.id, oauth: savedOAuth.id }
+      }),
+    )
+    expect(await readFile(f.file)).toEqual(original)
+    f.control.write = async () => {}
+    await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        expect((yield* credentials.list(keyProvider))[0]?.id).toBe(ids.key)
+        const next = yield* credentials.create({
+          integrationID: keyProvider,
+          value: Credential.Key.make({ type: "key", key: "inert-new-v2-key" }),
+        })
+        expect((yield* credentials.list(keyProvider)).map((item) => item.id)).toEqual([ids.key, next.id])
+        yield* credentials.update(ids.oauth, {
+          value: Credential.OAuth.make({
+            type: "oauth",
+            methodID: Integration.MethodID.make("chatgpt-browser"),
+            access: "inert-v2-refreshed-access",
+            refresh: "inert-v2-refreshed-refresh",
+            expires: 9000000000001,
+          }),
+        })
+        yield* credentials.remove(ids.key)
+        yield* credentials.remove(next.id)
+      }),
+    )
+    await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        expect(yield* credentials.list(keyProvider)).toEqual([])
+        expect((yield* credentials.get(ids.oauth))?.value).toMatchObject({ access: "inert-v2-refreshed-access" })
+        yield* credentials.remove(ids.oauth)
+      }),
+    )
+    await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        expect(yield* credentials.all()).toEqual([])
+      }),
+    )
+    const stored = (await f.vault.request("all", {})) as Record<string, unknown>
+    expect(stored[keyProvider]).toEqual(api)
+    expect(stored[openai]).toEqual(oauth)
+    for (const integrationID of [keyProvider, openai])
+      expect(stored["physicalsystems.v2." + createHash("sha256").update(integrationID).digest("hex")]).toEqual({
+        kind: "physicalsystems-v2-credentials",
+        records: [],
+      })
+    for (const name of ["fixture.db", "provider-credentials.enc"]) {
+      const bytes = await readFile(join(f.root, name))
+      for (const canary of [api.key, oauth.access, oauth.refresh, "inert-v2-refreshed-access"])
+        expect(bytes.includes(Buffer.from(canary))).toBe(false)
+    }
+  } finally {
+    await f.close()
+  }
+}, 30000)
+
+test("failed native mutations leave the imported V1 account available across restarts without SQL fallback", async () => {
+  const f = await fixture()
+  const integrationID = Integration.ID.make("github-copilot")
+  try {
+    await f.vault.request("set", {
+      key: integrationID,
+      info: { type: "oauth", access: "inert-access", refresh: "inert-refresh", expires: 9000000000000 },
+    })
+    const original = await readFile(f.file)
+    f.control.write = async () => {
+      throw Error("INERT_NATIVE_WRITE_FAILURE")
+    }
+    const id = await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        const current = (yield* credentials.list(integrationID))[0]!
+        expect(current.value).toMatchObject({ type: "oauth", methodID: "device" })
+        expect(Exit.isFailure(yield* credentials.remove(current.id).pipe(Effect.exit))).toBe(true)
+        expect(Exit.isFailure(yield* credentials.update(current.id, { label: "Uncommitted" }).pipe(Effect.exit))).toBe(
+          true,
+        )
+        return current.id
+      }),
+    )
+    await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        const { db } = yield* Database.Service
+        expect(yield* credentials.get(id)).toMatchObject({ label: "OAuth", value: { access: "inert-access" } })
+        expect(yield* db.select().from(CredentialTable).all().pipe(Effect.orDie)).toEqual([])
+      }),
+    )
+    expect(await readFile(f.file)).toEqual(original)
   } finally {
     await f.close()
   }
@@ -181,31 +341,54 @@ test("native V2 account activation survives restarts and upgrades the existing s
   try {
     await f.vault.request("set", {
       key: "physicalsystems.v2." + createHash("sha256").update(integrationID).digest("hex"),
-      info: { kind: "physicalsystems-v2-credential", record: {
-        id: oldID, integrationID, label: "Original", value: { type: "key", key: "inert-original" },
-      } },
+      info: {
+        kind: "physicalsystems-v2-credential",
+        record: {
+          id: oldID,
+          integrationID,
+          label: "Original",
+          value: { type: "key", key: "inert-original" },
+        },
+      },
     })
-    const addedID = await f.run(Effect.gen(function* () {
-      const credentials = yield* Credential.Service
-      expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([oldID])
-      const added = yield* credentials.create({ integrationID, activate: false, label: "Second", value: Credential.Key.make({ type: "key", key: "inert-second" }) })
-      expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([added.id, oldID])
-      const duplicate = yield* credentials.create({ id: oldID, integrationID: Integration.ID.make("other-provider"), value: Credential.Key.make({ type: "key", key: "inert-duplicate" }) }).pipe(Effect.exit)
-      expect(Exit.isFailure(duplicate)).toBe(true)
-      yield* credentials.activate(added.id)
-      return added.id
-    }))
-    await f.run(Effect.gen(function* () {
-      const credentials = yield* Credential.Service
-      expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([oldID, addedID])
-      expect(yield* credentials.all()).toHaveLength(2)
-      yield* credentials.remove(addedID)
-    }))
-    await f.run(Effect.gen(function* () {
-      const credentials = yield* Credential.Service
-      expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([oldID])
-      expect((yield* credentials.get(oldID))?.value).toEqual({ type: "key", key: "inert-original" })
-    }))
+    const addedID = await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([oldID])
+        const added = yield* credentials.create({
+          integrationID,
+          activate: false,
+          label: "Second",
+          value: Credential.Key.make({ type: "key", key: "inert-second" }),
+        })
+        expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([added.id, oldID])
+        const duplicate = yield* credentials
+          .create({
+            id: oldID,
+            integrationID: Integration.ID.make("other-provider"),
+            value: Credential.Key.make({ type: "key", key: "inert-duplicate" }),
+          })
+          .pipe(Effect.exit)
+        expect(Exit.isFailure(duplicate)).toBe(true)
+        yield* credentials.activate(added.id)
+        return added.id
+      }),
+    )
+    await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([oldID, addedID])
+        expect(yield* credentials.all()).toHaveLength(2)
+        yield* credentials.remove(addedID)
+      }),
+    )
+    await f.run(
+      Effect.gen(function* () {
+        const credentials = yield* Credential.Service
+        expect((yield* credentials.list(integrationID)).map((item) => item.id)).toEqual([oldID])
+        expect((yield* credentials.get(oldID))?.value).toEqual({ type: "key", key: "inert-original" })
+      }),
+    )
   } finally {
     await f.close()
   }
@@ -307,12 +490,15 @@ for (const mode of ["code", "auto"] as const)
                   .pipe(Effect.exit, Effect.forkScoped)
               : undefined
           yield* Effect.promise(() => requested.promise)
-          expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe("pending")
+          expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe(
+            "pending",
+          )
           release.resolve()
           if (completion) expect(Exit.isFailure(yield* Fiber.join(completion))).toBe(true)
           for (
             let count = 0;
-            (yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status === "pending" && count < 100;
+            (yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status === "pending" &&
+            count < 100;
             count++
           )
             yield* Effect.sleep("5 millis")
@@ -320,7 +506,9 @@ for (const mode of ["code", "auto"] as const)
           expect(status.status).toBe("failed")
           expect(
             Exit.isFailure(
-              yield* integrations.oauth.complete({ integrationID, attemptID: attempt.attemptID, code: "retry" }).pipe(Effect.exit),
+              yield* integrations.oauth
+                .complete({ integrationID, attemptID: attempt.attemptID, code: "retry" })
+                .pipe(Effect.exit),
             ),
           ).toBe(true)
           expect(JSON.stringify(status)).not.toContain("PRIVATE-STORAGE-FAILURE-CANARY")
@@ -419,13 +607,19 @@ test("interrupting OAuth completion during a native commit cannot expose cancele
           .pipe(Effect.forkScoped)
         yield* Effect.promise(() => started.promise)
         const interrupt = yield* Fiber.interrupt(completion).pipe(Effect.forkScoped)
-        const cancel = yield* integrations.oauth.cancel({ integrationID, attemptID: attempt.attemptID }).pipe(Effect.forkScoped)
+        const cancel = yield* integrations.oauth
+          .cancel({ integrationID, attemptID: attempt.attemptID })
+          .pipe(Effect.forkScoped)
         yield* Effect.sleep("10 millis")
-        expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe("pending")
+        expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe(
+          "pending",
+        )
         release.resolve()
         yield* Fiber.join(interrupt)
         yield* Fiber.join(cancel)
-        expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe("complete")
+        expect((yield* integrations.oauth.status({ integrationID, attemptID: attempt.attemptID })).status).toBe(
+          "complete",
+        )
         expect(yield* credentials.list(integrationID)).toHaveLength(1)
       }),
     )

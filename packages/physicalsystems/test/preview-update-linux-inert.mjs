@@ -5,7 +5,7 @@ import { createRequire } from "node:module"
 import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { DESKTOP_NATIVE_ENGLISH, formatDesktopNativeMessage } from "../../app/src/i18n/desktop-native.ts"
+import { DESKTOP_NATIVE_ENGLISH, formatDesktopNativeMessage } from "../../app/src/runtime/i18n/desktop-native.ts"
 import { requireDisposablePublicRunner } from "../src/release/public-qualification.ts"
 
 const env = process.env
@@ -59,7 +59,7 @@ try {
   const information = await lstat(engine)
   const engineVersion = (await readFile(join(engineDirectory, "version"), "utf8")).trim()
   if (
-    manifest.version !== "42.3.3" ||
+    manifest.version !== "44.9.1" ||
     product.devDependencies.electron !== manifest.version ||
     engineVersion !== manifest.version ||
     !information.isFile() ||

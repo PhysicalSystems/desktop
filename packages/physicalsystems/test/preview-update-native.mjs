@@ -16,6 +16,13 @@ import { sha256File, payloadFingerprint } from "../src/release/qualification.ts"
 import { nsisInstallArguments, nsisSpawnOptions } from "../src/release/installed-reinstall.ts"
 import { inspectPreviewUpdateInstallation } from "../../desktop/src/main/preview-update-install.ts"
 import {
+  checkPreviewUpdater,
+  previewStorageReady,
+  readPersistedPreviewSetting,
+  readPreviewSetting,
+  writePreviewSetting,
+} from "./preview-update-state.mjs"
+import {
   createPreviewUpdateWindowsNative,
   previewUpdateWindowsTime,
   readPreviewUpdateWindowsObservation,
@@ -94,6 +101,13 @@ if (
   throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_PLAN_MISMATCH")
 await verifyFile(acknowledgementBuild.installer.path, acknowledgementBuild.installer)
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
+// A renderer namespace imported by V2 from the prior JSON store. Main-process
+// opencode.settings remains a separate store and is not the renderer state API.
+const settingName = "opencode.preview-updater.dat"
+const settingKey = "preview-updater-test"
+const settingReadExpression = `(${readPreviewSetting.toString()})(window.api, ${JSON.stringify(settingName)}, ${JSON.stringify(settingKey)})`
+const storageReadyExpression = `(${previewStorageReady.toString()})(window.api)`
+const updaterCheckExpression = `(${checkPreviewUpdater.toString()})(window)`
 const profile = join(
   windows ? process.env.APPDATA : process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
   "physicalsystems-desktop",
@@ -155,17 +169,21 @@ try {
   if (current.pid !== baseline.pid) throw Error("PREVIEW_UPDATE_BASELINE_PROCESS_MISMATCH")
   cdp = await connectRenderer(new URL(announced).port)
   await wait(
-    () => cdp.evaluate("Boolean(window.api?.updater && document.querySelector('[data-action=desktop-update]'))"),
+    () =>
+      cdp.evaluate(
+        "Boolean((window.electron?.updater || window.api?.updater) && document.querySelector('[data-action=desktop-update]'))",
+      ),
     90000,
     "BASELINE_BUTTON_UNAVAILABLE",
   )
-  const available = await cdp.evaluate("window.api.updater.check()")
+  const available = await cdp.evaluate(updaterCheckExpression)
   if (available.status !== "available" || available.version !== plan.target.version || available.mode !== "preview")
     throw Error("PREVIEW_UPDATE_ACTUAL_DISCOVERY_MISMATCH")
   const nonce = randomBytes(24).toString("hex")
-  await cdp.evaluate(`window.api.storeSet('opencode.settings','preview-updater-test',${JSON.stringify(nonce)})`)
-  if ((await cdp.evaluate("window.api.storeGet('opencode.settings','preview-updater-test')")) !== nonce)
-    throw Error("PREVIEW_UPDATE_BASELINE_SETTING_UNCONFIRMED")
+  await cdp.evaluate(
+    `(${writePreviewSetting.toString()})(window.api, ${JSON.stringify(settingName)}, ${JSON.stringify(settingKey)}, ${JSON.stringify(nonce)})`,
+  )
+  if ((await cdp.evaluate(settingReadExpression)) !== nonce) throw Error("PREVIEW_UPDATE_BASELINE_SETTING_UNCONFIRMED")
   await record("actual-button-and-official-discovery-confirmed")
 
   stage = "download-and-later"
@@ -173,7 +191,7 @@ try {
   await confirm("later")
   const ready = await wait(
     async () => {
-      const state = await cdp.evaluate("window.api.updater.check()")
+      const state = await cdp.evaluate(updaterCheckExpression)
       return state.status === "ready" && state.version === plan.target.version && state
     },
     30000,
@@ -268,12 +286,19 @@ try {
   receipt.observedTargetPayloadSha256 = fingerprint.sha256
   if (!windows) {
     cdp = await connectRenderer(new URL(current.browserEndpoint).port)
-    await wait(() => cdp.evaluate("Boolean(window.api?.storeGet)"), 90000, "TARGET_RENDERER_UNAVAILABLE")
-    if ((await cdp.evaluate("window.api.storeGet('opencode.settings','preview-updater-test')")) !== nonce)
-      throw Error("PREVIEW_UPDATE_TARGET_SETTING_UNCONFIRMED")
+    await wait(() => cdp.evaluate(storageReadyExpression), 90000, "TARGET_RENDERER_UNAVAILABLE")
+    if ((await cdp.evaluate(settingReadExpression)) !== nonce) throw Error("PREVIEW_UPDATE_TARGET_SETTING_UNCONFIRMED")
   }
-  const persisted = JSON.parse(await readFile(join(profile, "desktop", "opencode.settings"), "utf8"))
-  if (persisted["preview-updater-test"] !== nonce) throw Error("PREVIEW_UPDATE_SETTING_NOT_PRESERVED")
+  const persisted = await readPersistedPreviewSetting({
+    archive: openPackagedArchive(
+      join(repo, "packages/desktop/package.json"),
+      join(dirname(executable), "resources", "app.asar"),
+    ),
+    userData: join(profile, "desktop"),
+    name: settingName,
+    key: settingKey,
+  })
+  if (persisted !== nonce) throw Error("PREVIEW_UPDATE_SETTING_NOT_PRESERVED")
   await record("actual-target-process-package-and-preserved-setting-confirmed")
 
   stage = "normal-target-close"
@@ -331,12 +356,11 @@ try {
   await wait(async () => (await journal())?.attempt === undefined, 90000, "STARTUP_DID_NOT_ACKNOWLEDGE_REAL_ATTEMPT")
   cdp = await connectRenderer(new URL(acknowledgementLaunch.endpoint).port)
   await wait(
-    () => cdp.evaluate("Boolean(window.api?.storeGet && document.querySelector('#opencode-titlebar-right'))"),
+    () => cdp.evaluate(`Boolean(${storageReadyExpression} && document.querySelector('#opencode-titlebar-right'))`),
     90000,
     "ACKNOWLEDGEMENT_RENDERER_UNAVAILABLE",
   )
-  if ((await cdp.evaluate("window.api.storeGet('opencode.settings','preview-updater-test')")) !== nonce)
-    throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_SETTING_LOST")
+  if ((await cdp.evaluate(settingReadExpression)) !== nonce) throw Error("PREVIEW_UPDATE_ACKNOWLEDGEMENT_SETTING_LOST")
   await verifyPackage(executable, acknowledgement.version, false, acknowledgement)
   receipt.startupAcknowledgement = {
     version: acknowledgement.version,
@@ -633,7 +657,7 @@ async function confirm(choice) {
   // install() enters installing before awaiting the real native confirmation.
   await wait(
     async () => {
-      const state = await cdp.evaluate("window.api.updater.check()")
+      const state = await cdp.evaluate(updaterCheckExpression)
       if (["error", "blocked", "disabled"].includes(state.status))
         throw Error("PREVIEW_UPDATE_CONFIRMATION_STATE_FAILED")
       return state.status === "installing" && state.version === plan.target.version
