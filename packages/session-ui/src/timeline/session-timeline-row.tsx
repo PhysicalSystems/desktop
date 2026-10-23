@@ -364,6 +364,7 @@ export function createSessionTimelineRowRenderer(input: {
           <Show when={content()}>
             {(content) => (
               <SessionAssistantContent
+                sessionID={input.sessionID()}
                 message={message()}
                 content={content()}
                 contentID={ref()!.partID}

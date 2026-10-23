@@ -2,7 +2,6 @@ import { createStore } from "solid-js/store"
 import { physicalSystemsEnglish } from "../../../src/physicalsystems/i18n"
 import { migrationEnglish } from "../../../src/physicalsystems/migration-i18n"
 const english = { ...physicalSystemsEnglish, ...migrationEnglish }
-import type { Component } from "solid-js"
 
 export const language = {
   intl: () => "en-US",
@@ -105,8 +104,3 @@ export const persisted = (_key: unknown, _schema: unknown, initial: object) => [
   undefined,
   () => true,
 ]
-const registry = new Map<string, Component>()
-export const ToolRegistry = {
-  register: (input: { name: string; render: Component }) => registry.set(input.name, input.render),
-  render: (name: string) => registry.get(name),
-}

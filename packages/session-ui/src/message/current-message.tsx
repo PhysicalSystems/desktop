@@ -43,6 +43,7 @@ export function SessionUserMessage(props: {
 }
 
 export function SessionAssistantContent(props: {
+  sessionID: string
   message: SessionMessageAssistant
   content: SessionMessageAssistant["content"][number]
   contentID: string
@@ -84,6 +85,7 @@ export function SessionAssistantContent(props: {
         {(tool) => (
           <ToolDisplay
             id={props.contentID}
+            sessionID={props.sessionID}
             tool={tool().name}
             input={currentToolInput(tool())}
             metadata={currentToolMetadata(tool())}

@@ -1,15 +1,17 @@
-import { render, Dynamic, Portal } from "solid-js/web"
+import { render, Portal } from "solid-js/web"
+import { SessionAssistantContent } from "@opencode/session-ui/message"
+import { DataProvider } from "@opencode/session-ui/context"
 import { PhysicalSystemsProvider } from "../../../src/physicalsystems/context"
 import { PhysicalSystemsLayout } from "../../../src/physicalsystems/layout"
 import { PhysicalOperations } from "../../../src/physicalsystems/operations"
-import { ToolRegistry, setLocation, location, sessions, setTabInfo, tabKey, navigation, portal } from "./mocks"
+import { setLocation, location, sessions, setTabInfo, tabKey, navigation, portal } from "./mocks"
 import type { PhysicalCommand, PhysicalSnapshot } from "../../../src/physicalsystems/types"
 import { createStore } from "solid-js/store"
 import { Show } from "solid-js"
 import { modelBridge, models } from "./models"
 import { RobotModelPicker } from "../../../src/physicalsystems/robot-model-picker"
 
-const [fixture, setFixture] = createStore({ gate: true, forged: false })
+const [fixture, setFixture] = createStore({ gate: true, forged: false, foreignSession: false })
 const state: PhysicalSnapshot = {
   revision: 1,
   serviceId: "service-fixture",
@@ -106,6 +108,7 @@ const fixtureWindow = window as typeof window & {
     emit: (patch?: Partial<PhysicalSnapshot>) => void
     gate: (value: boolean) => void
     forge: (value: boolean) => void
+    foreignSession: (value: boolean) => void
     route: (value: string, directory?: string) => void
     failBinding: boolean
     failProjectCreate: boolean
@@ -201,6 +204,7 @@ fixtureWindow.__fixture = {
   },
   gate: (value) => setFixture("gate", value),
   forge: (value) => setFixture("forged", value),
+  foreignSession: (value) => setFixture("foreignSession", value),
   route(value, directory) {
     const match = /^\/server\/([^/]+)\/session\/([^/]+)$/.exec(value)
     if (match && directory) setTabInfo(tabKey({ server: atob(match[1]), sessionId: match[2] }), { directory })
@@ -398,23 +402,47 @@ render(
             <p>Fixture native conversation content</p>
             <ComposerFixture name="inside" />
             <RobotModelPicker />
-            <Dynamic
-              component={ToolRegistry.render("propose_local_experiment")}
-              tool="propose_local_experiment"
-              input={{}}
+            <DataProvider
+              data={{ session: [], session_status: {}, session_diff: {} }}
+              directory="/fixture/a"
               sessionID="session-a"
-              status="completed"
-              metadata={{
-                physicalSystems: {
-                  projectId: "project-a",
-                  conversationId: "conversation-a",
-                  serverId: "sidecar",
-                  sessionId: "session-a",
-                  experimentId: "experiment-a",
-                  planDigest: fixture.forged ? "forged-digest" : "digest-a",
-                },
-              }}
-            />
+            >
+              <SessionAssistantContent
+                sessionID="session-a"
+                contentID="proposal-part"
+                message={{
+                  id: "msg_assistant",
+                  type: "assistant",
+                  agent: "physical-systems",
+                  model: { providerID: "fixture", id: "fixture", variant: "default" },
+                  content: [],
+                  time: { created: 1, completed: 2 },
+                  cost: 0,
+                  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+                }}
+                content={{
+                  type: "tool",
+                  id: "tool_proposal",
+                  name: "propose_local_experiment",
+                  time: { created: 1, completed: 2 },
+                  state: {
+                    status: "completed",
+                    input: {},
+                    content: [{ type: "text", text: "Synthetic plan proposed" }],
+                    metadata: {
+                      physicalSystems: {
+                        projectId: "project-a",
+                        conversationId: "conversation-a",
+                        serverId: "sidecar",
+                        sessionId: fixture.foreignSession ? "session-b" : "session-a",
+                        experimentId: "experiment-a",
+                        planDigest: fixture.forged ? "forged-digest" : "digest-a",
+                      },
+                    },
+                  },
+                }}
+              />
+            </DataProvider>
           </div>
         </PhysicalSystemsLayout>
       </Show>

@@ -27,12 +27,12 @@ beforeAll(async () => {
     "../shell/notifications/toast",
     "../shell/routes/session",
     "@solidjs/router",
-    "@opencode/session-ui/message-part",
   ]
   const result = await build({
     configFile: false,
     root: fixture,
     logLevel: "error",
+    define: { "import.meta.url": JSON.stringify("http://fixture.invalid/fixture.js") },
     plugins: [
       {
         name: "physicalsystems-project-fixture-contexts",
@@ -56,7 +56,9 @@ beforeAll(async () => {
   const output = (Array.isArray(result) ? result[0] : result).output.find((item) => item.type === "chunk")
   if (!output || output.type !== "chunk") throw new Error("Fixture compilation did not produce JavaScript")
   code = output.code
-})
+  // The actual V2 tool registry includes the standard renderers and their
+  // dependencies; compile that graph once for every isolated DOM case below.
+}, 30000)
 
 afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
@@ -77,6 +79,11 @@ async function mount(empty = false, failProjectCreate = false) {
     window,
     document: window.document,
     navigator: window.navigator,
+    TextEncoder,
+    TextDecoder,
+    URL,
+    crypto: window.crypto,
+    performance: window.performance,
     Node: window.Node,
     CustomEvent: window.CustomEvent,
     MutationObserver: window.MutationObserver,
@@ -107,6 +114,38 @@ async function settle() {
   // polling intervals, which intentionally stay active until DOM disposal.
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
+
+test("V2 assistant tool content carries its conversation into the exact-plan approval card", async () => {
+  const fixture = await mount()
+  const card = () => fixture.window.document.querySelector('[data-timeline-part-id="proposal-part"]')!
+  const approval = () => card().querySelector<HTMLButtonElement>("[data-ps-approve]")
+  expect(approval()).not.toBeNull()
+  expect(approval()!.disabled).toBe(true)
+  expect(fixture.js("window.__fixture.calls")).toEqual([])
+  card().querySelector<HTMLInputElement>('input[type="checkbox"]')!.click()
+  expect(approval()!.disabled).toBe(false)
+  approval()!.click()
+  await settle()
+  expect(fixture.js("window.__fixture.calls")).toMatchObject([
+    {
+      type: "experiment.approveAndContinue",
+      projectId: "project-a",
+      conversationId: "conversation-a",
+      sessionId: "session-a",
+      serverId: "sidecar",
+      experimentId: "experiment-a",
+      expectedDigest: "digest-a",
+      approved: true,
+    },
+  ])
+  fixture.js("window.__fixture.foreignSession(true)")
+  await settle()
+  expect(approval()).toBeNull()
+  fixture.js("window.__fixture.foreignSession(false); window.__fixture.forge(true)")
+  await settle()
+  expect(approval()).toBeNull()
+  expect(fixture.js("window.__fixture.calls.length")).toBe(1)
+})
 
 test("sidebar Settings invokes its app command without changing the managed project", async () => {
   const fixture = await mount()
