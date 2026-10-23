@@ -155,7 +155,8 @@ function reviewBrowserSameSignalProcess(
 /** Read adapters are mandatory so regressions exercise this exact signal proof
  * with inert process snapshots, without native reads or signals. Missing stat,
  * status, cmdline or exe entries require one fresh exact-PID stat lookup to
- * confirm disappearance. A live, reused or unreadable PID remains a failure. */
+ * confirm disappearance or the same process becoming a zombie. Neither grants
+ * signal authority; a live, reused or unreadable PID remains a failure. */
 export async function reviewBrowserSignalProof(
   member: ReturnType<typeof reviewBrowserProcess>,
   input: { session: number; uid: number; database: string },
@@ -167,6 +168,11 @@ export async function reviewBrowserSignalProof(
   },
 ) {
   const anchor = { ...member }
+  const same = (stat: string) => {
+    const value = reviewBrowserProcess(stat)
+    reviewBrowserSameSignalProcess(anchor, value)
+    return value
+  }
   const missing = (error: unknown) => ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException)?.code ?? "")
   const read = async (operation: () => Promise<string>) => {
     try {
@@ -180,22 +186,28 @@ export async function reviewBrowserSignalProof(
         if (missing(recheck)) return undefined
         throw recheck
       }
-      reviewBrowserSameSignalProcess(anchor, reviewBrowserProcess(fresh))
-      // Even the original PID still present as a zombie is not proof that the
-      // failed auxiliary read was harmless. Do not signal or hide that failure.
+      if (same(fresh).state === "Z") return undefined
       throw error
     }
   }
   const now = await read(io.stat)
   if (now === undefined) return false
-  const current = reviewBrowserProcess(now)
-  reviewBrowserSameSignalProcess(anchor, current)
+  const current = same(now)
+  if (current.state === "Z") return false
   const status = await read(io.status)
   if (status === undefined) return false
   reviewBrowserSignalIdentity(anchor, current, status, input.uid)
   if (current.session !== input.session) {
     const command = await read(io.command)
     if (command === undefined) return false
+    // A previously inspected Crashpad can exit after another owned process is
+    // signaled. Linux then exposes an empty cmdline until the zombie is reaped.
+    // Confirm the exact process exited; an empty command alone proves nothing.
+    if (!command.split("\0").some(Boolean)) {
+      const fresh = await read(io.stat)
+      if (fresh === undefined || same(fresh).state === "Z") return false
+      throw failure()
+    }
     if (reviewBrowserOwnershipScope({ sameSession: false, command, database: input.database }) !== "database")
       throw failure()
     const executable = await read(io.executable)
@@ -204,8 +216,7 @@ export async function reviewBrowserSignalProof(
   }
   const final = await read(io.stat)
   if (final === undefined) return false
-  reviewBrowserSameSignalProcess(anchor, reviewBrowserProcess(final))
-  return true
+  return same(final).state !== "Z"
 }
 
 export function reviewBrowserCrashpad(input: { command: string; executable: string; database: string }) {
