@@ -458,6 +458,7 @@ export type ContextGroupPart =
   | { type: "notice" | "shell"; id: string; render: () => JSX.Element }
 
 export function CurrentContextToolGroup(props: {
+  sessionID?: string
   parts: ContextGroupPart[]
   busy: boolean
   open: boolean
@@ -730,6 +731,7 @@ export function CurrentContextToolGroup(props: {
                                     fallback={
                                       <ToolDisplay
                                         id={tool().id}
+                                        sessionID={props.sessionID}
                                         tool={tool().name}
                                         input={currentToolInput(tool())}
                                         metadata={currentToolMetadata(tool())}

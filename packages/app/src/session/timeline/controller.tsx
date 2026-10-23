@@ -20,7 +20,7 @@ import { fetchSessionExport, saveSessionExport, sessionExportFilename } from "@/
 import { showToast } from "@/shell/notifications/toast"
 import { usePlatform } from "@/runtime/platform/platform"
 import { applyTimelineMessageHandoff, timelineChildTitle, visibleTimelineMessages } from "./controller-projection"
-import { createTimelineProjection } from "./projection"
+import { createTimelineDetail, createTimelineProjection } from "./projection"
 import { useServer } from "@/runtime/server/current"
 import { getSessionMessageHandoff } from "@/session/handoff"
 import type { ReasoningMode } from "@opencode/session-ui/timeline/projection"
@@ -148,18 +148,7 @@ export function createTimelineController(input: { session: TimelineSessionSource
 
   const showHeader = createMemo(() => !!input.session.identity.sessionID())
 
-  const timelineDetail = createMemo(() => {
-    const detail = settings.general.timelineDetail()
-
-    return {
-      shell: { ...detail.shell },
-      edit: { ...detail.edit },
-      thinking: { ...detail.thinking },
-      subagents: { ...detail.subagents },
-      notices: { ...detail.notices },
-      tools: { ...detail.tools },
-    }
-  })
+  const timelineDetail = createTimelineDetail(settings.general.timelineDetail)
 
   const reasoningMode = (): ReasoningMode =>
     timelineDetail().thinking.placement === "hidden"

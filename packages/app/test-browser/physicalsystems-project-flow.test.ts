@@ -64,11 +64,12 @@ afterAll(async () => {
   await Promise.all(windows.map((window) => window.happyDOM.close()))
 })
 
-async function mount(empty = false, failProjectCreate = false) {
+async function mount(empty = false, failProjectCreate = false, withoutBridge = false) {
   const window = new Window({ url: "http://fixture.invalid" })
   windows.push(window)
   window.__fixtureEmpty = empty
   window.__fixtureFailProjectCreate = failProjectCreate
+  window.__fixtureWithoutBridge = withoutBridge
   window.document.body.innerHTML = '<div id="root"></div>'
   const context = createContext({
     ...Object.fromEntries(
@@ -115,14 +116,16 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-test("V2 assistant tool content carries its conversation into the exact-plan approval card", async () => {
+test.each(["compact", "text-only"])("V2 %s timeline keeps exact-plan approval visible and scoped", async (preset) => {
   const fixture = await mount()
-  const card = () => fixture.window.document.querySelector('[data-timeline-part-id="proposal-part"]')!
-  const approval = () => card().querySelector<HTMLButtonElement>("[data-ps-approve]")
+  fixture.js(`window.__fixture.timelinePreset(${JSON.stringify(preset)})`)
+  await settle()
+  const card = () => fixture.window.document.querySelector('[data-timeline-part-id="proposal-part"]')
+  const approval = () => card()?.querySelector<HTMLButtonElement>("[data-ps-approve]") ?? null
   expect(approval()).not.toBeNull()
   expect(approval()!.disabled).toBe(true)
   expect(fixture.js("window.__fixture.calls")).toEqual([])
-  card().querySelector<HTMLInputElement>('input[type="checkbox"]')!.click()
+  card()!.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click()
   expect(approval()!.disabled).toBe(false)
   approval()!.click()
   await settle()
@@ -146,6 +149,22 @@ test("V2 assistant tool content carries its conversation into the exact-plan app
   expect(approval()).toBeNull()
   expect(fixture.js("window.__fixture.calls.length")).toBe(1)
 })
+
+test.each(["compact", "text-only"])(
+  "V2 %s timeline preserves preferences when the Physical Systems bridge is absent",
+  async (preset) => {
+    const fixture = await mount(false, false, true)
+    fixture.js(`window.__fixture.timelinePreset(${JSON.stringify(preset)})`)
+    await settle()
+    const timeline = fixture.window.document.querySelector("[data-fixture-timeline]")!
+    expect(timeline.querySelector("[data-ps-approve]")).toBeNull()
+    expect(timeline.querySelectorAll('[data-timeline-row="AssistantPart"]').length).toBe(preset === "compact" ? 1 : 0)
+    expect(timeline.querySelectorAll('[data-component="collapsed-tool-group"]').length).toBe(
+      preset === "compact" ? 1 : 0,
+    )
+    expect(fixture.js("window.__fixture.calls")).toEqual([])
+  },
+)
 
 test("sidebar Settings invokes its app command without changing the managed project", async () => {
   const fixture = await mount()

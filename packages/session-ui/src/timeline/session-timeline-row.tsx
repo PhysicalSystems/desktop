@@ -222,6 +222,7 @@ export function createSessionTimelineRowRenderer(input: {
       return (
         <div class="contents" data-notices-only={parts().every((part) => part.type === "notice") ? "" : undefined}>
           <SessionContextToolGroup
+            sessionID={input.sessionID()}
             parts={parts()}
             patchGroupKey={(tools) => {
               const parts = tools.map((tool) => patchPartKeys.get(tool)!)
