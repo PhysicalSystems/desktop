@@ -250,9 +250,10 @@ function PhysicalWorkspace(props: ParentProps) {
     return { serverId: String(requireServerKey(match[1])), sessionId: decodeURIComponent(match[2]) }
   })
   let previousPath = location.pathname
+  const settingsRoute = () => location.pathname === "/settings"
   createEffect(() => {
     const path = location.pathname
-    if (path !== previousPath && route()) setState("cloudRooms", false)
+    if (path !== previousPath && previousPath !== "/settings" && route()) setState("cloudRooms", false)
     previousPath = path
   })
   const canLinkConversation = createMemo(() => {
@@ -476,8 +477,8 @@ function PhysicalWorkspace(props: ParentProps) {
     if (recent) return selectConversation(project, recent)
     return newConversation(project)
   }
-  return (
-    <div class="ps-workspace" data-ps-workspace>
+  const workspace = (
+    <div class="ps-workspace" data-ps-workspace style={{ display: settingsRoute() ? "none" : undefined }}>
       <Show
         keyed
         when={
@@ -720,8 +721,10 @@ function PhysicalWorkspace(props: ParentProps) {
             class="ps-session-content"
             style={{ "--ps-welcome-wordmark": JSON.stringify(language.t("physicalsystems.name")) }}
           >
-            <Show when={state.initializing} fallback={props.children}>
-              <p role="status">{language.t("physicalsystems.project.preparing")}</p>
+            <Show when={!settingsRoute()}>
+              <Show when={state.initializing} fallback={props.children}>
+                <p role="status">{language.t("physicalsystems.project.preparing")}</p>
+              </Show>
             </Show>
           </div>
         </div>
@@ -937,5 +940,11 @@ function PhysicalWorkspace(props: ParentProps) {
         />
       </Show>
     </div>
+  )
+  return (
+    <>
+      <Show when={settingsRoute()}>{props.children}</Show>
+      {workspace}
+    </>
   )
 }

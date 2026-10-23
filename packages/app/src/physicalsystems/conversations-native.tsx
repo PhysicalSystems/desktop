@@ -417,37 +417,61 @@ export function NativeCloudConversations(props: {
               <p class="ps-muted">{language.t("physicalsystems.shared.empty")}</p>
             </Show>
           </div>
-          <div class="ps-shared-sidebar-footer">
-            <Show when={props.switchAccountMode}>
-              <button onClick={() => props.switchAccountMode?.()}>
-                <Icon name="chat" />
-                {language.t(props.allowAi ? "physicalsystems.shared.open" : "physicalsystems.shared.ai")}
-              </button>
-            </Show>
-            <button onClick={props.close}>
-              <Icon name="monitor" />
-              {language.t("physicalsystems.shared.local")}
-            </button>
-            <button onClick={props.openSettings}>
-              <Icon name="settings-gear" />
-              {language.t("desktop.menu.settings")}
-            </button>
-            <Show
-              when={state.account?.status === "signed_in"}
-              fallback={
-                <button disabled={state.accountBusy} onClick={() => void call(() => props.bridge.signIn())}>
-                  <span class="ps-account-avatar">P</span>
-                  {language.t("physicalsystems.account.signIn")}
-                </button>
-              }
+        </Show>
+        <div class="ps-shared-sidebar-footer">
+          <Show when={props.switchAccountMode}>
+            <button
+              aria-label={language.t(props.allowAi ? "physicalsystems.shared.open" : "physicalsystems.shared.ai")}
+              title={language.t(props.allowAi ? "physicalsystems.shared.open" : "physicalsystems.shared.ai")}
+              onClick={() => props.switchAccountMode?.()}
             >
-              <details class="ps-shared-account">
-                <summary>
-                  <span class="ps-account-avatar">
-                    {state.account?.account?.name?.slice(0, 1).toUpperCase() || "P"}
-                  </span>
+              <Icon name="chat" />
+              <Show when={state.sidebarOpen}>
+                {language.t(props.allowAi ? "physicalsystems.shared.open" : "physicalsystems.shared.ai")}
+              </Show>
+            </button>
+          </Show>
+          <button
+            aria-label={language.t("physicalsystems.shared.local")}
+            title={language.t("physicalsystems.shared.local")}
+            onClick={props.close}
+          >
+            <Icon name="monitor" />
+            <Show when={state.sidebarOpen}>{language.t("physicalsystems.shared.local")}</Show>
+          </button>
+          <button
+            aria-label={language.t("command.settings.open")}
+            title={language.t("command.settings.open")}
+            onClick={props.openSettings}
+          >
+            <Icon name="settings-gear" />
+            <Show when={state.sidebarOpen}>{language.t("desktop.menu.settings")}</Show>
+          </button>
+          <Show
+            when={state.account?.status === "signed_in"}
+            fallback={
+              <button
+                aria-label={language.t("physicalsystems.account.signIn")}
+                title={language.t("physicalsystems.account.signIn")}
+                disabled={state.accountBusy}
+                onClick={() => void call(() => props.bridge.signIn())}
+              >
+                <span class="ps-account-avatar">P</span>
+                <Show when={state.sidebarOpen}>{language.t("physicalsystems.account.signIn")}</Show>
+              </button>
+            }
+          >
+            <details class="ps-shared-account">
+              <summary
+                aria-label={language.t("physicalsystems.account.title")}
+                title={state.account?.account?.name || state.account?.account?.email}
+              >
+                <span class="ps-account-avatar">{state.account?.account?.name?.slice(0, 1).toUpperCase() || "P"}</span>
+                <Show when={state.sidebarOpen}>
                   <span class="ps-account-name">{state.account?.account?.name || state.account?.account?.email}</span>
-                </summary>
+                </Show>
+              </summary>
+              <div class="ps-shared-account-menu">
                 <p>{state.account?.account?.email}</p>
                 <button disabled={state.accountBusy} onClick={() => void call(() => props.bridge.refresh())}>
                   {language.t("physicalsystems.refresh")}
@@ -455,10 +479,10 @@ export function NativeCloudConversations(props: {
                 <button disabled={state.accountBusy} onClick={() => void call(() => props.bridge.signOut())}>
                   {language.t("physicalsystems.account.signOut")}
                 </button>
-              </details>
-            </Show>
-          </div>
-        </Show>
+              </div>
+            </details>
+          </Show>
+        </div>
       </nav>
       <div class="ps-shared-content">
         <header class="ps-shared-context">

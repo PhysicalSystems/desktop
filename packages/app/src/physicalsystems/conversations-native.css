@@ -114,7 +114,28 @@
   background: var(--background-strong);
 }
 .ps-shared-sidebar-footer {
-  margin-top: 12px;
+  margin-top: auto;
+  padding-top: 12px;
+}
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-sidebar {
+  padding-inline: 4px;
+}
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-sidebar-footer > button,
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-account summary {
+  justify-content: center;
+  padding-inline: 4px;
+}
+.ps-native-conversations[data-sidebar-open="false"] .ps-shared-account-menu {
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 0;
+  width: 240px;
+  max-width: calc(100vw - 64px);
+  padding: 8px;
+  border: 1px solid var(--border-weak-base);
+  border-radius: 7px;
+  background: var(--background-base);
+  z-index: 20;
 }
 .ps-shared-account {
   position: relative;
