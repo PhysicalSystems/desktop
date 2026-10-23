@@ -75,6 +75,28 @@ For Windows, use `--platform windows-x64` on a disposable Windows runner and omi
 
 The source checks use `bun test` and `bun typecheck` from the affected package directories. Root-level `bun test` is intentionally unsupported in this monorepo. Upstream publishing scripts and the canonical `check:release-packages` command are not part of this desktop workflow.
 
+### Pull request check selection
+
+`script/desktop-ci-scope.mjs` selects checks from the complete Git diff, including
+deleted paths and both sides of renames. Ordinary app, integration, core, server
+and TUI source changes retain source/authority regressions and all five package
+typechecks. App changes also run the Chromium appearance fixture. Release and
+native installer tests run for desktop/updater, release, workflow, dependency,
+vendored operator and other unclassified changes. Documentation-only PRs skip
+runtime tests; packaged Markdown prompts and skills are not documentation-only.
+
+Source and native checks run in parallel. The existing required **Source and
+authority checks** job verifies that every selected job succeeded; a failure,
+cancellation or unexpected skip blocks it. No branch-protection change is needed.
+Manual source checks and both candidate/public release workflows always run the
+full suite against their selected source revision.
+
+During local iteration, run the tests for the changed behavior and the affected
+package's typecheck. Broaden testing for shared dependencies or an unresolved
+failure; avoid repeating unchanged full suites after a passing check. Changes to
+the CI selector or merge gate can be checked from `packages/physicalsystems` with
+`bun test ./test/desktop-ci-scope.test.ts`.
+
 ## Inputs, artifacts and evidence
 
 The input bundle contains `release-inputs.json`, `history.json`, the decoded `models.dev-api.json`, and `SHA256SUMS`. The record fixes the desktop version/channel, repository and source commit, OpenCode baseline, canonical operator revision/digests, lockfile, toolchain, model catalog and compatibility declarations. Both platforms verify these bytes before building. A platform does not refresh its model catalog independently or rebuild the operator from a developer-local checkout.

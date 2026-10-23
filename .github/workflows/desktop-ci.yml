@@ -41,9 +41,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  scope:
+    name: Select relevant checks
+    if: github.repository == 'PhysicalSystems/desktop'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      source: ${{ steps.scope.outputs.source }}
+      release: ${{ steps.scope.outputs.release }}
+      appearance: ${{ steps.scope.outputs.appearance }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select checks from the complete pull request diff
+        id: scope
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { desktopChecks } from './script/desktop-ci-scope.mjs';
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const paths = process.env.GITHUB_EVENT_NAME === 'pull_request' && !process.env.SOURCE_SHA
+            ? execFileSync('git', ['diff', '--no-renames', '--name-only', '-z', `${event.pull_request.base.sha}...${process.env.GITHUB_SHA}`], { encoding: 'utf8' }).split('\0').filter(Boolean)
+            : [];
+          const checks = desktopChecks(paths, process.env.GITHUB_EVENT_NAME, process.env.SOURCE_SHA);
+          appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(checks).map(([key, value]) => `${key}=${value}\n`).join(''));
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Checks for ${paths.length} changed paths (release/manual runs always use the full suite):\n\n${Object.entries(checks).map(([key, value]) => `- ${key}: ${value ? 'run' : 'skip'}`).join('\n')}\n`);
+          NODE
+
   windows-installer-owner:
     name: Windows installer owner fixture
-    if: github.repository == 'PhysicalSystems/desktop'
+    needs: scope
+    if: needs.scope.outputs.release == 'true'
     runs-on: windows-2025
     timeout-minutes: 10
     env:
@@ -73,7 +107,8 @@ jobs:
 
   linux-updater-dialog:
     name: Ubuntu updater dialog fixture
-    if: github.repository == 'PhysicalSystems/desktop'
+    needs: scope
+    if: needs.scope.outputs.release == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -113,9 +148,10 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  source:
-    name: Source and authority checks
-    needs: [windows-installer-owner, linux-updater-dialog]
+  regression:
+    name: Source regression tests
+    needs: scope
+    if: needs.scope.outputs.source == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     env:
@@ -132,9 +168,21 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-desktop-build
 
-      - name: Integration and release regression tests
+      - name: Check CI selection and required merge gate
         working-directory: packages/physicalsystems
-        run: bun test src ./test/preview-update-state.test.ts
+        run: bun test ./test/desktop-ci-scope.test.ts
+
+      - name: Integration regression tests
+        working-directory: packages/physicalsystems
+        run: |
+          mapfile -d '' tests < <(find src -path src/release -prune -o -type f \( -name '*.test.*' -o -name '*.spec.*' \) -print0)
+          test "${#tests[@]}" -gt 0
+          bun test "${tests[@]/#/./}"
+
+      - name: Release regression tests
+        if: needs.scope.outputs.release == 'true'
+        working-directory: packages/physicalsystems
+        run: bun test ./src/release ./test/preview-update-state.test.ts
 
       - name: Physical Systems UI regression tests
         working-directory: packages/app
@@ -157,12 +205,15 @@ jobs:
         run: bun test --conditions=solid --isolate --preload ../ui/test/solid-jsx.ts --preload ./happydom.ts ./src/theme-preload.test.ts ./src/shell/titlebar/windows-menu.test.ts ./src/components/updater-action.test.ts ./src/runtime/i18n/desktop-native.test.ts
 
       - uses: ./.github/actions/setup-desktop-apt
+        if: needs.scope.outputs.appearance == 'true'
       - name: Install Chromium for isolated settings fixture
+        if: needs.scope.outputs.appearance == 'true'
         timeout-minutes: 5
         working-directory: packages/app
         run: bunx playwright install --with-deps chromium
 
       - name: Rendered Physical Systems appearance regression
+        if: needs.scope.outputs.appearance == 'true'
         working-directory: packages/app
         env:
           PLAYWRIGHT_PORT: "5196"
@@ -211,6 +262,36 @@ jobs:
       - name: Typecheck core
         working-directory: packages/core
         run: bun typecheck
+
+  # Keep the existing required check name. A failed/cancelled prerequisite must
+  # fail this gate rather than turn into a skipped (and therefore passing) check.
+  source:
+    name: Source and authority checks
+    if: always() && github.repository == 'PhysicalSystems/desktop'
+    needs: [scope, regression, windows-installer-owner, linux-updater-dialog]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected check to pass
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          SOURCE_REQUIRED: ${{ needs.scope.outputs.source }}
+          RELEASE_REQUIRED: ${{ needs.scope.outputs.release }}
+          SOURCE_RESULT: ${{ needs.regression.result }}
+          WINDOWS_RESULT: ${{ needs.windows-installer-owner.result }}
+          LINUX_RESULT: ${{ needs.linux-updater-dialog.result }}
+        run: |
+          test "$SCOPE_RESULT" = success
+          case "$SOURCE_REQUIRED" in
+            true) test "$SOURCE_RESULT" = success ;;
+            false) test "$SOURCE_RESULT" = skipped ;;
+            *) exit 1 ;;
+          esac
+          case "$RELEASE_REQUIRED" in
+            true) test "$WINDOWS_RESULT" = success && test "$LINUX_RESULT" = success ;;
+            false) test "$WINDOWS_RESULT" = skipped && test "$LINUX_RESULT" = skipped ;;
+            *) exit 1 ;;
+          esac
 
   preview-updater-test:
     name: Unpublished app updater test (${{ matrix.os }})
