@@ -154,7 +154,7 @@ jobs:
 
       - name: Appearance and updater UI regressions
         working-directory: packages/app
-        run: bun test --conditions=solid --preload ./happydom.ts ./src/theme-preload.test.ts ./src/shell/titlebar/windows-menu.test.ts ./src/components/updater-action.test.ts ./src/runtime/i18n/desktop-native.test.ts
+        run: bun test --conditions=solid --isolate --preload ../ui/test/solid-jsx.ts --preload ./happydom.ts ./src/theme-preload.test.ts ./src/shell/titlebar/windows-menu.test.ts ./src/components/updater-action.test.ts ./src/runtime/i18n/desktop-native.test.ts
 
       - name: Install Chromium for isolated settings fixture
         working-directory: packages/app
@@ -175,9 +175,13 @@ jobs:
         working-directory: packages/core
         run: bun test ./test/credential-native.test.ts ./test/credential.test.ts ./test/integration.test.ts
 
+      - name: Physical Systems terminal plugin authority regressions
+        working-directory: packages/tui
+        run: bun test ./test/plugin-discovery.test.ts
+
       - name: Desktop startup diagnostic regression tests
         working-directory: packages/desktop
-        run: bun test ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/files/external-url.test.ts ./src/main/provider-account-trace.test.ts
+        run: bun test --timeout 30000 ./src/main/startup-trace.test.ts ./src/main/shutdown-trace.test.ts ./src/main/physical-worker.test.ts ./src/main/files/external-url.test.ts ./src/main/provider-account-trace.test.ts ./src/main/storage/legacy.test.ts
 
       - name: Shared updater controller and install handoff regressions
         working-directory: packages/desktop

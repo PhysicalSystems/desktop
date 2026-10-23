@@ -1253,11 +1253,24 @@ async function launch(executable, credentialPhase, lab, providerReview) {
         probe.finishObservation()
       } else {
         const requestsBefore = provider.calls.length
-        removalReadiness = createV2RemovalReadiness({ request: v2Request, probe, endpoint: provider.url })
+        removalReadiness = createV2RemovalReadiness({
+          request: v2Request,
+          probe,
+          sessionId: attached.sessionId,
+          endpoint: provider.credentialURL,
+        })
         await removalReadiness.wait()
+        await until(() => probe.observationReady(), "CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED", 30000)
+        await until(v2Idle, "CREDENTIAL_PROBE_RESTART_UNCONFIRMED", 30000)
+        probe.finishObservation()
         state.absence = await probe.assertRemoved(v2Request)
-        if (!(await v2Idle()) || provider.calls.length !== requestsBefore)
+        const absentCalls = provider.calls.slice(requestsBefore)
+        if (absentCalls.length !== 1 || absentCalls[0].credential !== true || absentCalls[0].tool !== null)
           throw new Error("CREDENTIAL_PROBE_RETRIEVAL_UNCONFIRMED")
+        await v2Request(`/api/session/${attached.sessionId}/model`, {
+          method: "POST",
+          body: { model: { providerID: "fixture", id: "fixture" } },
+        })
       }
       const experiment = await evaluate("window.api.physicalSystems.snapshot().then(s => s.experiments?.current)")
       if (experiment?.id !== state.experimentId || experiment?.trials.length !== 3 || experiment.phase !== "COMPLETED")

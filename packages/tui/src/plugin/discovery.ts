@@ -1,11 +1,13 @@
 import { readdir, stat } from "node:fs/promises"
 import path from "node:path"
 import { localSource } from "@opencode/plugin/source"
+import { enabled as physicalSystems } from "@opencode/core/plugin/physical-bridge"
 import { isMissingPath, localProjectDirectory, projectConfigDirectories } from "../util/config-directories"
 
 export { localSource }
 
 export async function localPluginDirectories(cwd: string, configDirectory: string) {
+  if (physicalSystems()) return []
   const projectDirectory = await localProjectDirectory(cwd)
   const projectConfig = path.join(projectDirectory, ".opencode")
   const directories = [configDirectory, ...projectConfigDirectories(projectDirectory, cwd)]
@@ -22,6 +24,7 @@ export async function localPluginDirectories(cwd: string, configDirectory: strin
 }
 
 export async function discoverPluginTargets(directories: string[]) {
+  if (physicalSystems()) return []
   return (
     await Promise.all(
       directories.map(async (directory) => {
@@ -56,6 +59,9 @@ export function mergePluginTargets<const Target extends { readonly entry: string
   targets: readonly Target[],
   directory: string,
 ) {
+  // Attachment clients share the server's reviewed authority boundary. TUI
+  // plugins execute in this process, so no external source may bypass it.
+  if (physicalSystems()) return []
   return [
     ...targets
       .reduce((result, target) => {

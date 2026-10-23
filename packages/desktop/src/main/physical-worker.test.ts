@@ -24,7 +24,7 @@ async function settled(check: () => boolean) {
 
 /** Execute the actual worker with transpilation only. No real parent port,
  * model server, gateway, operator service, native vault or timer is available. */
-async function fixture() {
+async function fixture(options: { session?: Record<string, unknown>; afterSwitch?: Record<string, unknown> } = {}) {
   const owner = {
     projectId: "project-inert",
     conversationId: "conversation-inert",
@@ -35,6 +35,10 @@ async function fixture() {
   const reads: ReturnType<typeof deferred<unknown>>[] = []
   const replies = new Map<string, ReturnType<typeof deferred<{ error?: string }>>>()
   const events: { operation: string; busy: boolean }[] = []
+  let session = { id: owner.sessionId, agent: "physical-systems", location: { directory: owner.directory }, ...options.session }
+  let sessionReads = 0
+  let agentSwitches = 0
+  let bindings = 0
   let listener!: (message: { data: Record<string, unknown> }) => void
   let timer: (() => void) | undefined
   let busy = false
@@ -53,7 +57,10 @@ async function fixture() {
       throw new Error("FORBIDDEN_INERT_AGENT_CALL")
     },
     async command(name: string, payload: Record<string, unknown>) {
-      if (name === "session.bind") return { agentToken: "inert-token", binding: owner }
+      if (name === "session.bind") {
+        bindings++
+        return { agentToken: "inert-token", binding: owner }
+      }
       if (name === "session.agentState") {
         busy = payload.busy === true
         events.push({ operation: "apply", busy })
@@ -95,16 +102,23 @@ async function fixture() {
         },
       },
     },
-    fetch: async (url: URL) => {
+    fetch: async (url: URL, init?: RequestInit) => {
       if (url.searchParams.get("location[directory]") !== owner.directory || url.searchParams.has("directory"))
         throw new Error("FORBIDDEN_INERT_LOCATION")
-      if (url.pathname === "/api/session/session-inert")
+      if (url.pathname === "/api/session/session-inert") {
+        sessionReads++
         return {
           ok: true,
-          json: async () => ({
-            data: { id: owner.sessionId, agent: "physical-systems", location: { directory: owner.directory } },
-          }),
+          json: async () => ({ data: session }),
         }
+      }
+      if (url.pathname === "/api/session/session-inert/agent") {
+        if (init?.method !== "POST" || init.body !== JSON.stringify({ agent: "physical-systems" }))
+          throw new Error("FORBIDDEN_INERT_AGENT_SWITCH")
+        agentSwitches++
+        session = { ...session, agent: "physical-systems", ...options.afterSwitch }
+        return { ok: true }
+      }
       if (url.pathname !== "/api/session/active") throw new Error("FORBIDDEN_INERT_ROUTE")
       const read = deferred<unknown>()
       reads.push(read)
@@ -179,9 +193,14 @@ async function fixture() {
   }
   expect((await send("start", { dataDir: "/inert/unused", agentToken: "inert-token" })).error).toBeUndefined()
   expect((await send("server", { url: "http://127.0.0.1:1", password: "inert-password" })).error).toBeUndefined()
-  expect((await send("command", { request: { type: "session.bind", ...owner } })).error).toBeUndefined()
-  await settled(() => reads.length === 1)
+  const binding = await send("command", { request: { type: "session.bind", ...owner } })
+  if (!options.session && !options.afterSwitch) expect(binding.error).toBeUndefined()
+  if (!binding.error) await settled(() => reads.length === 1)
   return {
+    binding,
+    sessionReads: () => sessionReads,
+    agentSwitches: () => agentSwitches,
+    bindings: () => bindings,
     reads,
     events,
     busy: () => busy,
@@ -205,6 +224,60 @@ async function fixture() {
     },
   }
 }
+
+test("a migrated blank V1 conversation gets a verified physical agent before binding", async () => {
+  // V1Migration leaves agent null without user messages; V2 fromRow omits it.
+  for (const agent of [undefined, null]) {
+    const f = await fixture({ session: { agent } })
+    try {
+      expect(f.binding.error).toBeUndefined()
+      expect(f.agentSwitches()).toBe(1)
+      expect(f.sessionReads()).toBe(2)
+      expect(f.bindings()).toBe(1)
+    } finally {
+      await f.close()
+    }
+  }
+})
+
+test("binding never repairs a foreign agent or a session outside the project scope", async () => {
+  for (const session of [
+    { agent: "build" },
+    { agent: "" },
+    { agent: undefined, id: "session-other" },
+    { agent: undefined, location: { directory: "/inert/other-project" } },
+    { agent: undefined, location: { directory: "/inert/status-audit", workspaceID: "workspace-other" } },
+  ]) {
+    const f = await fixture({ session })
+    try {
+      expect(f.binding.error).toBe("MODEL_SESSION_SCOPE_MISMATCH")
+      expect(f.agentSwitches()).toBe(0)
+      expect(f.bindings()).toBe(0)
+    } finally {
+      await f.close()
+    }
+  }
+})
+
+test("binding requires the repaired agent and original ownership on a fresh read", async () => {
+  for (const afterSwitch of [
+    { agent: undefined },
+    { agent: "build" },
+    { id: "session-other" },
+    { location: { directory: "/inert/other-project" } },
+    { location: { directory: "/inert/status-audit", workspaceID: "workspace-other" } },
+  ]) {
+    const f = await fixture({ session: { agent: undefined }, afterSwitch })
+    try {
+      expect(f.binding.error).toBe("MODEL_SESSION_SCOPE_MISMATCH")
+      expect(f.agentSwitches()).toBe(1)
+      expect(f.sessionReads()).toBe(2)
+      expect(f.bindings()).toBe(0)
+    } finally {
+      await f.close()
+    }
+  }
+})
 
 test("an older poll cannot overwrite fresh approval preflight in either direction", async () => {
   for (const latest of [false, true]) {

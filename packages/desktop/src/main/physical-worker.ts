@@ -164,11 +164,23 @@ async function command(request: Record<string, unknown>) {
     if (!server || payload.serverId !== "sidecar") throw new Error("MODEL_SERVER_SCOPE_MISMATCH")
     const project = service.snapshot().projects.find((item) => item.id === payload.projectId)
     if (!project?.cwd || typeof payload.sessionId !== "string") throw new Error("INVALID_SESSION_BINDING")
-    const response: unknown = await (await modelRequest(`/api/session/${encodeURIComponent(payload.sessionId)}`, project.cwd)).json()
-    const info = record(response) ? response.data : undefined
-    if (!record(info) || info.id !== payload.sessionId || info.agent !== "physical-systems" || !record(info.location) || typeof info.location.directory !== "string" || resolve(info.location.directory) !== resolve(project.cwd) || info.location.workspaceID !== undefined) {
-      throw new Error("MODEL_SESSION_SCOPE_MISMATCH")
+    const route = `/api/session/${encodeURIComponent(payload.sessionId)}`
+    const readOwnedSession = async () => {
+      const response: unknown = await (await modelRequest(route, project.cwd!)).json()
+      const info = record(response) ? response.data : undefined
+      if (!record(info) || info.id !== payload.sessionId || !record(info.location) || typeof info.location.directory !== "string" || resolve(info.location.directory) !== resolve(project.cwd!) || info.location.workspaceID !== undefined) {
+        throw new Error("MODEL_SESSION_SCOPE_MISMATCH")
+      }
+      return info
     }
+    let info = await readOwnedSession()
+    // V1 stored the agent on user messages, so an empty migrated conversation
+    // has none. Repair only our verified session, then prove the durable result.
+    if (info.agent === undefined || info.agent === null) {
+      await modelRequest(`${route}/agent`, project.cwd, { method: "POST", body: JSON.stringify({ agent: "physical-systems" }) })
+      info = await readOwnedSession()
+    }
+    if (info.agent !== "physical-systems") throw new Error("MODEL_SESSION_SCOPE_MISMATCH")
   }
   if (type === "experiment.approveAndContinue" || type === "experiment.continue") {
     const owner = [...bindings.values()].find((binding) => binding.projectId === payload.projectId && binding.conversationId === payload.conversationId)
