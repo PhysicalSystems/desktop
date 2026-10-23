@@ -1,0 +1,96 @@
+.ps-cloud-root {
+  min-height: 100%;
+  color: var(--text-base);
+  background: var(--background-base);
+  font-family: var(--font-family-sans), sans-serif;
+}
+.ps-cloud-composer [data-action="prompt-attach"] {
+  display: none;
+}
+.ps-cloud-conversation {
+  max-width: 960px;
+  margin: auto;
+  padding: 24px clamp(14px, 4vw, 38px);
+  min-width: 0;
+}
+.ps-cloud-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-weak);
+  margin-bottom: 20px;
+}
+.ps-cloud-scope {
+  border: 1px solid var(--border-weak-base);
+  padding: 5px 9px;
+  border-radius: 6px;
+}
+.ps-cloud-conversation h1 {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.4;
+  margin: 0 0 20px;
+  overflow-wrap: anywhere;
+}
+.ps-cloud-context {
+  border: 1px solid var(--border-weak-base);
+  border-radius: 9px;
+  padding: 12px 15px;
+  font-size: 13px;
+  line-height: 1.7;
+  margin-bottom: 24px;
+}
+.ps-cloud-context summary {
+  cursor: pointer;
+  color: var(--text-weak);
+}
+.ps-cloud-context h2 {
+  margin-top: 14px;
+  font-weight: 500;
+}
+.ps-cloud-context p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ps-cloud-context dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 16px;
+  margin-top: 12px;
+}
+.ps-cloud-context dt {
+  color: var(--text-weak);
+}
+.ps-cloud-context dd {
+  overflow-wrap: anywhere;
+}
+.ps-cloud-timeline {
+  min-height: 180px;
+  padding: 12px 0 24px;
+}
+.ps-cloud-empty {
+  font-size: 14px;
+  color: var(--text-weak);
+  padding: 35px 0;
+}
+.ps-cloud-composer {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 0;
+  background: var(--background-base);
+}
+.ps-cloud-notice {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-weak);
+  padding: 12px 0;
+}
+.ps-cloud-notice button {
+  margin-top: 8px;
+  border: 1px solid var(--border-base);
+  border-radius: 6px;
+  padding: 6px 12px;
+  color: var(--text-base);
+}
